@@ -20,6 +20,18 @@ license = "Apache-2.0"
 repository = "https://github.com/o3willard-AI/Chaperone"
 authors = ["Chaperone contributors"]
 
+[workspace.dependencies]
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1.47", default-features = false, features = [
+    "rt-multi-thread",
+    "net",
+    "io-util",
+    "macros",
+    "time",
+    "sync",
+] }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
