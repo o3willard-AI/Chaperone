@@ -215,3 +215,29 @@ authority change Chaperone exists to prevent. The operator CLI takes an
 explicit `--store` path in v0; defaulting locations is deferred until the
 daemon owns its state directory layout. The CLI never generates private keys:
 PROTO-SPEC §4.1 requires them to be born inside a platform key store.
+
+## D17 — Policy engine v0 details
+
+Choices filling ARCH-SPEC §2.3's deliberate silence on rule language:
+
+- **Operation axis = `mechanism`** in v0. The protocol's fourth axis
+  ("operation") is represented by the mechanism selector; structured
+  operation-body matching (method, command/argument pinning) arrives with the
+  phases that need it (M9 for local-privilege allowlists), keeping v0 rules
+  boringly auditable.
+- **Glob semantics**: `*` matches any run of ANY characters, separators
+  included - there is no path-scoped wildcard class. Consequence stated in
+  the matcher docs and tests: patterns like `https://*.example.com/*` do not
+  enforce hostname boundaries; boundary-critical rules anchor with Exact or
+  Prefix. Explicit tags `glob:` / `prefix:` exist for literals that contain
+  `*`; bare strings containing `*` are globs.
+- **Strict schema**: the TOML loader uses deny_unknown_fields and validates
+  effect values, so a typo'd axis (`agents_id`) fails the load loudly instead
+  of silently matching-any - a silent match-any would be a quiet authority
+  grant, exactly what this engine exists to prevent.
+- **Per-rule `limits`** are policy-side ceilings; evaluation returns the
+  element-wise minimum of matched-rule limits and agent-declared constraints
+  (PROTO-SPEC §5.1: constraints only narrow). Denials report no effective
+  widening either way.
+- **First match wins**; rule file order is precedence. Default-deny is not a
+  rule: an empty or non-matching ruleset denies structurally.
