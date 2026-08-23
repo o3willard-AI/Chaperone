@@ -41,7 +41,7 @@ mechanisms against one body (`method`/`headers`/`body_b64`). Basic auth needs a
 optional, non-secret `username` field inside `operation` (signed like everything
 else); when absent, the gateway derives the username from vault metadata if the
 backend provides it, else errors `E_CRED_UNRESOLVED`. Recorded in
-[DESIGN-DECISIONS.md](DESIGN-DECISIONS.md) as D11 when first implemented (Phase 6).
+[DESIGN-DECISIONS.md](DESIGN-DECISIONS.md) as D14 when first implemented (Phase 6).
 
 ## SI-3 — Session-frame verification underspecified
 

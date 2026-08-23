@@ -17,6 +17,9 @@ superseded — superseded entries stay, marked as such, with a pointer.
 | D8 | Operator channel / confirmation UX | v0: controlling TTY prompt of the daemon; socket-based console later | Accepted |
 | D9 | Unknown envelope fields | Ignore unknown request/response fields (MINOR forward-compat); reject unknown `mechanism` values | Accepted |
 | D10 | Frame size limits | Hard max frame 8 MiB at transport; `max_response_bytes` separately enforced at injection | Accepted |
+| D11 | Async runtime & I/O stack | tokio; one accept loop, task per connection; session streaming later rides the same runtime | Accepted |
+| D12 | Transport-level error frames | `{"type":"error","scope":"transport","reason":…}` for framing/parsing violations; NO invented `E_*` codes | Accepted |
+| D13 | Windows named-pipe ACLs | v1 uses tokio default DACL (process-token derived); explicit restrictive ACL deferred to hardening — tracked, not silent | Accepted |
 
 ---
 
@@ -139,3 +142,38 @@ THREAT-MODEL T3 spirit) before reading the body. This is independent of, and
 additional to, the agent-declared/policy-declared `max_response_bytes` cap that
 bounds what an injector will relay back. Both ceilings take minimums with any
 policy-declared limit per PROTO-SPEC §5.1 constraints note.
+
+## D11 — Async runtime and I/O stack
+
+tokio, chosen at Phase 1 when the first real I/O landed. Reasons: the brokered
+session lifecycle (PROTO-SPEC §6.2) needs concurrent command ingress and
+output streaming per connection, which selects against a blocking-I/O thread
+per direction; tokio's `UnixListener`, Windows named pipes, and TCP share one
+API surface, keeping the platform matrix honest from the first commit; and it
+is the most heavily scrutinized async runtime in the ecosystem, which matters
+for supply-chain review. Concurrency shape: one accept loop, one task per
+connection; nothing is shared between connections.
+
+## D12 — Transport-level error frames
+
+A connection can fail before any valid message exists (malformed header,
+oversized frame, non-object payload). PROTO-SPEC §10.1's error taxonomy is
+defined for *messages* — inventing codes there would risk colliding with
+future spec revisions. So the transport answers once with:
+
+```json
+{ "type": "error", "scope": "transport", "reason": "<human-legible>" }
+```
+
+then disconnects. These frames never echo message content and are documented
+as outside the §10.1 taxonomy.
+
+## D13 — Windows named-pipe ACL posture
+
+ARCH-SPEC requires owner-only access on every transport. On Windows, tokio's
+named pipe creation applies the default DACL derived from the creating
+process token (current user plus system), which matches that intent for the
+single-user local deployment Chaperone targets. Building an explicit
+restrictive ACL requires unsafe Win32 calls, which the workspace forbids
+workspace-wide; the tightening work belongs to the hardening phase (PLAN M10)
+and is tracked here rather than silently accepted.

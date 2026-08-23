@@ -41,11 +41,13 @@ Legend for "Rules": **NS** = No secret in agent space · **DD** = Default-deny �
 
 Goal: local channel + Content-Length-framed JSON envelope; no auth yet.
 
-- [ ] UDS listener, owner-only perms (`0600`), default path
+- [x] UDS listener, owner-only perms (`0600`), default path
       `$XDG_RUNTIME_DIR/chaperone/gw.sock`; named-pipe equivalent on Windows;
-      loopback TCP fallback behind explicit config only.
-- [ ] Frame codec: `Content-Length: N\r\n\r\n` + N bytes UTF-8 JSON; max-frame guard.
-- [ ] Unary request/response loop with `msg_id` echo.
+      loopback TCP fallback behind explicit config only (type-constrained to
+      127.0.0.1 / ::1).
+- [x] Frame codec: `Content-Length: N\r\n\r\n` + N bytes UTF-8 JSON; hard
+      8 MiB max-frame guard checked before body read (D10).
+- [x] Unary request/response loop with transport-owned `msg_id` echo.
 
 **Spec sections:** PROTO-SPEC §3; ARCH-SPEC §2.1, §4.2–4.3.
 **Acceptance:** test client round-trips a framed message over UDS; non-owner
