@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 chaperone-identity = { path = "../identity" }
+chaperone-policy = { path = "../policy" }
 chaperone-protocol = { path = "../protocol" }
 time.workspace = true
 

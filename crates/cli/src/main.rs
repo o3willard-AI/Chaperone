@@ -12,6 +12,7 @@
 use std::process::ExitCode;
 
 use chaperone_identity::{EnrollmentError, EnrollmentStore};
+use chaperone_policy::Policy;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
@@ -22,6 +23,9 @@ USAGE:
     chaperone enroll --store <PATH> --agent-id <ID> --public-key <B64URL> [--force]
     chaperone revoke --store <PATH> --agent-id <ID>
     chaperone list-agents --store <PATH>
+    chaperone policy-check --policy <TOML> --agent-id <ID> --cred-ref <REF>
+                           --target-uri <URI> --mechanism <M>
+                           [--max-response-bytes N] [--session-ttl-s S]
 
 Enrollment binds an agent_id to an Ed25519 public key (base64url of 32
 bytes) that the agent's key store publishes out-of-band. Revocation is
@@ -133,6 +137,68 @@ fn cmd_list_agents(flags: &Flags) -> Result<(), String> {
     Ok(())
 }
 
+fn cmd_policy_check(flags: &Flags) -> Result<(), String> {
+    let doc = flags.require("policy")?;
+    let agent_id = flags.require("agent-id")?;
+    let cred_ref = flags.require("cred-ref")?;
+    let target_uri = flags.require("target-uri")?;
+    let mechanism = flags.require("mechanism")?;
+    let max_bytes = flags
+        .values
+        .get("max-response-bytes")
+        .map(|v| {
+            v.parse::<u64>()
+                .map_err(|_| "--max-response-bytes must be a number".to_owned())
+        })
+        .transpose()?;
+    let ttl = flags
+        .values
+        .get("session-ttl-s")
+        .map(|v| {
+            v.parse::<u64>()
+                .map_err(|_| "--session-ttl-s must be a number".to_owned())
+        })
+        .transpose()?;
+
+    let policy = Policy::from_toml(
+        &std::fs::read_to_string(&doc).map_err(|e| format!("cannot read {doc}: {e}"))?,
+    )
+    .map_err(|e| e.to_string())?;
+    let request = chaperone_policy::Request {
+        agent_id: &agent_id,
+        cred_ref: &cred_ref,
+        target_uri: &target_uri,
+        mechanism: &mechanism,
+        declared: Some(chaperone_protocol::Constraints {
+            max_response_bytes: max_bytes,
+            session_ttl_s: ttl,
+        }),
+    };
+    let decision = policy.evaluate(&request);
+    println!(
+        "{{\"effect\":\"{}\",\"source\":\"{}\",\"limits\":{{\"max_response_bytes\":{},\"session_ttl_s\":{}}}}}",
+        decision.effect.as_str(),
+        match &decision.source {
+            chaperone_policy::DecisionSource::DefaultDeny => "default_deny".to_owned(),
+            chaperone_policy::DecisionSource::Rule { index, name } => format!(
+                "rule[{index}]{}",
+                name.as_deref()
+                    .map(|n| format!(" ({n})"))
+                    .unwrap_or_default()
+            ),
+        },
+        decision
+            .limits
+            .max_response_bytes
+            .map_or("null".to_owned(), |v| v.to_string()),
+        decision
+            .limits
+            .session_ttl_s
+            .map_or("null".to_owned(), |v| v.to_string()),
+    );
+    Ok(())
+}
+
 fn run(args: Vec<String>) -> Result<(), String> {
     let Some(command) = args.first() else {
         print!("{USAGE}");
@@ -143,6 +209,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "enroll" => cmd_enroll(&flags),
         "revoke" => cmd_revoke(&flags),
         "list-agents" => cmd_list_agents(&flags),
+        "policy-check" => cmd_policy_check(&flags),
         "--help" | "-h" | "help" => {
             print!("{USAGE}");
             Ok(())

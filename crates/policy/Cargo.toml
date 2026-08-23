@@ -1,6 +1,6 @@
 [package]
 name = "chaperone-policy"
-description = "Default-deny decision engine: agent x cred_ref x target x operation"
+description = "Default-deny decision engine: agent x cred_ref x target x mechanism"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,6 +9,9 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+chaperone-protocol = { path = "../protocol" }
+serde.workspace = true
+toml.workspace = true
 
 [lints]
 workspace = true
