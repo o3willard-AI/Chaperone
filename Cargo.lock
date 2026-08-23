@@ -56,14 +56,26 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 [[package]]
 name = "chaperone-audit"
 version = "0.1.0"
+dependencies = [
+ "base64",
+ "chaperone-protocol",
+ "ed25519-dalek",
+ "rand_core",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "time",
+]
 
 [[package]]
 name = "chaperone-cli"
 version = "0.1.0"
 dependencies = [
+ "chaperone-audit",
  "chaperone-identity",
  "chaperone-policy",
  "chaperone-protocol",
+ "tempfile",
  "time",
 ]
 
@@ -220,6 +232,7 @@ checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
 dependencies = [
  "curve25519-dalek",
  "ed25519",
+ "rand_core",
  "serde",
  "sha2",
  "subtle",

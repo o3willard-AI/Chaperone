@@ -13,9 +13,11 @@ name = "chaperone"
 path = "src/main.rs"
 
 [dependencies]
+chaperone-audit = { path = "../audit" }
 chaperone-identity = { path = "../identity" }
 chaperone-policy = { path = "../policy" }
 chaperone-protocol = { path = "../protocol" }
+tempfile.workspace = true
 time.workspace = true
 
 [lints]

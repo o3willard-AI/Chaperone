@@ -141,11 +141,23 @@ impl std::error::Error for CanonicalError {}
 /// Works on the raw JSON object rather than a typed struct so that unknown
 /// fields — which the agent's signature covered — remain covered here too.
 pub fn canonical_form(envelope: &Value) -> Result<Vec<u8>, CanonicalError> {
-    let Some(map) = envelope.as_object() else {
+    canonical_form_excluding(envelope, &["sig"])
+}
+
+/// [`canonical_form`] generalized: canonical bytes of the object minus every
+/// named field. Used by the audit chain, whose hash-and-signature cover a
+/// record body excluding BOTH `this_hash` and `sig`.
+pub fn canonical_form_excluding(
+    object: &Value,
+    exclude: &[&str],
+) -> Result<Vec<u8>, CanonicalError> {
+    let Some(map) = object.as_object() else {
         return Err(CanonicalError::NotAnObject);
     };
     let mut stripped = map.clone();
-    stripped.remove("sig");
+    for name in exclude {
+        stripped.remove(*name);
+    }
     let mut buf = Vec::new();
     let mut ser =
         serde_json::Serializer::with_formatter(&mut buf, canon_json::CanonicalFormatter::new());

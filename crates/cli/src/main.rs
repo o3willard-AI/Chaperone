@@ -11,6 +11,7 @@
 
 use std::process::ExitCode;
 
+use chaperone_audit::AuditKey;
 use chaperone_identity::{EnrollmentError, EnrollmentStore};
 use chaperone_policy::Policy;
 use time::OffsetDateTime;
@@ -23,6 +24,11 @@ USAGE:
     chaperone enroll --store <PATH> --agent-id <ID> --public-key <B64URL> [--force]
     chaperone revoke --store <PATH> --agent-id <ID>
     chaperone list-agents --store <PATH>
+
+AUDIT CHAIN:
+    chaperone audit-keygen --out <SEEDFILE>
+    chaperone audit-verify --journal <FILE> --public-key <B64URL>
+    chaperone audit-export --journal <FILE>
     chaperone policy-check --policy <TOML> --agent-id <ID> --cred-ref <REF>
                            --target-uri <URI> --mechanism <M>
                            [--max-response-bytes N] [--session-ttl-s S]
@@ -199,6 +205,70 @@ fn cmd_policy_check(flags: &Flags) -> Result<(), String> {
     Ok(())
 }
 
+fn cmd_audit_keygen(flags: &Flags) -> Result<(), String> {
+    let out = flags.require("out")?;
+    if std::path::Path::new(&out).exists() {
+        return Err(format!(
+            "{out} already exists; refusing to overwrite an audit key"
+        ));
+    }
+    let key = AuditKey::generate();
+
+    // Atomic temp+rename at owner-only permissions (tempfile creates 0600 on
+    // unix; rename preserves them).
+    let path = std::path::Path::new(&out);
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+    use std::io::Write;
+    tmp.write_all(chaperone_protocol::encode_signature(&key.to_seed()).as_bytes())
+        .and_then(|_| tmp.flush())
+        .map_err(|e| e.to_string())?;
+    tmp.persist(path).map_err(|pe| pe.error.to_string())?;
+
+    println!("audit key written to {out} (0600)");
+    println!("public key: {}", key.public_key_b64url());
+    Ok(())
+}
+
+fn cmd_audit_verify(flags: &Flags) -> Result<(), String> {
+    let journal = flags.require("journal")?;
+    let pubkey = flags.require("public-key")?;
+    let vk = chaperone_audit::verifying_key_from_b64url(&pubkey)?;
+
+    match chaperone_audit::verify_file(std::path::Path::new(&journal), &vk) {
+        Ok(report) => match (&report.tail, &report.error) {
+            (Some(tail), None) => println!(
+                "OK: {} records verified; head seq={} hash={}",
+                report.records_ok, tail.seq, tail.hash_hex
+            ),
+            (_, Some(brk)) => println!(
+                "TAMPERED: {} records ok before failure - line {}: {}",
+                report.records_ok,
+                brk.line + 1,
+                brk.reason
+            ),
+            (None, None) => println!("EMPTY: journal has no records"),
+        },
+        Err(e) => return Err(e.to_string()),
+    }
+    Ok(())
+}
+
+fn cmd_audit_export(flags: &Flags) -> Result<(), String> {
+    let journal = flags.require("journal")?;
+    let content =
+        std::fs::read_to_string(&journal).map_err(|e| format!("cannot read {journal}: {e}"))?;
+    print!("{content}");
+    if !content.is_empty() && !content.ends_with('\n') {
+        println!();
+    }
+    eprintln!(
+        "# export complete; verify before trusting: chaperone audit-verify --journal {journal} --public-key <B64URL>"
+    );
+    Ok(())
+}
+
 fn run(args: Vec<String>) -> Result<(), String> {
     let Some(command) = args.first() else {
         print!("{USAGE}");
@@ -210,6 +280,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "revoke" => cmd_revoke(&flags),
         "list-agents" => cmd_list_agents(&flags),
         "policy-check" => cmd_policy_check(&flags),
+        "audit-keygen" => cmd_audit_keygen(&flags),
+        "audit-verify" => cmd_audit_verify(&flags),
+        "audit-export" => cmd_audit_export(&flags),
         "--help" | "-h" | "help" => {
             print!("{USAGE}");
             Ok(())

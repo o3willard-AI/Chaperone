@@ -241,3 +241,31 @@ Choices filling ARCH-SPEC §2.3's deliberate silence on rule language:
   widening either way.
 - **First match wins**; rule file order is precedence. Default-deny is not a
   rule: an empty or non-matching ruleset denies structurally.
+
+## D18 — Audit chain encoding & the tail-truncation honesty note
+
+Concrete shape of D7 in code:
+
+- Line = JCS-canonical JSON of the full record (stable, diffable bytes).
+- `this_hash = SHA-256(prev_hash_raw || canonical_body)` where body excludes
+  exactly `{this_hash, sig}`; `sig` = Ed25519 over the raw 32-byte hash.
+- Genesis anchors with a zero `prev_hash` and is itself signed - key
+  substitution fails at line one.
+- Appends flush + fsync before returning; a crash cannot leave a last line
+  that later verifies.
+- The writer re-verifies the whole journal on open and REFUSES to extend a
+  chain that breaks anywhere: extending a broken chain would launder the
+  break. Broken journals are quarantined for operator ruling.
+
+**Honest limit:** deleting the LAST record(s) leaves a perfectly valid
+shorter chain. That is inherent to hash chains, not an implementation gap -
+and it stays that way by design. The mitigation is operational: the head
+`(seq, hash)` from `AuditWriter::head()` / `chaperone audit-verify` is
+published/monitored externally, and any divergence means truncation. A test
+asserts this limit explicitly so no later optimization quietly claims more
+than the cryptography provides.
+
+Record schema is pinned by test (top-level key allow-list); adding a field
+must consciously pass review - that list is the entire surface through which
+content can enter the journal. The API accepts no credential material at all:
+references only (ARCH-SPEC §2.8).

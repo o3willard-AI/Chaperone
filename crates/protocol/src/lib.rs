@@ -12,8 +12,8 @@
 pub mod envelope;
 
 pub use envelope::{
-    CanonicalError, Constraints, Envelope, EnvelopeKind, Target, canonical_form, decode_signature,
-    encode_signature,
+    CanonicalError, Constraints, Envelope, EnvelopeKind, Target, canonical_form,
+    canonical_form_excluding, decode_signature, encode_signature,
 };
 
 /// Protocol version implemented by this codebase (PROTO-SPEC §5, §10.2).
