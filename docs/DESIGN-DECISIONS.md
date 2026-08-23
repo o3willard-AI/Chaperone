@@ -177,3 +177,41 @@ single-user local deployment Chaperone targets. Building an explicit
 restrictive ACL requires unsafe Win32 calls, which the workspace forbids
 workspace-wide; the tightening work belongs to the hardening phase (PLAN M10)
 and is tracked here rather than silently accepted.
+
+## D15 — Pre-schema failure mapping & verification-order details
+
+PROTO-SPEC §4 defines the sequence for well-formed envelopes; real peers send
+malformed ones. Choices made where the spec is silent:
+
+- **Version gate is step 0**, before agent resolution: it is a static
+  contract check, not trust evaluation, and rejecting early avoids spending
+  work on intents no version of us may honor. Malformed or missing
+  `chaperone` reports `E_VERSION`.
+- Fields that fail extraction map to the step that owns them: missing/non-
+  string `agent_id` → `E_UNKNOWN_AGENT` (nothing to attribute);
+  missing/unparsable/out-of-window `issued_at` or missing `nonce` →
+  `E_REPLAY` (freshness cannot be established); missing/undecodable/wrong-
+  length `sig` or a failed verification → `E_BAD_SIGNATURE`. No new codes are
+  invented.
+- Nonces are reserved BEFORE signature examination (still step 2): reserving
+  only after verify would let two racing identical intents both pass.
+- RFC 3339 timestamps with non-zero offsets are accepted and normalized to
+  their UTC instant — freshness compares instants; the skew bound does the
+  limiting.
+- Replay-cache retention = 3 × skew: an intent accepted at the future edge of
+  the window stays valid up to insertion + 2·skew; the third skew is boundary
+  epsilon against clock jitter.
+- Signatures verify via ed25519 `verify_strict` (rejects malleable
+  signatures) rather than bare `verify`.
+
+## D16 — Enrollment store shape
+
+Single JSON file (`version`, `agents[]`) holding id, base64url public key,
+`enrolled_at`, optional `revoked_at` (kept as history; revoked ids resolve to
+nothing per ARCH §2.2). Writes are temp-file + rename (atomic replacement,
+`0600` preserved). Rotation requires revoking first, or an explicit force
+flag — overwriting a live key silently would be exactly the kind of quiet
+authority change Chaperone exists to prevent. The operator CLI takes an
+explicit `--store` path in v0; defaulting locations is deferred until the
+daemon owns its state directory layout. The CLI never generates private keys:
+PROTO-SPEC §4.1 requires them to be born inside a platform key store.
