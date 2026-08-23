@@ -55,7 +55,7 @@ impl PipeListener {
     pub async fn next_client(
         &mut self,
     ) -> Option<tokio::net::windows::named_pipe::NamedPipeServer> {
-        let mut server = self.current.take()?;
+        let server = self.current.take()?;
         if server.connect().await.is_err() {
             return None;
         }
