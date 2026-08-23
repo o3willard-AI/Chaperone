@@ -1,0 +1,42 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/protocol",
+    "crates/gateway-core",
+    "crates/transport",
+    "crates/identity",
+    "crates/policy",
+    "crates/vault",
+    "crates/injectors",
+    "crates/audit",
+    "crates/privileged-helper",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/o3willard-AI/Chaperone"
+authors = ["Chaperone contributors"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+
+[profile.release]
+# Reproducible-build posture (PLAN Phase 10): deterministic single-unit
+# codegen, linked-time optimization, no stray debug info.
+codegen-units = 1
+lto = true
+strip = true
+# Security-relevant tradeoff: integer overflow panics loudly instead of
+# wrapping silently. A credential broker must never arithmetic-wrap its way
+# past a limit check; the negligible runtime cost is accepted deliberately.
+overflow-checks = true

@@ -1,0 +1,14 @@
+[package]
+name = "chaperone-audit"
+description = "Append-only hash-chained signed audit records: references, never secrets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,14 @@
+[package]
+name = "chaperone-protocol"
+description = "Wire-contract types for the Chaperone agent-gateway protocol (PROTO-SPEC)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

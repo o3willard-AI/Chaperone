@@ -1,0 +1,19 @@
+[package]
+name = "chaperone-cli"
+description = "Operator CLI: enrollment, policy authoring, vault CRUD, audit verification"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[[bin]]
+name = "chaperone"
+path = "src/main.rs"
+
+[dependencies]
+chaperone-protocol = { path = "../protocol" }
+
+[lints]
+workspace = true

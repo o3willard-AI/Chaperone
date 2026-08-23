@@ -1,0 +1,6 @@
+# Pinned toolchain: reproducible builds start with a reproducible compiler
+# (docs/PLAN.md Phase 0). rustup installs this exact version on first build.
+[toolchain]
+channel = "1.98.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
