@@ -9,6 +9,13 @@
 //! Dependency direction: everything may depend on this crate; it depends on
 //! nothing (ARCH-SPEC §1.1).
 
+pub mod envelope;
+
+pub use envelope::{
+    CanonicalError, Constraints, Envelope, EnvelopeKind, Target, canonical_form, decode_signature,
+    encode_signature,
+};
+
 /// Protocol version implemented by this codebase (PROTO-SPEC §5, §10.2).
 ///
 /// `chaperone` is `MAJOR.MINOR`; a gateway MUST reject a MAJOR it does not

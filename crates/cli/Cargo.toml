@@ -13,7 +13,9 @@ name = "chaperone"
 path = "src/main.rs"
 
 [dependencies]
+chaperone-identity = { path = "../identity" }
 chaperone-protocol = { path = "../protocol" }
+time.workspace = true
 
 [lints]
 workspace = true
