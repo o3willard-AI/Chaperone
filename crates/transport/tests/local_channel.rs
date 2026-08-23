@@ -14,7 +14,9 @@
 
 use std::sync::Arc;
 
-use chaperone_transport::{BindError, Connection, Handler, ListenSpec, serve};
+use chaperone_transport::{Connection, Handler, ListenSpec, serve};
+#[cfg(unix)]
+use chaperone_transport::BindError;
 use serde_json::json;
 
 fn echo_handler() -> Handler {
