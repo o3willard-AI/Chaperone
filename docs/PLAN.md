@@ -4,10 +4,11 @@ This is the working breakdown derived from [IMPLEMENTATION_AGENT_BRIEF.md](IMPLE
 §5. Each phase states its goal, the spec sections it implements, the acceptance
 tests that prove it, and the security rules from Brief §3 it must uphold.
 
-> **Tracking note:** this file is the source of truth for milestones until GitHub
-> issue/milestone tracking is available; each phase below maps 1:1 to a milestone,
-> and its checklist items map 1:1 to issues. When repo administration access is
-> available, transplant this structure to GitHub and link back here.
+> **Tracking note:** this file is the canonical text. On GitHub, each phase maps
+> 1:1 to a milestone (M0–M11) and to **one tracking issue** carrying that phase's
+> checklist as a task list — granular enough to track, coarse enough to survive
+> refinement as implementation details land. Spec discrepancies live as separate
+> issues labeled `spec-drift`, mirroring [SPEC-ISSUES.md](SPEC-ISSUES.md).
 
 **Organizing principle:** build the security spine before the conveniences.
 Identity, policy, and audit come *before* the first working injector.
