@@ -77,6 +77,7 @@ fn allowlist_pins_command_and_argument_prefix() {
     assert_eq!(ok[0]["status"], "authorized");
 }
 
+#[cfg_attr(windows, ignore = "unix fixtures")]
 #[test]
 fn real_exec_relays_output_and_exit_and_strips_token_from_child_env() {
     let al = load(

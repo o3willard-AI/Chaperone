@@ -145,6 +145,7 @@ impl Spine {
     }
 }
 
+#[cfg_attr(windows, ignore = "unix fixtures")]
 #[tokio::test]
 async fn allowlisted_command_runs_unattended() {
     let Some(_bin) = helper_bin() else {

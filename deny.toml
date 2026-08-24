@@ -1,10 +1,16 @@
 # Supply-chain policy (PLAN Phase 10). CI denies on advisory matches and
 # unaccepted licenses so dependency drift cannot silently widen risk.
+# In cargo-deny 0.16+ vulnerabilities are always denied; yanked handling
+# moved to [bans].
 [advisories]
 version = 2
-vulnerability = "deny"
-unmaintained = "warn"
-yanked = "warn"
+ignore = [
+    # Marvin (RSA timing sidechannel). Chaperone is an SSH CLIENT using
+    # Ed25519 keys from its vault; we never negotiate RSA server-side
+    # decryption, so this advisory's surface does not exist here. Revisit
+    # if RSA client keys are ever supported.
+    { id = "RUSTSEC-2023-0071", reason = "Ed25519-only SSH client; no RSA decrypt path" },
+]
 
 [licenses]
 version = 2
@@ -17,12 +23,16 @@ allow = [
     "Zlib",
     "Unicode-DFS-2016",
     "Unicode-3.0",
-    "OpenSSL",        # rustls/ring stack
+    "OpenSSL",
     "CDLA-Permissive-2.0",
+    "MPL-2.0",        # option-ext (dirs family)
 ]
 
 [bans]
 multiple-versions = "warn"
+# Our own workspace members are path deps without version strings; cargo-deny
+# reads those as wildcards. Internal edges are reviewed in-repo.
+wildcards = "warn"
 
 [sources]
 unknown-registry = "deny"

@@ -32,16 +32,14 @@ struct ClientHandler {
     policy: HostKeyPolicy,
 }
 
-#[async_trait::async_trait]
 impl client::Handler for ClientHandler {
     type Error = russh::Error;
 
     async fn check_server_key(
-        mut self,
-        _server_public_key: &russh_keys::key::PublicKey,
-    ) -> Result<(Self, bool), Self::Error> {
-        let accept = matches!(self.policy, HostKeyPolicy::TrustOnFirstUseAll);
-        Ok((self, accept))
+        &mut self,
+        _server_public_key: &russh::keys::PublicKey,
+    ) -> Result<bool, Self::Error> {
+        Ok(matches!(self.policy, HostKeyPolicy::TrustOnFirstUseAll))
     }
 }
 
@@ -82,9 +80,11 @@ impl SessionBackend for SshBackend {
                 .and_then(Value::as_bool)
                 .unwrap_or(true);
 
-            // The secret IS the private key text (PEM / OpenSSH format).
-            let key_pair = russh_keys::decode_secret_key(secret.expose(), None)
+            // The secret IS the private key text (PEM / OpenSSH format),
+            // parsed IN MEMORY - it never touches disk.
+            let private_key = russh::keys::PrivateKey::from_openssh(secret.expose())
                 .map_err(|e| format!("vault entry is not a parseable SSH private key: {e}"))?;
+            let key_pair = russh::keys::PrivateKeyWithHashAlg::new(Arc::new(private_key), None);
 
             let config = Arc::new(client::Config::default());
             let mut handle: Handle<ClientHandler> = client::connect(
@@ -97,15 +97,18 @@ impl SessionBackend for SshBackend {
             .await
             .map_err(|e| format!("connect to {host}:{port} failed: {e}"))?;
 
-            let authenticated = handle
-                .authenticate_publickey(user.as_str(), Arc::new(key_pair))
+            match handle
+                .authenticate_publickey(user.as_str(), key_pair)
                 .await
-                .map_err(|e| format!("auth exchange failed: {e}"))?;
-            if !authenticated {
-                return Err(format!("public key rejected for {user}@{host}"));
+                .map_err(|e| format!("auth exchange failed: {e}"))?
+            {
+                russh::client::AuthResult::Success => {}
+                russh::client::AuthResult::Failure { .. } => {
+                    return Err(format!("public key rejected for {user}@{host}"));
+                }
             }
 
-            let mut channel = handle
+            let channel = handle
                 .channel_open_session()
                 .await
                 .map_err(|e| format!("channel open failed: {e}"))?;
