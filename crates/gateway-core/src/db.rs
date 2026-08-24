@@ -32,6 +32,7 @@ use crate::session::{OutputBatch, OutputChunk, SessionBackend, SessionChannel};
 fn build_config(
     target_uri: &str,
     operation: &Value,
+    secret: &SecretString,
 ) -> Result<(tokio_postgres::Config, String), String> {
     let ep = parse_pg_uri(target_uri)?;
     let engine = operation
@@ -44,18 +45,28 @@ fn build_config(
 
     let mut config = tokio_postgres::Config::new();
     config.host(&ep.host).port(ep.port);
-    if let Some(db) = ep.database.strip_prefix('/') {
-        config.dbname(db);
-        if let Some(op_db) = operation.get("database").and_then(Value::as_str)
-            && op_db != db
-        {
-            return Err(format!(
-                "operation.database {op_db:?} contradicts target URI database {db:?}"
-            ));
+
+    // URI path wins when present; operation.database must agree with it.
+    match (
+        ep.database.as_str(),
+        operation.get("database").and_then(Value::as_str),
+    ) {
+        (uri_db, None) if !uri_db.is_empty() => {
+            config.dbname(uri_db);
         }
-    }
-    if let Some(op_db) = operation.get("database").and_then(Value::as_str) {
-        config.dbname(op_db);
+        (uri_db, Some(op_db)) if !uri_db.is_empty() => {
+            if uri_db != op_db {
+                return Err(format!(
+                    "operation.database {op_db:?} contradicts target URI database {uri_db:?}"
+                ));
+            }
+            config.dbname(uri_db);
+        }
+        ("", Some(op_db)) => {
+            config.dbname(op_db);
+        }
+        ("", None) => return Err("no database: put one in target.uri or operation".to_owned()),
+        _ => unreachable!("covered above"),
     }
 
     let user = operation
@@ -66,21 +77,35 @@ fn build_config(
         .or_else(|| (!ep.user.is_empty()).then_some(ep.user.clone()))
         .ok_or("no user: put one in target.uri userinfo or operation.username")?;
     config.user(&user);
+    // The vault secret IS the database password; tokio-postgres feeds it
+    // through the SCRAM-SHA-256 exchange - never verbatim on the wire.
+    config.password(secret.expose());
 
     Ok((config, user))
 }
 
+/// Full error-chain text for tokio-postgres failures: Display alone hides
+/// the Postgres-side message (e.g. "password authentication failed") inside
+/// `source()`, which operators need to triage.
+fn chain(e: &tokio_postgres::Error) -> String {
+    let mut out = e.to_string();
+    let mut src = std::error::Error::source(e);
+    while let Some(s) = src {
+        out.push_str(": ");
+        out.push_str(&s.to_string());
+        src = s.source();
+    }
+    out
+}
+
 /// One-shot execution: connect -> SCRAM auth -> execute -> serialize.
+#[allow(clippy::too_many_lines)]
 pub async fn execute_one_shot(
     target_uri: &str,
     operation: &Value,
-    _secret: &SecretString,
+    secret: &SecretString,
 ) -> Result<Value, String> {
-    // `_secret` is intentionally unnamed: the SCRAM handshake consumes it
-    // inside `config.connect` via tokio-postgres; this function never reads
-    // the plaintext itself. The parameter stays in the signature so the
-    // call site documents "a credential was resolved and spent here".
-    let (config, _user) = build_config(target_uri, operation)?;
+    let (config, _user) = build_config(target_uri, operation, secret)?;
     let statement = operation
         .get("statement")
         .and_then(Value::as_str)
@@ -101,7 +126,7 @@ pub async fn execute_one_shot(
     let (client, connection) = config
         .connect(NoTls)
         .await
-        .map_err(|e| format!("connect failed (auth or network): {e}"))?;
+        .map_err(|e| format!("connect failed (auth or network): {}", chain(&e)))?;
     let conn_handle = tokio::spawn(async move {
         if let Err(e) = connection.await {
             eprintln!("chaperone db connection ended: {e}");
@@ -223,11 +248,11 @@ impl SessionBackend for DbBackend {
                         .to_owned(),
                 );
             }
-            let (config, _user) = build_config(target_uri, operation)?;
+            let (config, _user) = build_config(target_uri, operation, secret)?;
             let (client, connection) = config
                 .connect(NoTls)
                 .await
-                .map_err(|e| format!("connect failed (auth or network): {e}"))?;
+                .map_err(|e| format!("connect failed (auth or network): {}", chain(&e)))?;
             spawn_connection_task(connection);
             Ok(Box::new(DbChannel::new(client)) as Box<dyn SessionChannel>)
         })

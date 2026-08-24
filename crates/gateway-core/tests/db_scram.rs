@@ -26,7 +26,6 @@ use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
 const AGENT: &str = "agent:db-1";
-const DB_PASSWORD: &str = "simulated-db-password-NOT-A-REAL-CREDENTIAL";
 
 fn pg_uri() -> Option<String> {
     std::env::var("CHAPERONE_TEST_PG")
@@ -46,6 +45,15 @@ fn target_uri() -> String {
         return format!("postgres://{user}@{rest}");
     }
     raw
+}
+
+fn db_password() -> String {
+    let raw = pg_uri().unwrap();
+    raw.strip_prefix("postgres://")
+        .and_then(|r| r.split('@').next())
+        .and_then(|u| u.split_once(':'))
+        .map(|(_, pw)| pw.to_owned())
+        .unwrap_or_default()
 }
 
 fn db_user() -> String {
@@ -95,10 +103,7 @@ async fn build() -> Spine {
     )
     .unwrap();
     store
-        .set(
-            "prod/db/password",
-            SecretString::new(DB_PASSWORD.to_owned()),
-        )
+        .set("prod/db/password", SecretString::new(db_password()))
         .unwrap();
     let mut router = VaultRouter::new();
     router.register("local", Arc::new(store));
@@ -188,7 +193,7 @@ async fn one_shot_query_returns_rows_via_scram() {
 
     let journal = std::fs::read_to_string(&spine.audit_path).unwrap();
     assert!(
-        !journal.contains(DB_PASSWORD),
+        !journal.contains(&db_password()),
         "SCRAM secret never reaches journal"
     );
 }
@@ -232,8 +237,19 @@ async fn session_drive_by_sql_frames() {
     let cmd = spine.signed_frame("session.command", &handle, "c1", "select 'live' as status;");
     let resp = spine.gateway.handle_message(&cmd).await;
     assert_eq!(resp["type"], "session.output", "{resp}");
-    let rendered = resp.to_string();
-    assert!(rendered.contains("live"), "{rendered}");
+    // Output chunks arrive base64url-encoded (D24 batching); decode and
+    // inspect as data.
+    use base64::Engine as _;
+    let decoded = resp["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|o| o["data_b64"].as_str())
+        .map(|b| base64::engine::general_purpose::STANDARD.decode(b).unwrap())
+        .fold(String::new(), |acc, b| {
+            acc + &String::from_utf8(b).unwrap_or_default()
+        });
+    assert!(decoded.contains("live"), "decoded={decoded:?} resp={resp}");
 
     let close = spine.signed_frame("session.close", &handle, "x1", "");
     let resp = spine.gateway.handle_message(&close).await;
