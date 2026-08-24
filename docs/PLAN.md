@@ -240,8 +240,13 @@ external bureaucracy. Status:
 - [x] **HashiCorp Vault provider** (`vault://`) — SHIPPED in M12 (see above).
 - [ ] Enterprise cloud backends (AWS Secrets Manager / GCP / Azure) behind
       the same provider trait, with least-privilege mint() implementations.
-- [ ] Host-key pin store (TOFU journal + known_hosts import) replacing D23's
-      refuse-default/opt-out split.
+- [x] **Host-key pin store** shipped: PinStore (TOFU journal + changed-key
+      refusal + openssh import w/ pattern reporting) wired into serve via
+      --ssh-known-hosts [--ssh-tofu]; supersedes D23 stopgap (D31).
+- [x] **Operator console socket** shipped: ConsoleHub + `chaperone console`
+      client supersede TTY prompting (D32); fail-closed with no operator.
+- [x] **cargo-fuzz targets** shipped as standalone workspace artifacts
+      (D33): frame codec, envelope verification, policy parse+eval.
 - [ ] True streaming session.output transport extension (beyond D24 batching).
 - [ ] cargo-fuzz targets layered over the deterministic harness.
 - [ ] Enclave runtime (TPM/SGX) per THREAT-MODEL §5 - the explicit honesty line.

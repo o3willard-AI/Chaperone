@@ -25,11 +25,11 @@ impl PipedChannel {
 }
 
 impl OperatorIo for PipedChannel {
-    fn write_prompt(&mut self, block: &str) -> std::io::Result<()> {
+    fn write_prompt(&self, block: &str) -> std::io::Result<()> {
         self.prompt.lock().unwrap().push_str(block);
         Ok(())
     }
-    fn read_answer(&mut self) -> std::io::Result<Option<String>> {
+    fn read_answer(&self) -> std::io::Result<Option<String>> {
         Ok(self.answers.lock().unwrap().pop_front())
     }
 }
@@ -104,10 +104,10 @@ async fn silence_times_out() {
     // A channel that never answers.
     struct Silent;
     impl OperatorIo for Silent {
-        fn write_prompt(&mut self, _: &str) -> std::io::Result<()> {
+        fn write_prompt(&self, _: &str) -> std::io::Result<()> {
             Ok(())
         }
-        fn read_answer(&mut self) -> std::io::Result<Option<String>> {
+        fn read_answer(&self) -> std::io::Result<Option<String>> {
             std::thread::sleep(Duration::from_secs(2)); // far beyond the 150ms timeout
             Ok(Some("y".to_owned()))
         }

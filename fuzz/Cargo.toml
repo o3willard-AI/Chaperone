@@ -1,0 +1,45 @@
+[package]
+name = "chaperone-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+chaperone-gateway-core = { path = "../crates/gateway-core" }
+chaperone-identity = { path = "../crates/identity" }
+rand_core = { version = "0.6", features = ["getrandom"] }
+serde_json = "1"
+tempfile = "3"
+chaperone-policy = { path = "../crates/policy" }
+chaperone-protocol = { path = "../crates/protocol" }
+chaperone-transport = { path = "../crates/transport" }
+libfuzzer-sys = "0.4"
+tokio = { version = "1", features = ["rt", "macros"] }
+
+[[bin]]
+name = "frame_parser"
+path = "fuzz_targets/frame_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "envelope_verify"
+path = "fuzz_targets/envelope_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "policy_parse_eval"
+path = "fuzz_targets/policy_parse_eval.rs"
+test = false
+doc = false
+bench = false
+
+# Standalone workspace: fuzz targets build with their own lockfile and the
+# nightly toolchain cargo-fuzz drives; they must not join the root workspace.
+[workspace]

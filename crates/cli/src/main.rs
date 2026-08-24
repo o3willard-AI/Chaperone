@@ -32,7 +32,9 @@ GATEWAY DAEMON:
     chaperone serve --socket <PATH> --enrollment <FILE> --policy <TOML>
                     --store <VAULT> --audit-journal <FILE> --audit-key <SEED>
                     [--tcp-port N] [--max-response-bytes N] [--timeout-secs N]
-                    [--confirm-timeout-secs N] [--trust-host-keys]
+                    [--confirm-timeout-secs N|--confirm never-approve]
+                    [--console-socket PATH] [--trust-host-keys]
+                    [--ssh-known-hosts PATH] [--ssh-tofu]
 
 LOCAL VAULT (operator CRUD):
     chaperone vault-init  --store <FILE> [--sealer passphrase] [--passphrase-stdin]
@@ -253,6 +255,44 @@ fn cmd_release_verify(flags: &Flags) -> Result<(), String> {
     } else {
         Err(format!("signature does NOT match {file}"))
     }
+}
+
+fn cmd_console(flags: &Flags) -> Result<(), String> {
+    use std::io::{BufRead as _, Read as _, Write as _};
+
+    let path = flags.require("socket")?;
+    let mut sock = std::os::unix::net::UnixStream::connect(std::path::Path::new(&path))
+        .map_err(|e| format!("cannot reach console at {path}: {e}"))?;
+    let mut server_out = sock.try_clone().map_err(|e| e.to_string())?;
+
+    // Socket -> stdout on a thread; stdin lines -> socket on this one.
+    let reader_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut byte = [0u8; 1];
+        loop {
+            match server_out.read(&mut byte) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    buf.push(byte[0]);
+                    if byte[0] == b'\n' {
+                        print!("{}", String::from_utf8_lossy(&buf));
+                        let _ = std::io::stdout().flush();
+                        buf.clear();
+                    }
+                }
+            }
+        }
+    });
+
+    for line in std::io::stdin().lock().lines() {
+        let line = line.map_err(|e| format!("stdin: {e}"))?;
+        sock.write_all(line.as_bytes())
+            .and_then(|_| sock.write_all(b"\n"))
+            .map_err(|e| format!("console write: {e}"))?;
+    }
+    drop(sock);
+    let _ = reader_thread.join();
+    Ok(())
 }
 
 fn cmd_audit_keygen(flags: &Flags) -> Result<(), String> {
@@ -502,17 +542,35 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
         flags.values.get("confirm-timeout-secs").map(String::as_str),
         Some("never-approve")
     );
+    let console_hub = flags.values.get("console-socket").map(|path| {
+        use chaperone_gateway_core::ConsoleHub;
+        let listener =
+            chaperone_gateway_core::console::UnixListener2::bind(std::path::Path::new(path))
+                .map_err(|e| e.to_string())?;
+        let hub = ConsoleHub::new(path.into());
+        ConsoleHub::spawn_acceptor(listener, Arc::clone(&hub));
+        println!(
+            "operator console listening on {path} (connect with: chaperone console --socket {path})"
+        );
+        Ok::<_, String>(hub)
+    });
     let gate: Arc<dyn chaperone_gateway_core::ConfirmationGate> = if never_approve {
         Arc::new(chaperone_gateway_core::AlwaysTimeoutGate)
+    } else if let Some(hub) = console_hub.transpose()? {
+        Arc::new(chaperone_gateway_core::OperatorGate::new(
+            Box::new(hub),
+            confirm_timeout,
+        ))
     } else {
         struct StdioOperator;
         impl chaperone_gateway_core::OperatorIo for StdioOperator {
-            fn write_prompt(&mut self, block: &str) -> std::io::Result<()> {
+            fn write_prompt(&self, block: &str) -> std::io::Result<()> {
                 use std::io::Write as _;
-                std::io::stdout().write_all(block.as_bytes())?;
-                std::io::stdout().flush()
+                let mut out = std::io::stdout().lock();
+                out.write_all(block.as_bytes())?;
+                out.flush()
             }
-            fn read_answer(&mut self) -> std::io::Result<Option<String>> {
+            fn read_answer(&self) -> std::io::Result<Option<String>> {
                 let mut line = String::new();
                 match std::io::stdin().read_line(&mut line) {
                     Ok(0) => Ok(None),
@@ -539,7 +597,15 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
 
     // SSH sessions. Host-key policy is refuse-unknown unless explicitly
     // overridden for this deployment (D23 - documented-weaker).
-    let host_key_policy = if flags.has("trust-host-keys") {
+    let host_key_policy = if let Some(kh_path) = flags.values.get("ssh-known-hosts").cloned() {
+        let store = chaperone_gateway_core::PinStore::load(std::path::Path::new(&kh_path))
+            .map_err(|e| e.to_string())?;
+        let tofu = flags.has("ssh-tofu");
+        chaperone_gateway_core::HostKeyPolicy::PinStore {
+            store: Arc::new(store),
+            tofu,
+        }
+    } else if flags.has("trust-host-keys") {
         chaperone_gateway_core::HostKeyPolicy::TrustOnFirstUseAll
     } else {
         chaperone_gateway_core::HostKeyPolicy::RefuseUnknown
@@ -624,6 +690,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "audit-keygen" => cmd_audit_keygen(&flags),
         "release-sign" => cmd_release_sign(&flags),
         "release-verify" => cmd_release_verify(&flags),
+        "console" => cmd_console(&flags),
         "audit-verify" => cmd_audit_verify(&flags),
         "audit-export" => cmd_audit_export(&flags),
         "vault-init" => cmd_vault_init(&flags),

@@ -3,3 +3,4 @@
 Cargo.lock.bak
 *.swp
 .DS_Store
+fuzz/target

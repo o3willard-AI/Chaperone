@@ -432,3 +432,39 @@ The deferrals called out during M7-M11 are tracked in PLAN.md's new
 implementation (SHIPPED this phase), enterprise providers (Vault SHIPPED),
 host-key pin store, streaming transport extension, cargo-fuzz targets,
 enclave runtime, plugin ABI + browser-session, operator console socket.
+
+## D31 - SSH host-key pin store (supersedes D23's stopgap)
+
+`PinStore` persists pins as JSON (`version`, `pins[]`: hostport,
+openssh two-field key line, first_seen, source) via temp+rename at owner
+perms. Semantics:
+
+- Pinned match -> accept. **Changed key on a pinned host -> refuse** - that
+  is the MITM signal the store exists to catch.
+- Unknown host + TOFU enabled -> record then accept; persistence failure
+  surfaces as a REFUSAL, never silent trust.
+- Unknown host + TOFU off -> refuse (strict default preserved).
+- OpenSSH known_hosts import accepts only plain host / host:port entries;
+  wildcards, exclusions, comma lists and hashed entries are skipped AND
+  reported (wildcards would widen exactly the authority being pinned).
+  Pin replacement is an explicit operator verb with a reason string.
+
+## D32 - Operator console socket (supersedes TTY prompting)
+
+A second local socket carries the single confirmation surface: plain UTF-8
+lines, prompt out, one-line answer in. Nothing secret-shaped crosses it -
+only the human decision - so it uses line protocol rather than agent
+framing. Fail-closed posture: NO connected operator => confirmations
+refuse immediately (never hang, never approve); a mid-prompt disconnect is
+a refusal; the latest connection wins (one console, last writer takes
+over). Daemon binds it owner-only (0600) with live-peer detection mirroring
+the agent socket.
+
+## D33 - Fuzz targets are always-buildable artifacts
+
+fuzz/ ships three libfuzzer targets (frame codec, envelope verification,
+policy parse+eval) as a standalone workspace so nightly/libfuzzer tooling
+never contaminates the root build. Each target documents its invariant
+(Ok-or-typed-Err, never panic; policy evaluation additionally asserted
+PURE inside the loop). They complement - not replace - the deterministic
+20k-mutation harness that gates every CI run.

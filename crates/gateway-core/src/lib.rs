@@ -32,15 +32,19 @@ use chaperone_protocol::ops::HttpOperation;
 use chaperone_vault::VaultRouter;
 use serde_json::{Value, json};
 
+pub mod console;
 #[cfg(feature = "postgres")]
 pub mod db;
+pub mod known_hosts;
 pub mod privilege;
 pub mod session;
 #[cfg(feature = "ssh")]
 pub mod ssh;
 
+pub use console::ConsoleHub;
 #[cfg(feature = "postgres")]
 pub use db::DbBackend;
+pub use known_hosts::{PinStore, PinStoreError};
 pub use privilege::{LocalPrivBackend, PrivilegeAllowlist};
 pub use session::{OutputBatch, OutputChunk, SessionBackend, SessionChannel, SessionTable};
 #[cfg(feature = "ssh")]
@@ -138,17 +142,18 @@ pub struct OperatorGate {
 /// The operator side of the single gate: where prompts render and answers
 /// come from. Production wires the daemon's TTY; tests pipe buffers.
 pub trait OperatorIo: Send {
-    /// Writes the rendered prompt block.
-    fn write_prompt(&mut self, block: &str) -> std::io::Result<()>;
-    /// Reads one answer line; Ok(None) = EOF.
-    fn read_answer(&mut self) -> std::io::Result<Option<String>>;
+    /// Writes the rendered prompt block. Takes `&self`: implementations
+    /// own their synchronization (locks, channels).
+    fn write_prompt(&self, block: &str) -> std::io::Result<()>;
+    /// Reads one answer line; Ok(None) = EOF/disconnect.
+    fn read_answer(&self) -> std::io::Result<Option<String>>;
 }
 
 impl OperatorIo for Box<dyn OperatorIo> {
-    fn write_prompt(&mut self, block: &str) -> std::io::Result<()> {
+    fn write_prompt(&self, block: &str) -> std::io::Result<()> {
         (**self).write_prompt(block)
     }
-    fn read_answer(&mut self) -> std::io::Result<Option<String>> {
+    fn read_answer(&self) -> std::io::Result<Option<String>> {
         (**self).read_answer()
     }
 }
@@ -191,7 +196,7 @@ impl ConfirmationGate for OperatorGate {
             let io = Arc::clone(&self.io);
             // Blocking I/O off the async workers.
             let join = tokio::task::spawn_blocking(move || {
-                let mut guard = match io.lock() {
+                let guard = match io.lock() {
                     Ok(g) => g,
                     Err(poisoned) => poisoned.into_inner(),
                 };

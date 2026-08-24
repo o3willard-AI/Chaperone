@@ -10,6 +10,7 @@ publish = false
 
 [dependencies]
 base64.workspace = true
+tempfile.workspace = true
 time.workspace = true
 toml.workspace = true
 chaperone-audit = { path = "../audit" }
@@ -35,7 +36,6 @@ postgres = ["dep:tokio-postgres"]
 
 [dev-dependencies]
 ed25519-dalek.workspace = true
-tempfile.workspace = true
 zeroize.workspace = true
 chaperone-protocol = { path = "../protocol", features = ["test-util"] }
 
