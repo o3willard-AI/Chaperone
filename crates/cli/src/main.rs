@@ -14,8 +14,10 @@ use std::process::ExitCode;
 use chaperone_audit::AuditKey;
 use chaperone_identity::{EnrollmentError, EnrollmentStore};
 use chaperone_policy::Policy;
+use chaperone_vault::SecretString;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+use zeroize::Zeroizing;
 
 const USAGE: &str = "\
 chaperone - Chaperone operator CLI
@@ -24,6 +26,13 @@ USAGE:
     chaperone enroll --store <PATH> --agent-id <ID> --public-key <B64URL> [--force]
     chaperone revoke --store <PATH> --agent-id <ID>
     chaperone list-agents --store <PATH>
+
+LOCAL VAULT (operator CRUD):
+    chaperone vault-init  --store <FILE> [--sealer passphrase] [--passphrase-stdin]
+    chaperone vault-set   --store <FILE> --path <P> [--passphrase-stdin]   (secret on stdin)
+    chaperone vault-get   --store <FILE> --path <P> [--passphrase-stdin] [--show]
+    chaperone vault-list  --store <FILE> [--passphrase-stdin]
+    chaperone vault-del   --store <FILE> --path <P> [--passphrase-stdin]
 
 AUDIT CHAIN:
     chaperone audit-keygen --out <SEEDFILE>
@@ -269,6 +278,114 @@ fn cmd_audit_export(flags: &Flags) -> Result<(), String> {
     Ok(())
 }
 
+// ---------- local vault ----------
+
+/// Passphrase from stdin (first line, piped scripts) or a hidden prompt.
+fn read_passphrase(flags: &Flags, confirm: bool) -> Result<Zeroizing<String>, String> {
+    if flags.has("passphrase-stdin") {
+        use std::io::BufRead;
+        let mut line = String::new();
+        std::io::stdin()
+            .lock()
+            .read_line(&mut line)
+            .map_err(|e| format!("read passphrase: {e}"))?;
+        while line.ends_with(['\n', '\r']) {
+            line.pop();
+        }
+        return Ok(Zeroizing::new(line));
+    }
+    let first = rpassword::prompt_password("Vault passphrase: ").map_err(|e| e.to_string())?;
+    if confirm {
+        let second =
+            rpassword::prompt_password("Confirm passphrase: ").map_err(|e| e.to_string())?;
+        if first != second {
+            std::mem::forget(second);
+            return Err("passphrases do not match".to_owned());
+        }
+    }
+    Ok(Zeroizing::new(first))
+}
+
+fn open_vault(flags: &Flags) -> Result<chaperone_vault::LocalVault, String> {
+    let store = flags.require("store")?;
+    let pass = read_passphrase(flags, false)?;
+    chaperone_vault::LocalVault::open(std::path::Path::new(&store), pass).map_err(|e| e.to_string())
+}
+
+fn cmd_vault_init(flags: &Flags) -> Result<(), String> {
+    let store = flags.require("store")?;
+    let sealer = flags
+        .values
+        .get("sealer")
+        .cloned()
+        .unwrap_or_else(|| "passphrase".to_owned());
+    match sealer.as_str() {
+        "passphrase" => {}
+        other => {
+            return Err(format!(
+                "unknown --sealer {other:?}; this build supports 'passphrase'"
+            ));
+        }
+    }
+    let pass = read_passphrase(flags, true)?;
+    chaperone_vault::LocalVault::create(std::path::Path::new(&store), pass)
+        .map_err(|e| e.to_string())?;
+    println!("created vault at {store} (sealed with: {sealer})");
+    Ok(())
+}
+
+fn cmd_vault_set(flags: &Flags) -> Result<(), String> {
+    let entry = flags.require("path")?;
+    let mut vault = open_vault(flags)?;
+    let mut value = String::new();
+    use std::io::Read as _;
+    std::io::stdin()
+        .read_to_string(&mut value)
+        .map_err(|e| format!("read secret from stdin: {e}"))?;
+    while value.ends_with(['\n', '\r']) {
+        value.pop();
+    }
+    vault
+        .set(&entry, SecretString::new(value))
+        .map_err(|e| e.to_string())?;
+    println!("stored {entry}");
+    Ok(())
+}
+
+fn cmd_vault_get(flags: &Flags) -> Result<(), String> {
+    let entry = flags.require("path")?;
+    let vault = open_vault(flags)?;
+    match vault.get(&entry).map_err(|e| e.to_string())? {
+        Some(secret) => {
+            if flags.has("show") {
+                println!("{}", secret.expose());
+            } else {
+                println!("[redacted] {} bytes present", secret.len());
+            }
+            Ok(())
+        }
+        None => Err(format!("{entry} does not exist")),
+    }
+}
+
+fn cmd_vault_list(flags: &Flags) -> Result<(), String> {
+    let vault = open_vault(flags)?;
+    for path in vault.list().map_err(|e| e.to_string())? {
+        println!("{path}");
+    }
+    Ok(())
+}
+
+fn cmd_vault_del(flags: &Flags) -> Result<(), String> {
+    let entry = flags.require("path")?;
+    let mut vault = open_vault(flags)?;
+    match vault.delete(&entry).map_err(|e| e.to_string())? {
+        true => println!("removed {entry}"),
+        false => println!("{entry} was not present"),
+    }
+    Ok(())
+}
+
 fn run(args: Vec<String>) -> Result<(), String> {
     let Some(command) = args.first() else {
         print!("{USAGE}");
@@ -283,6 +400,11 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "audit-keygen" => cmd_audit_keygen(&flags),
         "audit-verify" => cmd_audit_verify(&flags),
         "audit-export" => cmd_audit_export(&flags),
+        "vault-init" => cmd_vault_init(&flags),
+        "vault-set" => cmd_vault_set(&flags),
+        "vault-get" => cmd_vault_get(&flags),
+        "vault-list" => cmd_vault_list(&flags),
+        "vault-del" => cmd_vault_del(&flags),
         "--help" | "-h" | "help" => {
             print!("{USAGE}");
             Ok(())

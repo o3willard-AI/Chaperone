@@ -9,6 +9,22 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+aes-gcm.workspace = true
+argon2.workspace = true
+base64.workspace = true
+rand_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+zeroize.workspace = true
+keyring = { workspace = true, optional = true }
+
+[features]
+# Platform credential-store sealing (D5 first preference). Off by default:
+# it needs a live OS service at RUNTIME (secret-service / Keychain /
+# Credential Manager), which stripped-down hosts may lack. The passphrase
+# sealer is the documented-weaker fallback that works everywhere.
+keyring = ["dep:keyring"]
 
 [lints]
 workspace = true

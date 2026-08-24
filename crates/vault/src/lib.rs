@@ -15,12 +15,16 @@
 //! Layer contract (ARCH-SPEC §1.1): injectors depend on its handle type;
 //! the policy engine never touches it.
 //!
-//! Implementation lands in PLAN Phase 5 ([PLAN](../../docs/PLAN.md) M5).
+//! Implemented in PLAN Phase 5 ([PLAN](../../docs/PLAN.md) M5).
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn harness() {
-        // Replaced by zeroize/re-fetch acceptance tests in Phase 5.
-    }
-}
+mod local;
+pub mod provider;
+pub mod sealer;
+mod secret;
+
+pub use local::{LocalVault, VaultError};
+pub use provider::{Provider, ResolveError, VaultRouter};
+#[cfg(feature = "keyring")]
+pub use sealer::KeyringSealer;
+pub use sealer::{KdfParams, PassphraseSealer, Sealer, SealerError};
+pub use secret::SecretString;

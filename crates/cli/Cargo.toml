@@ -13,6 +13,9 @@ name = "chaperone"
 path = "src/main.rs"
 
 [dependencies]
+chaperone-vault = { path = "../vault" }
+rpassword.workspace = true
+zeroize.workspace = true
 chaperone-audit = { path = "../audit" }
 chaperone-identity = { path = "../identity" }
 chaperone-policy = { path = "../policy" }
