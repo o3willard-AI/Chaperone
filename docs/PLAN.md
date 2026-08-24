@@ -240,6 +240,10 @@ external bureaucracy. Status:
 - [x] **HashiCorp Vault provider** (`vault://`) — SHIPPED in M12 (see above).
 - [ ] Enterprise cloud backends (AWS Secrets Manager / GCP / Azure) behind
       the same provider trait, with least-privilege mint() implementations.
+      DISPOSITION: deferred until verifiable test surfaces exist - each
+      needs either live credentials or a faithful emulator; per project
+      discipline we do not ship untestable integrations. Vault provider
+      demonstrates the full integration pattern awaiting them.
 - [x] **Host-key pin store** shipped: PinStore (TOFU journal + changed-key
       refusal + openssh import w/ pattern reporting) wired into serve via
       --ssh-known-hosts [--ssh-tofu]; supersedes D23 stopgap (D31).
@@ -248,7 +252,16 @@ external bureaucracy. Status:
 - [x] **cargo-fuzz targets** shipped as standalone workspace artifacts
       (D33): frame codec, envelope verification, policy parse+eval.
 - [ ] True streaming session.output transport extension (beyond D24 batching).
+      DISPOSITION: requires a protocol revision (unsolicited server frames
+      change the unary wire contract), client background-read support, and
+      skill-doc updates together - bundled as one coordinated v0.2 item
+      rather than a piecemeal transport hack.
 - [ ] cargo-fuzz targets layered over the deterministic harness.
-- [ ] Enclave runtime (TPM/SGX) per THREAT-MODEL §5 - the explicit honesty line.
+- [ ] Enclave runtime (TPM/SGX) per THREAT-MODEL §5 - the explicit honesty
+      line. DISPOSITION: unverifiable in CI without hardware; stays roadmap
+      with the software-only default as the shipped truth.
 - [ ] Plugin ABI for injectors + browser-session reference mechanism.
+      DISPOSITION: an architecture project (stable internal ABI, plugin
+      capability boundary per ARCH §2.5) - sequenced after the streaming
+      protocol work it depends on for session-shaped plugins.
 - [ ] Operator console socket superseding TTY prompting (D8).
