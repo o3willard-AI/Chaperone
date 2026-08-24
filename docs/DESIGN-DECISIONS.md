@@ -269,3 +269,47 @@ Record schema is pinned by test (top-level key allow-list); adding a field
 must consciously pass review - that list is the entire surface through which
 content can enter the journal. The API accepts no credential material at all:
 references only (ARCH-SPEC §2.8).
+
+## D19 — Vault sealing posture & local-store format
+
+Concrete shape of D5 as shipped in Phase 5:
+
+- **Sealer trait** abstracts DEK protection; two implementations:
+  - `PassphraseSealer` (default): argon2id (64 MiB / t=3 / p=1, params
+    persisted per-store) derives a KEK from the operator passphrase; the
+    random DEK is AES-256-GCM-wrapped. Chosen as v0 default because it works
+    on headless servers with no OS credential service - a real deployment
+    surface for this project. Documented-weaker: the KEK exists in process
+    memory while the store is open.
+  - `KeyringSealer` (feature `keyring`, off by default): DEK lives in the
+    platform credential store via the maintained `keyring` crate with
+    NATIVE backends only - kernel keyring (Linux, matching ARCH §4.2's
+    "kernel keyring" row), Keychain (macOS), Credential Manager (Windows).
+    Off by default because those services must exist at RUNTIME.
+- **Store format**: `CHAPVAULT1` magic + JSON header (version, sealer name,
+  KDF params, sealed DEK, body nonce) + AES-256-GCM body of `{path: value}`.
+  Fresh nonce on every write; atomic temp+rename persistence at 0600;
+  open() authenticates BOTH the sealed-DEK tag and the body tag before any
+  handle exists.
+- **In-memory posture** (the ephemerality contract made structural):
+  the handle keeps only header material, ciphertext, and the zeroized DEK;
+  entry plaintext exists solely inside `get()`/`set()` call frames and only
+  ever inside a `SecretString`.
+- **SecretString discipline**: non-Clone (no accidental copies),
+  Debug/Display print "[secret redacted]" (pinned by test), no Serialize
+  impl (nothing can serialize it by mistake), explicit `.expose()` naming
+  every plaintext read, explicit `.wipe()` for early scrubbing on failure
+  paths.
+- **No caching at ANY layer**: router -> provider -> store each fetch fresh;
+  a counting-provider test proves 25 resolves = 25 backend hits and that a
+  restart starts from zero cache. This is what makes "a retry is a fresh
+  fetch" true by construction rather than by review.
+- **Minting**: `Provider::mint` is the short-lived/narrowest-credential hook
+  (ARCH §2.4); static local:// reports unsupported instead of pretending to
+  scope. Dynamic minting arrives with enterprise providers post-v1.
+- **Operator CLI**: vault-init/set/get/list/del; passphrase via hidden
+  prompt or piped stdin (`--passphrase-stdin`: FIRST line = passphrase,
+  remaining stdin = secret value for set). `vault-get` prints a redacted
+  presence confirmation unless `--show` is passed explicitly - the console
+  is trusted context, but scrolling secrets into terminals unasked is how
+  they end up in screen-shares and scrollback.
