@@ -12,7 +12,13 @@ publish = false
 name = "chaperone"
 path = "src/main.rs"
 
+[dev-dependencies]
+serde_json.workspace = true
+
 [dependencies]
+chaperone-gateway-core = { path = "../gateway-core" }
+chaperone-transport = { path = "../transport" }
+tokio.workspace = true
 chaperone-vault = { path = "../vault" }
 rpassword.workspace = true
 zeroize.workspace = true

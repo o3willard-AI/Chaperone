@@ -124,6 +124,14 @@ impl EnrollmentStore {
     /// break attribution, and attribution failures must be loud.
     pub fn load(path: &Path) -> Result<Self, EnrollmentError> {
         match std::fs::read(path) {
+            // A zero-length file is a fresh store, not corruption - same
+            // convention as the audit journal and vault.
+            Ok(bytes) if bytes.iter().all(|&b| b.is_ascii_whitespace()) => Ok(Self {
+                path: Some(path.to_path_buf()),
+                inner: RwLock::new(Inner {
+                    agents: HashMap::new(),
+                }),
+            }),
             Ok(bytes) => {
                 let file: StoreFile = serde_json::from_slice(&bytes)
                     .map_err(|e| EnrollmentError::Corrupt(e.to_string()))?;

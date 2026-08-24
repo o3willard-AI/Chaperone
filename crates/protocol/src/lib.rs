@@ -10,6 +10,9 @@
 //! nothing (ARCH-SPEC §1.1).
 
 pub mod envelope;
+pub mod ops;
+#[cfg(feature = "test-util")]
+pub mod testutil;
 
 pub use envelope::{
     CanonicalError, Constraints, Envelope, EnvelopeKind, Target, canonical_form,

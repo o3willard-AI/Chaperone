@@ -9,6 +9,12 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+base64.workspace = true
+chaperone-protocol = { path = "../protocol" }
+chaperone-vault = { path = "../vault" }
+reqwest.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

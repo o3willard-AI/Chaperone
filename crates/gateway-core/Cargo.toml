@@ -9,6 +9,23 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+base64.workspace = true
+time.workspace = true
+chaperone-audit = { path = "../audit" }
+chaperone-identity = { path = "../identity" }
+chaperone-injectors = { path = "../injectors" }
+chaperone-policy = { path = "../policy" }
+chaperone-protocol = { path = "../protocol" }
+chaperone-vault = { path = "../vault" }
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+tempfile.workspace = true
+time.workspace = true
+zeroize.workspace = true
+chaperone-protocol = { path = "../protocol", features = ["test-util"] }
 
 [lints]
 workspace = true

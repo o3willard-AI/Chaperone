@@ -27,6 +27,11 @@ USAGE:
     chaperone revoke --store <PATH> --agent-id <ID>
     chaperone list-agents --store <PATH>
 
+GATEWAY DAEMON:
+    chaperone serve --socket <PATH> --enrollment <FILE> --policy <TOML>
+                    --store <VAULT> --audit-journal <FILE> --audit-key <SEED>
+                    [--tcp-port N] [--max-response-bytes N] [--timeout-secs N]
+
 LOCAL VAULT (operator CRUD):
     chaperone vault-init  --store <FILE> [--sealer passphrase] [--passphrase-stdin]
     chaperone vault-set   --store <FILE> --path <P> [--passphrase-stdin]   (secret on stdin)
@@ -386,6 +391,137 @@ fn cmd_vault_del(flags: &Flags) -> Result<(), String> {
     Ok(())
 }
 
+fn cmd_serve(flags: &Flags) -> Result<(), String> {
+    use std::sync::Arc;
+
+    let enrollment_path = flags.require("enrollment")?;
+    let policy_path = flags.require("policy")?;
+    let store_path = flags.require("store")?;
+    let journal_path = flags.require("audit-journal")?;
+    let key_path = flags.require("audit-key")?;
+
+    let now = chaperone_gateway_core::chaperone_time_now();
+
+    let enrollment = Arc::new(
+        chaperone_identity::EnrollmentStore::load(std::path::Path::new(&enrollment_path))
+            .map_err(|e| e.to_string())?,
+    );
+    let replay = Arc::new(
+        chaperone_identity::ReplayCache::open(
+            &std::path::Path::new(&journal_path).with_file_name("replay.jsonl"),
+            now.unix_timestamp(),
+        )
+        .map_err(|e| e.to_string())?,
+    );
+    let attestor = chaperone_identity::Attestor::new(
+        Arc::clone(&enrollment),
+        replay,
+        chaperone_identity::IdentityConfig { max_skew_secs: 30 },
+    );
+
+    let doc = std::fs::read_to_string(&policy_path)
+        .map_err(|e| format!("cannot read {policy_path}: {e}"))?;
+    let policy = chaperone_policy::Policy::from_toml(&doc).map_err(|e| e.to_string())?;
+
+    // Vault passphrase: prompted (or piped first stdin line) at startup.
+    let pass = read_passphrase(flags, false)?;
+    let router = {
+        let vault = chaperone_vault::LocalVault::open(std::path::Path::new(&store_path), pass)
+            .map_err(|e| e.to_string())?;
+        let mut r = chaperone_vault::VaultRouter::new();
+        r.register("local", Arc::new(vault));
+        r
+    };
+
+    let seed_text =
+        std::fs::read_to_string(&key_path).map_err(|e| format!("cannot read {key_path}: {e}"))?;
+    let audit_key = load_audit_seed_text(&seed_text)?;
+    let audit = Arc::new(
+        chaperone_audit::AuditWriter::open(std::path::Path::new(&journal_path), audit_key)
+            .map_err(|e| e.to_string())?,
+    );
+
+    let config = chaperone_gateway_core::GatewayConfig {
+        default_max_response_bytes: flags
+            .values
+            .get("max-response-bytes")
+            .map_or(1_048_576, |v| v.parse().unwrap_or(1_048_576)),
+        default_timeout_secs: flags
+            .values
+            .get("timeout-secs")
+            .map_or(30, |v| v.parse().unwrap_or(30)),
+    };
+
+    let gateway = Arc::new(
+        chaperone_gateway_core::Gateway::new(
+            attestor,
+            policy,
+            router,
+            Arc::clone(&audit),
+            Arc::new(chaperone_gateway_core::AlwaysTimeoutGate),
+            config,
+        )
+        .map_err(|e| e.to_string())?,
+    );
+
+    let spec = if let Some(path) = flags.values.get("socket") {
+        chaperone_transport::ListenSpec::UnixSocket { path: path.into() }
+    } else if let Some(port) = flags.values.get("tcp-port") {
+        chaperone_transport::ListenSpec::TcpV4 {
+            port: port
+                .parse()
+                .map_err(|_| "--tcp-port must be a number".to_owned())?,
+        }
+    } else {
+        chaperone_transport::default_listen_spec()
+    };
+
+    let handler: chaperone_transport::Handler = {
+        let gw = Arc::clone(&gateway);
+        Arc::new(move |request| {
+            let gw = Arc::clone(&gw);
+            Box::pin(async move {
+                let response = gw.handle_message(request.value()).await;
+                request.reply(response)
+            })
+        })
+    };
+
+    let endpoint_desc = match &spec {
+        chaperone_transport::ListenSpec::UnixSocket { path } => path.display().to_string(),
+        chaperone_transport::ListenSpec::NamedPipe { name } => name.clone(),
+        chaperone_transport::ListenSpec::TcpV4 { port } => format!("127.0.0.1:{port}"),
+        chaperone_transport::ListenSpec::TcpV6 { port } => format!("[::1]:{port}"),
+    };
+    println!(
+        "chaperone gateway listening on {endpoint_desc} (protocol {})",
+        chaperone_protocol::PROTOCOL_VERSION
+    );
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    // Bind + accept inside the runtime: async listeners need a reactor.
+    rt.block_on(async move {
+        let server = chaperone_transport::serve(&spec, handler).map_err(|e| e.to_string())?;
+        println!("press Ctrl-C to stop");
+        server.joined().await;
+        Ok::<(), String>(())
+    })?;
+    Ok(())
+}
+
+fn load_audit_seed_text(text: &str) -> Result<chaperone_audit::AuditKey, String> {
+    let seed = chaperone_protocol::decode_signature(text.trim())
+        .map_err(|e| format!("seed file is not base64url: {e}"))?;
+    let seed: &[u8; 32] = seed
+        .as_slice()
+        .try_into()
+        .map_err(|_| "seed file must hold 32 bytes".to_owned())?;
+    Ok(chaperone_audit::AuditKey::from_seed(seed))
+}
+
 fn run(args: Vec<String>) -> Result<(), String> {
     let Some(command) = args.first() else {
         print!("{USAGE}");
@@ -405,6 +541,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "vault-get" => cmd_vault_get(&flags),
         "vault-list" => cmd_vault_list(&flags),
         "vault-del" => cmd_vault_del(&flags),
+        "serve" => cmd_serve(&flags),
         "--help" | "-h" | "help" => {
             print!("{USAGE}");
             Ok(())

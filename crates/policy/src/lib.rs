@@ -171,6 +171,8 @@ impl std::error::Error for PolicyError {}
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PolicyFile {
+    /// An absent or empty rule list is a VALID pure default-deny policy.
+    #[serde(default)]
     rule: Vec<RuleDef>,
 }
 
@@ -551,6 +553,15 @@ mod tests {
         let plain = req("a", "vault://x", "t", "m");
         let d = p.evaluate(&plain);
         assert_eq!(d.limits.max_response_bytes, Some(1000));
+    }
+
+    #[test]
+    fn empty_document_is_valid_pure_default_deny() {
+        let p = Policy::from_toml("").unwrap();
+        assert!(p.is_empty());
+        let d = p.evaluate(&req("agent:a", "vault://x", "https://t", "http-bearer"));
+        assert_eq!(d.effect, Effect::Deny);
+        assert_eq!(d.source, DecisionSource::DefaultDeny);
     }
 
     #[test]

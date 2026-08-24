@@ -24,6 +24,13 @@ pub enum Outcome {
     CredentialUnresolved,
     /// The outbound mechanism failed.
     MechanismError,
+    /// The intent failed identity verification (unknown/stale/forged).
+    /// Carries the wire error code; the "intent evidence" stored alongside
+    /// is whatever was received.
+    IdentityFailed {
+        /// E_UNKNOWN_AGENT | E_REPLAY | E_BAD_SIGNATURE | E_VERSION.
+        code: String,
+    },
     /// A brokered session closed; carries reason and exit code when known.
     SessionClosed {
         /// Why: client_close | ttl_expired | connection_dropped | error.
@@ -42,6 +49,9 @@ impl Outcome {
             Outcome::Denied => serde_json::json!({ "status": "denied" }),
             Outcome::ConfirmationTimeout => serde_json::json!({ "status": "confirm_timeout" }),
             Outcome::CredentialUnresolved => serde_json::json!({ "status": "cred_unresolved" }),
+            Outcome::IdentityFailed { code } => {
+                serde_json::json!({ "status": "identity_failed", "code": code })
+            }
             Outcome::MechanismError => serde_json::json!({ "status": "mechanism_error" }),
             Outcome::SessionClosed { reason, exit_code } => serde_json::json!({
                 "status": "session_closed",
