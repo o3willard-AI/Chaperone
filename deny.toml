@@ -1,0 +1,28 @@
+# Supply-chain policy (PLAN Phase 10). CI denies on advisory matches and
+# unaccepted licenses so dependency drift cannot silently widen risk.
+[advisories]
+version = 2
+vulnerability = "deny"
+unmaintained = "warn"
+yanked = "warn"
+
+[licenses]
+version = 2
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "OpenSSL",        # rustls/ring stack
+    "CDLA-Permissive-2.0",
+]
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"

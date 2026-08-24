@@ -340,3 +340,42 @@ E_MECHANISM with a descriptive reason; identity-stage failures keep their
 §10 codes. Unknown message `type` values likewise answer E_MECHANISM until
 session types land (M8). Recorded here so the mapping is a decision, not an
 accident.
+
+## D23 - SSH host-key policy
+
+The ssh session backend REFUSES unknown host keys by default. A
+TrustOnFirstUseAll mode exists for tests and explicitly configured single-
+operator environments (--trust-host-keys on serve); it is documented-weaker,
+never silent. Proper pin-store (TOFU journal + known_hosts import) is
+tracked as post-v1 hardening; shipping an accept-all default would let any
+on-path attacker harvest auth attempts against pinned infrastructure.
+
+## D24 - Session relay batching over unary frames
+
+PROTO-SPEC §8 describes streamed `session.output` frames. v1 transports are
+strictly unary (one response frame per request frame), so the gateway
+relays each `session.command`'s output as ONE batched `session.output`
+frame containing seq-numbered chunks collected during a bounded quiet
+window (~400 ms) or until channel close/exit. True push-streaming requires
+transport extension and lands post-v1; batching preserves ordering,
+attribution and the closed/exit semantics while keeping the wire contract
+additive.
+
+## D25 - local-privilege confirmation posture
+
+Mechanism local-privilege ALWAYS routes through the human gate unless BOTH
+(a) policy effect is allow AND (b) the daemon-side allowlist mirror pins
+the exact command+argument prefix. The helper process re-checks the SAME
+allowlist authoritatively at execution - the daemon copy only decides
+whether prompting is needed, so a compromised daemon cannot skip the
+helper's own gate, and an edited allowlist cannot bypass confirmation.
+Elevation mechanics (sudoers/setuid/polkit wrapper invoking the helper)
+are deployment configuration, deliberately outside both processes.
+
+## D26 - Error reasons never amplify secret-shaped input
+
+When an agent pastes secret-shaped text where a cred_ref belongs, the
+vault's malformed-reference error must not echo that text back (it would
+land in logs and audit evidence verbatim). Malformed cred_ref errors are
+content-free and shape-teaching ("must look like scheme://entry-path").
+Pinned by test alongside the skill's paste-token anti-pattern case.
