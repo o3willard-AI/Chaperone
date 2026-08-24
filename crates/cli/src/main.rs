@@ -257,6 +257,7 @@ fn cmd_release_verify(flags: &Flags) -> Result<(), String> {
     }
 }
 
+#[cfg(unix)]
 fn cmd_console(flags: &Flags) -> Result<(), String> {
     use std::io::{BufRead as _, Read as _, Write as _};
 
@@ -542,6 +543,7 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
         flags.values.get("confirm-timeout-secs").map(String::as_str),
         Some("never-approve")
     );
+    #[cfg(unix)]
     let console_hub = flags.values.get("console-socket").map(|path| {
         use chaperone_gateway_core::ConsoleHub;
         let listener =
@@ -690,6 +692,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "audit-keygen" => cmd_audit_keygen(&flags),
         "release-sign" => cmd_release_sign(&flags),
         "release-verify" => cmd_release_verify(&flags),
+        #[cfg(unix)]
         "console" => cmd_console(&flags),
         "audit-verify" => cmd_audit_verify(&flags),
         "audit-export" => cmd_audit_export(&flags),

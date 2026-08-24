@@ -5,6 +5,7 @@
 //!   (no hang, no auto-approve).
 //! - The prompt block renders on the console with full context.
 
+#![cfg(unix)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::os::unix::net::UnixStream;

@@ -32,6 +32,7 @@ use chaperone_protocol::ops::HttpOperation;
 use chaperone_vault::VaultRouter;
 use serde_json::{Value, json};
 
+#[cfg(unix)]
 pub mod console;
 #[cfg(feature = "postgres")]
 pub mod db;
@@ -41,6 +42,7 @@ pub mod session;
 #[cfg(feature = "ssh")]
 pub mod ssh;
 
+#[cfg(unix)]
 pub use console::ConsoleHub;
 #[cfg(feature = "postgres")]
 pub use db::DbBackend;
