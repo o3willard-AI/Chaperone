@@ -1,0 +1,127 @@
+# Release pipeline (PLAN Phase 10): tag-triggered, three platforms,
+# reproducible locked builds, sha256 manifest, ed25519 detached signatures
+# via `chaperone release-sign`.
+#
+# HONEST POSTURE (docs/RELEASE.md): these artifacts carry OUR ed25519
+# signatures, not corporate OS code signing (no Authenticode / Apple
+# notarization yet). Expect Gatekeeper/SmartScreen prompts on macOS and
+# Windows; verify the hash and signature instead. Corporate codesigning is
+# deferred until there is an entity to own it - recorded in the backlog.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Build (locked, release)
+        run: cargo build --release --locked -p chaperone-cli -p chaperone-privileged-helper
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="stage/chaperone-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir -p "$STAGE"
+          cp target/release/chaperone "$STAGE/"
+          cp target/release/chaperone-helper "$STAGE/"
+          cp README.md LICENSE "$STAGE/"
+          tar czf "chaperone-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" -C stage .
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $stage = "chaperone-${{ github.ref_name }}-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item target/release/chaperone.exe $stage/
+          Copy-Item target/release/chaperone-helper.exe $stage/
+          Copy-Item README.md $stage/
+          Copy-Item LICENSE $stage/
+          Compress-Archive -Path $stage -DestinationPath "$stage.zip"
+
+      - name: Checksum
+        shell: bash
+        run: |
+          f=$(ls chaperone-${{ github.ref_name }}-${{ matrix.target }}.* | head -1)
+          sha256sum "$f" > "$f.sha256"
+
+      - name: Sign (ed25519 via chaperone itself)
+        shell: bash
+        env:
+          RELEASE_KEY_SEED: ${{ secrets.RELEASE_KEY_SEED }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RELEASE_KEY_SEED:-}" ]; then
+            echo "RELEASE_KEY_SEED secret is not set; refusing to ship unsigned artifacts" >&2
+            exit 1
+          fi
+          printf '%s' "$RELEASE_KEY_SEED" > release-seed.tmp
+          f=$(ls chaperone-${{ github.ref_name }}-${{ matrix.target }}.* | grep -v sha256 | head -1)
+          ./target/release/chaperone release-sign --key release-seed.tmp --file "$f"
+          rm -f release-seed.tmp
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            chaperone-${{ github.ref_name }}-${{ matrix.target }}.*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Aggregate checksums
+        shell: bash
+        run: |
+          cd dist
+          sha256sum chaperone-* | grep -v 'sha256$' > SHA256SUMS.txt || true
+          ls -la
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --prerelease \
+            --title "Chaperone ${{ github.ref_name }} (individual preview)" \
+            --notes-file docs/release-notes/${{ github.ref_name }}.md \
+            dist/* \
+            dist/SHA256SUMS.txt 2>/dev/null || \
+          gh release upload "${{ github.ref_name }}" dist/* --clobber

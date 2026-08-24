@@ -23,10 +23,16 @@ and records tamper-evident evidence.
 
 ## Status
 
-**Pre-release.** Specifications are complete enough to build against (v0.1
-draft); implementation is just beginning. Expect both to evolve. See
-[docs/PLAN.md](docs/PLAN.md) for the phased implementation plan and current
-progress.
+**Individual preview (`v0.1.0-alpha.1`).** All four v1 mechanisms are
+implemented - http, ssh sessions, db-scram against PostgreSQL, and
+local-privilege through the isolated helper - plus identity, default-deny
+policy, tamper-evident audit, the vault abstraction (local sealed +
+HashiCorp Vault), the confirmation gate, conformance tests, fuzzing, and a
+reproducible-build release pipeline. Corporate OS code signing (Authenticode /
+Apple notarization) is deliberately deferred until there is an entity to own
+it; artifacts carry ed25519 signatures and are reproducibly buildable -
+see [docs/RELEASE.md](docs/RELEASE.md) for verification. Expect breaking
+changes while the specs themselves remain v0.1 drafts open for review.
 
 ## Documentation
 

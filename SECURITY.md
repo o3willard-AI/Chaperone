@@ -45,8 +45,14 @@ demonstrate the TCB boundary itself being crossed are exactly what we want.
 
 ## Supported versions
 
-Pre-release: only the latest `main` receives security fixes. Once tagged
-releases exist, this section will list supported versions explicitly.
+Pre-release: only the latest tagged preview and `main` receive security
+fixes.
+
+**Artifact trust boundary, stated plainly:** release binaries carry our
+ed25519 detached signatures and reproduce bit-for-bit from source, but they
+are NOT signed with corporate OS code-signing certificates yet (no entity to
+own those). On macOS/Windows expect Gatekeeper/SmartScreen prompts - verify
+via [docs/RELEASE.md](docs/RELEASE.md) instead of clicking through.
 
 ## Hardening commitments
 

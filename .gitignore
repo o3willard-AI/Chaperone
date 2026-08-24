@@ -4,3 +4,7 @@ Cargo.lock.bak
 *.swp
 .DS_Store
 fuzz/target
+
+# release signing seed never lives in the repo
+release-seed.key
+*.key.sig
