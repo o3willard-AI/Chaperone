@@ -313,3 +313,30 @@ Concrete shape of D5 as shipped in Phase 5:
   presence confirmation unless `--show` is passed explicitly - the console
   is trusted context, but scrolling secrets into terminals unasked is how
   they end up in screen-shares and scrollback.
+
+## D20 - Response ceilings abort, never truncate
+
+`max_response_bytes` (effective = min of rule limit, agent constraint, or
+gateway default) is enforced by STREAM-counting the body: a lying
+Content-Length cannot buy an unbounded buffer, and exceeding the ceiling
+fails the operation loudly (`E_MECHANISM`) instead of silently delivering a
+truncated payload the agent might act on. A truncated charge response would
+be worse than a failed one.
+
+## D21 - Redirects are disabled at the HTTP client
+
+The signed intent names exactly one target URI; following a 30x would hand
+whatever answers next both the request AND its Authorization header -
+a hostile-target laundering primitive (THREAT-MODEL T3). The injector's
+client sets redirect policy to none. If a future mechanism needs redirects,
+it must re-sign per hop with policy in the loop.
+
+## D22 - Post-signature schema failures map to E_MECHANISM
+
+PROTO-SPEC's error taxonomy has no code for "signature verified but the
+signed body fails typed parsing" (only possible for agents that sign
+garbage). Rather than inventing an envelope-level code, this maps to
+E_MECHANISM with a descriptive reason; identity-stage failures keep their
+§10 codes. Unknown message `type` values likewise answer E_MECHANISM until
+session types land (M8). Recorded here so the mapping is a decision, not an
+accident.
