@@ -29,7 +29,12 @@ pub enum ResolveError {
 impl std::fmt::Display for ResolveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ResolveError::MalformedCredRef(r) => write!(f, "cred_ref {r:?} is not scheme://rest"),
+            // Deliberately does NOT echo the raw value: agents that paste
+            // secret-shaped strings here must not have them amplified into
+            // logs via error reasons.
+            ResolveError::MalformedCredRef(_) => {
+                write!(f, "cred_ref must look like scheme://entry-path")
+            }
             ResolveError::UnsupportedScheme { scheme, supported } => write!(
                 f,
                 "no provider for scheme {scheme:?} (supported: {})",

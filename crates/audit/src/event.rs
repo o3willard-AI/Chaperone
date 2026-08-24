@@ -31,6 +31,11 @@ pub enum Outcome {
         /// E_UNKNOWN_AGENT | E_REPLAY | E_BAD_SIGNATURE | E_VERSION.
         code: String,
     },
+    /// A session opened successfully; records the handle reference.
+    SessionOpened {
+        /// The opaque handle (safe to journal - it is not an authority).
+        handle: String,
+    },
     /// A brokered session closed; carries reason and exit code when known.
     SessionClosed {
         /// Why: client_close | ttl_expired | connection_dropped | error.
@@ -53,6 +58,9 @@ impl Outcome {
                 serde_json::json!({ "status": "identity_failed", "code": code })
             }
             Outcome::MechanismError => serde_json::json!({ "status": "mechanism_error" }),
+            Outcome::SessionOpened { handle } => {
+                serde_json::json!({ "status": "session_opened", "session_handle": handle })
+            }
             Outcome::SessionClosed { reason, exit_code } => serde_json::json!({
                 "status": "session_closed",
                 "reason": reason,

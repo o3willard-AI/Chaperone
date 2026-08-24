@@ -11,19 +11,29 @@ publish = false
 [dependencies]
 base64.workspace = true
 time.workspace = true
+toml.workspace = true
 chaperone-audit = { path = "../audit" }
 chaperone-identity = { path = "../identity" }
 chaperone-injectors = { path = "../injectors" }
 chaperone-policy = { path = "../policy" }
 chaperone-protocol = { path = "../protocol" }
 chaperone-vault = { path = "../vault" }
+rand_core.workspace = true
+async-trait.workspace = true
+russh = { workspace = true, optional = true }
+russh-keys = { workspace = true, optional = true }
+serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+
+[features]
+default = ["ssh"]
+# Real SSH sessions via the maintained pure-Rust client.
+ssh = ["dep:russh", "dep:russh-keys"]
 
 [dev-dependencies]
 ed25519-dalek.workspace = true
 tempfile.workspace = true
-time.workspace = true
 zeroize.workspace = true
 chaperone-protocol = { path = "../protocol", features = ["test-util"] }
 

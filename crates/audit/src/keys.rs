@@ -74,6 +74,25 @@ impl AuditKey {
         encode_signature(&self.signing.sign(hash).to_bytes())
     }
 
+    /// Signs arbitrary bytes (release artifacts); base64url-encoded.
+    #[must_use]
+    pub fn sign_message(&self, bytes: &[u8]) -> String {
+        use ed25519_dalek::Signer;
+        encode_signature(&self.signing.sign(bytes).to_bytes())
+    }
+
+    /// Verifies arbitrary bytes against a detached signature.
+    pub fn verify_message(vk: &VerifyingKey, bytes: &[u8], sig_b64url: &str) -> bool {
+        use ed25519_dalek::{Signature, Verifier};
+        chaperone_protocol::decode_signature(sig_b64url)
+            .ok()
+            .and_then(|raw| {
+                let sig: &[u8; 64] = raw.as_slice().try_into().ok()?;
+                Some(Signature::from_bytes(sig))
+            })
+            .is_some_and(|sig| vk.verify(bytes, &sig).is_ok())
+    }
+
     /// Verifies a raw 32-byte record hash against its signature.
     pub(crate) fn verify_raw(vk: &VerifyingKey, hash: &[u8; 32], sig_b64url: &str) -> bool {
         use ed25519_dalek::{Signature, Verifier};

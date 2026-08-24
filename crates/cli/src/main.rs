@@ -15,6 +15,7 @@ use chaperone_audit::AuditKey;
 use chaperone_identity::{EnrollmentError, EnrollmentStore};
 use chaperone_policy::Policy;
 use chaperone_vault::SecretString;
+use std::time::Duration;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use zeroize::Zeroizing;
@@ -31,6 +32,7 @@ GATEWAY DAEMON:
     chaperone serve --socket <PATH> --enrollment <FILE> --policy <TOML>
                     --store <VAULT> --audit-journal <FILE> --audit-key <SEED>
                     [--tcp-port N] [--max-response-bytes N] [--timeout-secs N]
+                    [--confirm-timeout-secs N] [--trust-host-keys]
 
 LOCAL VAULT (operator CRUD):
     chaperone vault-init  --store <FILE> [--sealer passphrase] [--passphrase-stdin]
@@ -38,6 +40,10 @@ LOCAL VAULT (operator CRUD):
     chaperone vault-get   --store <FILE> --path <P> [--passphrase-stdin] [--show]
     chaperone vault-list  --store <FILE> [--passphrase-stdin]
     chaperone vault-del   --store <FILE> --path <P> [--passphrase-stdin]
+
+RELEASE SIGNING (PLAN Phase 10):
+    chaperone release-sign  --key <SEEDFILE> --file <ARTIFACT>   # writes ARTIFACT.sig
+    chaperone release-verify --file <ARTIFACT> --sig <SIGFILE> --public-key <B64URL>
 
 AUDIT CHAIN:
     chaperone audit-keygen --out <SEEDFILE>
@@ -217,6 +223,36 @@ fn cmd_policy_check(flags: &Flags) -> Result<(), String> {
             .map_or("null".to_owned(), |v| v.to_string()),
     );
     Ok(())
+}
+
+fn cmd_release_sign(flags: &Flags) -> Result<(), String> {
+    let key_path = flags.require("key")?;
+    let file = flags.require("file")?;
+    let seed_text =
+        std::fs::read_to_string(&key_path).map_err(|e| format!("cannot read {key_path}: {e}"))?;
+    let key = load_audit_seed_text(&seed_text)?;
+    let artifact = std::fs::read(&file).map_err(|e| format!("cannot read {file}: {e}"))?;
+    let signature = key.sign_message(&artifact);
+    let sig_path = format!("{file}.sig");
+    std::fs::write(&sig_path, &signature).map_err(|e| e.to_string())?;
+    println!("signed {file} -> {sig_path}");
+    println!("public key: {}", key.public_key_b64url());
+    Ok(())
+}
+
+fn cmd_release_verify(flags: &Flags) -> Result<(), String> {
+    let file = flags.require("file")?;
+    let sig = flags.require("sig")?;
+    let pubkey = flags.require("public-key")?;
+    let artifact = std::fs::read(&file).map_err(|e| format!("cannot read {file}: {e}"))?;
+    let signature = std::fs::read_to_string(&sig).map_err(|e| format!("cannot read {sig}: {e}"))?;
+    let vk = chaperone_audit::verifying_key_from_b64url(&pubkey)?;
+    if chaperone_audit::AuditKey::verify_message(&vk, &artifact, signature.trim()) {
+        println!("VERIFIED: {file} matches {sig}");
+        Ok(())
+    } else {
+        Err(format!("signature does NOT match {file}"))
+    }
 }
 
 fn cmd_audit_keygen(flags: &Flags) -> Result<(), String> {
@@ -442,6 +478,10 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
     );
 
     let config = chaperone_gateway_core::GatewayConfig {
+        default_session_ttl_secs: flags
+            .values
+            .get("session-ttl-secs")
+            .map_or(300, |v| v.parse().unwrap_or(300)),
         default_max_response_bytes: flags
             .values
             .get("max-response-bytes")
@@ -452,17 +492,64 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
             .map_or(30, |v| v.parse().unwrap_or(30)),
     };
 
-    let gateway = Arc::new(
-        chaperone_gateway_core::Gateway::new(
-            attestor,
-            policy,
-            router,
-            Arc::clone(&audit),
-            Arc::new(chaperone_gateway_core::AlwaysTimeoutGate),
-            config,
-        )
-        .map_err(|e| e.to_string())?,
+    let confirm_timeout = Duration::from_secs(
+        flags
+            .values
+            .get("confirm-timeout-secs")
+            .map_or(120, |v| v.parse().unwrap_or(120)),
     );
+    let never_approve = matches!(
+        flags.values.get("confirm-timeout-secs").map(String::as_str),
+        Some("never-approve")
+    );
+    let gate: Arc<dyn chaperone_gateway_core::ConfirmationGate> = if never_approve {
+        Arc::new(chaperone_gateway_core::AlwaysTimeoutGate)
+    } else {
+        struct StdioOperator;
+        impl chaperone_gateway_core::OperatorIo for StdioOperator {
+            fn write_prompt(&mut self, block: &str) -> std::io::Result<()> {
+                use std::io::Write as _;
+                std::io::stdout().write_all(block.as_bytes())?;
+                std::io::stdout().flush()
+            }
+            fn read_answer(&mut self) -> std::io::Result<Option<String>> {
+                let mut line = String::new();
+                match std::io::stdin().read_line(&mut line) {
+                    Ok(0) => Ok(None),
+                    Ok(_) => Ok(Some(line.trim_end_matches(['\n', '\r']).to_owned())),
+                    Err(e) => Err(e),
+                }
+            }
+        }
+        Arc::new(chaperone_gateway_core::OperatorGate::new(
+            Box::new(StdioOperator),
+            confirm_timeout,
+        ))
+    };
+
+    let mut gateway_core = chaperone_gateway_core::Gateway::new(
+        attestor,
+        policy,
+        router,
+        Arc::clone(&audit),
+        gate,
+        config,
+    )
+    .map_err(|e| e.to_string())?;
+
+    // SSH sessions. Host-key policy is refuse-unknown unless explicitly
+    // overridden for this deployment (D23 - documented-weaker).
+    let host_key_policy = if flags.has("trust-host-keys") {
+        chaperone_gateway_core::HostKeyPolicy::TrustOnFirstUseAll
+    } else {
+        chaperone_gateway_core::HostKeyPolicy::RefuseUnknown
+    };
+    gateway_core.with_session_backend(
+        "ssh",
+        Arc::new(chaperone_gateway_core::SshBackend::new(host_key_policy)),
+    );
+
+    let gateway = Arc::new(gateway_core);
 
     let spec = if let Some(path) = flags.values.get("socket") {
         chaperone_transport::ListenSpec::UnixSocket { path: path.into() }
@@ -534,6 +621,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "list-agents" => cmd_list_agents(&flags),
         "policy-check" => cmd_policy_check(&flags),
         "audit-keygen" => cmd_audit_keygen(&flags),
+        "release-sign" => cmd_release_sign(&flags),
+        "release-verify" => cmd_release_verify(&flags),
         "audit-verify" => cmd_audit_verify(&flags),
         "audit-export" => cmd_audit_export(&flags),
         "vault-init" => cmd_vault_init(&flags),

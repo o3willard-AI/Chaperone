@@ -21,7 +21,9 @@
 //! Implemented in PLAN Phase 6 ([PLAN](../../docs/PLAN.md) M6); sessions
 //! arrive in M8, the real confirmation UX in M7.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use chaperone_audit::{AuditEvent, AuditWriter, Outcome};
 use chaperone_injectors::http::HttpInjector;
@@ -30,11 +32,23 @@ use chaperone_protocol::ops::HttpOperation;
 use chaperone_vault::VaultRouter;
 use serde_json::{Value, json};
 
+pub mod privilege;
+pub mod session;
+#[cfg(feature = "ssh")]
+pub mod ssh;
+
+pub use privilege::{LocalPrivBackend, PrivilegeAllowlist};
+pub use session::{OutputBatch, OutputChunk, SessionBackend, SessionChannel, SessionTable};
+#[cfg(feature = "ssh")]
+pub use ssh::{HostKeyPolicy, SshBackend};
+
 /// Knobs that are gateway policy, not agent choice.
 #[derive(Debug, Clone)]
 pub struct GatewayConfig {
     /// Ceiling applied when neither rule nor agent declared one (D20).
     pub default_max_response_bytes: u64,
+    /// Brokered-session lifetime when neither rule nor agent set one.
+    pub default_session_ttl_secs: u64,
     /// Outbound-call budget when unconfigured.
     pub default_timeout_secs: u64,
 }
@@ -43,9 +57,16 @@ impl Default for GatewayConfig {
     fn default() -> Self {
         Self {
             default_max_response_bytes: 1_048_576,
+            default_session_ttl_secs: 300,
             default_timeout_secs: 30,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionFrameKind {
+    Command,
+    Close,
 }
 
 /// The verdict of the single human gate (PROTO-SPEC §9.2).
@@ -84,8 +105,8 @@ pub trait ConfirmationGate: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ConfirmOutcome> + Send + 'a>>;
 }
 
-/// Placeholder gate until M7: every needs_confirmation intent times out,
-/// which is the safe direction to fail.
+/// Placeholder gate kept for non-interactive deployments: every
+/// needs_confirmation intent times out - the safe direction to fail.
 #[derive(Debug, Default)]
 pub struct AlwaysTimeoutGate;
 
@@ -98,6 +119,99 @@ impl ConfirmationGate for AlwaysTimeoutGate {
     }
 }
 
+/// Renders ONE prompt per needs_confirmation intent to an operator channel
+/// (PROTO-SPEC §9.2, ARCH-SPEC §2.6): full context, y/n answer, timeout ->
+/// [`ConfirmOutcome::TimedOut`], EOF -> refused.
+///
+/// Duplicate prompting is prevented structurally, not here: a concurrent
+/// duplicate intent fails identity verification at the replay cache before
+/// any gate runs (§4 step 2), so one intent == at most one prompt ever.
+pub struct OperatorGate {
+    io: Arc<Mutex<Box<dyn OperatorIo>>>,
+    timeout: Duration,
+}
+
+/// The operator side of the single gate: where prompts render and answers
+/// come from. Production wires the daemon's TTY; tests pipe buffers.
+pub trait OperatorIo: Send {
+    /// Writes the rendered prompt block.
+    fn write_prompt(&mut self, block: &str) -> std::io::Result<()>;
+    /// Reads one answer line; Ok(None) = EOF.
+    fn read_answer(&mut self) -> std::io::Result<Option<String>>;
+}
+
+impl OperatorIo for Box<dyn OperatorIo> {
+    fn write_prompt(&mut self, block: &str) -> std::io::Result<()> {
+        (**self).write_prompt(block)
+    }
+    fn read_answer(&mut self) -> std::io::Result<Option<String>> {
+        (**self).read_answer()
+    }
+}
+
+impl OperatorGate {
+    /// Builds a gate over any operator channel with an answer timeout.
+    pub fn new(io: Box<dyn OperatorIo>, timeout: Duration) -> Self {
+        Self {
+            io: Arc::new(Mutex::new(io)),
+            timeout,
+        }
+    }
+
+    fn render(ctx: &ConfirmContext) -> String {
+        // One deliberate prompt, full context (§9.2).
+        format!(
+            "\nCHAPERONE CONFIRMATION\n  agent:     {}\n  target:    {} ({})\n  mechanism: {}\n  action:    {}\nApprove? [y/N]: ",
+            ctx.agent_id, ctx.target_label, ctx.target_uri, ctx.mechanism, ctx.summary
+        )
+    }
+
+    fn parse(answer: Option<String>) -> ConfirmOutcome {
+        match answer.map(|a| a.trim().to_ascii_lowercase()) {
+            Some(ref a) if a == "y" || a == "yes" => ConfirmOutcome::Approved,
+            Some(ref a) if a == "n" || a == "no" || a.is_empty() => ConfirmOutcome::Refused,
+            Some(_) => ConfirmOutcome::Refused,
+            None => ConfirmOutcome::Refused, // EOF: no human, no approval
+        }
+    }
+}
+
+impl ConfirmationGate for OperatorGate {
+    fn confirm<'a>(
+        &'a self,
+        ctx: ConfirmContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ConfirmOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            let block = Self::render(&ctx);
+            let timeout = self.timeout;
+            let io = Arc::clone(&self.io);
+            // Blocking I/O off the async workers.
+            let join = tokio::task::spawn_blocking(move || {
+                let mut guard = match io.lock() {
+                    Ok(g) => g,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                if let Err(_e) = guard.write_prompt(&block) {
+                    return ConfirmOutcome::Refused;
+                }
+                match guard.read_answer() {
+                    Ok(answer) => Self::parse(answer),
+                    Err(_) => ConfirmOutcome::Refused,
+                }
+            });
+            match tokio::time::timeout(timeout, join).await {
+                Ok(Ok(outcome)) => outcome,
+                Ok(Err(_join_err)) => ConfirmOutcome::Refused,
+                Err(_elapsed) => {
+                    // The worker keeps blocking on stdin; its late answer is
+                    // discarded. Log-free refusal keeps us honest.
+                    ConfirmOutcome::TimedOut
+                }
+            }
+        })
+    }
+}
+
 /// The assembled gateway.
 pub struct Gateway {
     attestor: chaperone_identity::Attestor,
@@ -107,6 +221,9 @@ pub struct Gateway {
     gate: Arc<dyn ConfirmationGate>,
     http: HttpInjector,
     config: GatewayConfig,
+    sessions: SessionTable,
+    backends: Mutex<HashMap<String, Arc<dyn SessionBackend>>>,
+    privilege_allowlist: Mutex<Option<PrivilegeAllowlist>>,
 }
 
 impl Gateway {
@@ -128,7 +245,33 @@ impl Gateway {
             gate,
             http: HttpInjector::new()?,
             config,
+            sessions: SessionTable::new(),
+            backends: Mutex::new(HashMap::new()),
+            privilege_allowlist: Mutex::new(None),
         })
+    }
+
+    /// Provides the daemon-side mirror of the operator allowlist used to
+    /// decide whether local-privilege may proceed unattended. The helper
+    /// re-checks authoritatively regardless.
+    pub fn set_privilege_allowlist(&mut self, al: PrivilegeAllowlist) {
+        *self
+            .privilege_allowlist
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(al);
+    }
+
+    /// Registers a session backend for a mechanism (e.g. "ssh").
+    pub fn with_session_backend(
+        &mut self,
+        mechanism: &str,
+        backend: Arc<dyn SessionBackend>,
+    ) -> &mut Self {
+        self.backends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(mechanism.to_owned(), backend);
+        self
     }
 
     /// Handles one inbound JSON-object message and produces the response
@@ -136,20 +279,242 @@ impl Gateway {
     pub async fn handle_message(&self, message: &Value) -> Value {
         match message.get("type").and_then(Value::as_str) {
             Some("intent") => self.handle_intent(message).await,
-            // Sessions are Phase 8; refusing honestly beats pretending.
-            Some(other) if other == "session.command" || other == "session.close" => Self::error(
+            Some("session.command") => {
+                self.handle_session_frame(message, SessionFrameKind::Command)
+                    .await
+            }
+            Some("session.close") => {
+                self.handle_session_frame(message, SessionFrameKind::Close)
+                    .await
+            }
+            _ => Self::error(message, "E_MECHANISM", "unsupported message type"),
+        }
+    }
+
+    fn session_backend(&self, mechanism: &str) -> Option<Arc<dyn SessionBackend>> {
+        self.backends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(mechanism)
+            .map(Arc::clone)
+    }
+
+    /// Opener path for session mechanisms: the identical spine through
+    /// resolution, then backend.connect spends the secret ONCE and a bound
+    /// handle comes back. The secret is scrubbed here regardless of outcome.
+    async fn open_session(
+        &self,
+        message: &Value,
+        verified_agent_id: &str,
+        envelope: &chaperone_protocol::Envelope,
+        decision: chaperone_policy::Decision,
+    ) -> Value {
+        let Some(backend) = self.session_backend(&envelope.mechanism) else {
+            self.audit_decision(envelope, decision.effect.as_str(), Outcome::MechanismError)
+                .await;
+            return Self::error(
                 message,
                 "E_MECHANISM",
-                "brokered sessions are not available in this build",
-            ),
-            _ => Self::error(message, "E_MECHANISM", "unsupported message type"),
+                &format!(
+                    "mechanism {:?} has no session backend configured in this build",
+                    envelope.mechanism
+                ),
+            );
+        };
+
+        let secret = match self.router.resolve(&envelope.cred_ref) {
+            Ok(s) => s,
+            Err(e) => {
+                self.audit_decision(
+                    envelope,
+                    decision.effect.as_str(),
+                    Outcome::CredentialUnresolved,
+                )
+                .await;
+                return Self::error(message, "E_CRED_UNRESOLVED", &e.to_string());
+            }
+        };
+        let operation = envelope.operation.clone();
+        let connect = backend.connect(&operation, &secret);
+        // NOTE: `secret` is still owned here; the future borrows both. It is
+        // dropped right after the await below completes.
+        let channel = match connect.await {
+            Ok(c) => c,
+            Err(e) => {
+                self.audit_decision(envelope, decision.effect.as_str(), Outcome::MechanismError)
+                    .await;
+                return Self::error(
+                    message,
+                    "E_MECHANISM",
+                    &format!("session establishment failed: {e}"),
+                );
+            }
+        };
+
+        let ttl = envelope
+            .constraints
+            .and_then(|c| c.session_ttl_s)
+            .unwrap_or(self.config.default_session_ttl_secs);
+        let handle = self
+            .sessions
+            .insert(verified_agent_id, channel, Duration::from_secs(ttl));
+        let seq = self
+            .audit_decision(
+                envelope,
+                decision.effect.as_str(),
+                Outcome::SessionOpened {
+                    handle: handle.clone(),
+                },
+            )
+            .await
+            .unwrap_or(0);
+        json!({
+            "type": "result",
+            "decision": decision.effect.as_str(),
+            "session_handle": handle,
+            "session_ttl": ttl,
+            "audit_id": audit_id(seq),
+            "msg_id": message.get("msg_id").cloned().unwrap_or(Value::Null),
+        })
+    }
+
+    /// Independently-signed owner-bound frames (PROTO-SPEC §8): full §4
+    /// verification FIRST, then table lookup with ownership + TTL checks.
+    async fn handle_session_frame(&self, message: &Value, kind: SessionFrameKind) -> Value {
+        let now = chaperone_time_now();
+        let verified = match self.attestor.verify(message, now) {
+            Ok(v) => v,
+            Err(e) => return Self::error(message, e.error_code().as_str(), &e.reason()),
+        };
+        let agent_id = verified.agent_id.clone();
+        let Some(handle) = message
+            .get("session_handle")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        else {
+            return Self::error(
+                message,
+                "E_SESSION_EXPIRED",
+                "frame carries no session_handle",
+            );
+        };
+
+        if matches!(kind, SessionFrameKind::Close) {
+            let Some(entry) = self.sessions.take(&handle, &agent_id) else {
+                // Deliberately indistinguishable unknown vs expired vs foreign.
+                return Self::error(
+                    message,
+                    "E_SESSION_EXPIRED",
+                    "unknown or expired session_handle",
+                );
+            };
+            let channel = entry.channel_arc();
+            (**channel.lock().await).shutdown().await;
+            let event = AuditEvent {
+                agent_id: &agent_id,
+                msg_id: message.get("msg_id").and_then(Value::as_str).unwrap_or(""),
+                mechanism: "session.close",
+                target_uri: "",
+                target_label: "",
+                cred_ref: "",
+                effect: "allow",
+                outcome: Outcome::SessionClosed {
+                    reason: "client_close".into(),
+                    exit_code: None,
+                },
+                intent_envelope: message,
+            };
+            let seq = self.audit.append(&event).ok().map(|h| h.seq).unwrap_or(0);
+            return json!({
+                "type": "session.closed",
+                "session_handle": handle,
+                "reason": "client_close",
+                "exit_code": Value::Null,
+                "audit_id": audit_id(seq),
+                "msg_id": message.get("msg_id").cloned().unwrap_or(Value::Null),
+            });
+        }
+
+        let input = match message.get("input_b64").and_then(Value::as_str) {
+            Some(b64) => base64_std_decode(b64),
+            None => Vec::new(),
+        };
+
+        let (entry, _remaining) = match self.sessions.access(&handle, &agent_id) {
+            Ok(ok) => ok,
+            Err((code, reason)) => return Self::error(message, code, reason),
+        };
+        {
+            let channel = entry.channel().lock().await;
+            if let Err(e) = channel.write(input).await {
+                drop(channel);
+                return Self::error(
+                    message,
+                    "E_MECHANISM",
+                    &format!("channel write failed: {e}"),
+                );
+            }
+            let batch = channel.read_batch(Duration::from_millis(400)).await;
+
+            let outputs: Vec<Value> = batch
+                .chunks
+                .iter()
+                .map(|c| {
+                    json!({
+                        "seq": entry.next_out_seq(),
+                        "stream": c.stream,
+                        "data_b64": base64_standard(&c.data),
+                    })
+                })
+                .collect();
+            let closed = batch.closed;
+            let exit_code = batch.exit_code;
+            drop(channel);
+
+            if closed {
+                if let Some(entry) = self.sessions.take(&handle, &agent_id) {
+                    let channel = entry.channel_arc();
+                    (**channel.lock().await).shutdown().await;
+                }
+                let event = AuditEvent {
+                    agent_id: &agent_id,
+                    msg_id: message.get("msg_id").and_then(Value::as_str).unwrap_or(""),
+                    mechanism: "session.command",
+                    target_uri: "",
+                    target_label: "",
+                    cred_ref: "",
+                    effect: "allow",
+                    outcome: Outcome::SessionClosed {
+                        reason: "exited".into(),
+                        exit_code,
+                    },
+                    intent_envelope: message,
+                };
+                let seq = self.audit.append(&event).ok().map(|h| h.seq).unwrap_or(0);
+                return json!({
+                    "type": "session.output",
+                    "session_handle": handle,
+                    "outputs": outputs,
+                    "closed": true,
+                    "exit_code": exit_code,
+                    "audit_id": audit_id(seq),
+                    "msg_id": message.get("msg_id").cloned().unwrap_or(Value::Null),
+                });
+            }
+            json!({
+                "type": "session.output",
+                "session_handle": handle,
+                "outputs": outputs,
+                "closed": false,
+                "msg_id": message.get("msg_id").cloned().unwrap_or(Value::Null),
+            })
         }
     }
 
     async fn handle_intent(&self, message: &Value) -> Value {
         let now = chaperone_time_now();
 
-        // ---- Step 1-3: identity, exactly per §4 ------------------------
+        // ---- Steps 1-3: identity, exactly per §4 -----------------------
         let verified = match self.attestor.verify(message, now) {
             Ok(v) => v,
             Err(e) => {
@@ -203,8 +568,94 @@ impl Gateway {
             );
         }
 
-        // ---- Mechanism support check (post-policy, pre-confirm/resolve) --
-        if !matches!(envelope.mechanism.as_str(), "http-bearer" | "http-basic") {
+        // ---- Mechanism routing (post-policy; pre-confirm/resolve) --------
+        const ONE_SHOT: [&str; 2] = ["http-bearer", "http-basic"];
+        if !ONE_SHOT.contains(&envelope.mechanism.as_str()) {
+            if matches!(envelope.mechanism.as_str(), "ssh" | "local-privilege") {
+                // An unconfigured backend is an honest E_MECHANISM - it must
+                // not hide behind a confirmation prompt that could never
+                // lead anywhere.
+                if self.session_backend(&envelope.mechanism).is_none() {
+                    self.audit_decision(
+                        &envelope,
+                        decision.effect.as_str(),
+                        Outcome::MechanismError,
+                    )
+                    .await;
+                    return Self::error(
+                        message,
+                        "E_MECHANISM",
+                        &format!(
+                            "mechanism {:?} has no session backend configured in this build",
+                            envelope.mechanism
+                        ),
+                    );
+                }
+                // local-privilege ALWAYS takes the human gate unless the
+                // operator pinned exactly this command (PROTO-SPEC §7.2).
+                let mut effect = decision.effect;
+                let mut summary = String::new();
+                if envelope.mechanism == "local-privilege" {
+                    let command = envelope
+                        .operation
+                        .get("command")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let args: Vec<String> = envelope
+                        .operation
+                        .get("args")
+                        .and_then(Value::as_array)
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_owned)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    summary = format!("run {command} {}", args.join(" "));
+                    let pinned = self
+                        .privilege_allowlist
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_ref()
+                        .is_some_and(|al| al.permits(command, &args));
+                    if !pinned && effect == Effect::Allow {
+                        effect = Effect::NeedsConfirmation;
+                    }
+                }
+                if effect == Effect::NeedsConfirmation {
+                    let ctx = ConfirmContext {
+                        agent_id: verified.agent_id.clone(),
+                        target_label: envelope.target.label.clone(),
+                        target_uri: envelope.target.uri.clone(),
+                        mechanism: envelope.mechanism.clone(),
+                        summary: if summary.is_empty() {
+                            "operation".to_owned()
+                        } else {
+                            summary
+                        },
+                    };
+                    match self.gate.confirm(ctx).await {
+                        ConfirmOutcome::Approved => {}
+                        _ => {
+                            self.audit_decision(
+                                &envelope,
+                                decision.effect.as_str(),
+                                Outcome::ConfirmationTimeout,
+                            )
+                            .await;
+                            return Self::error(
+                                message,
+                                "E_CONFIRM_TIMEOUT",
+                                "the human gate did not approve this privileged action",
+                            );
+                        }
+                    }
+                }
+                return self
+                    .open_session(message, &verified.agent_id.clone(), &envelope, decision)
+                    .await;
+            }
             self.audit_decision(&envelope, decision.effect.as_str(), Outcome::MechanismError)
                 .await;
             return Self::error(
@@ -301,7 +752,7 @@ impl Gateway {
                 &limits,
             )
             .await;
-        drop(secret); // scrubbed here regardless of outcome
+        drop(secret);
 
         match injected {
             Ok(resp) => {
@@ -316,6 +767,7 @@ impl Gateway {
                     "headers": object_from_pairs(resp.headers.iter().map(|(k,v)|(k.as_str(), v.as_str()))),
                     "body_b64": base64_standard(&resp.body),
                     "audit_id": audit_id(audit_seq),
+                    "msg_id": message.get("msg_id").cloned().unwrap_or(Value::Null),
                 })
             }
             Err(e) => {
@@ -326,7 +778,7 @@ impl Gateway {
         }
     }
 
-    /// Records an identity-stage rejection as evidence and returns nothing.
+    /// Records an identity-stage rejection as evidence.
     async fn audit_identity_failure(&self, message: &Value, code: &chaperone_protocol::ErrorCode) {
         let event = AuditEvent {
             agent_id: message
@@ -358,7 +810,7 @@ impl Gateway {
             },
             intent_envelope: message,
         };
-        let _ = self.audit.append(&event); // best-effort: identity failures still recorded
+        let _ = self.audit.append(&event);
     }
 
     /// Records a post-policy terminal outcome; returns the new head seq.
@@ -368,6 +820,7 @@ impl Gateway {
         effect: &str,
         outcome: Outcome,
     ) -> Option<u64> {
+        let evidence = serde_json::to_value(envelope).ok()?;
         let event = AuditEvent {
             agent_id: &envelope.agent_id,
             msg_id: &envelope.msg_id,
@@ -377,7 +830,7 @@ impl Gateway {
             cred_ref: &envelope.cred_ref,
             effect,
             outcome,
-            intent_envelope: &serde_json::to_value(envelope).ok()?,
+            intent_envelope: &evidence,
         };
         self.audit.append(&event).ok().map(|h| h.seq)
     }
@@ -396,6 +849,13 @@ impl Gateway {
 
 fn audit_id(seq: u64) -> String {
     format!("aud_{seq}")
+}
+
+fn base64_std_decode(text: &str) -> Vec<u8> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(text.trim())
+        .unwrap_or_default()
 }
 
 fn base64_standard(bytes: &[u8]) -> String {
