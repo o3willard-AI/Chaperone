@@ -569,6 +569,7 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
         ))
     }
 
+    #[cfg(unix)]
     fn socket_gate(
         path: &str,
         timeout: Duration,
