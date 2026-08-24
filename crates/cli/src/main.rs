@@ -543,27 +543,8 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
         flags.values.get("confirm-timeout-secs").map(String::as_str),
         Some("never-approve")
     );
-    #[cfg(unix)]
-    let console_hub = flags.values.get("console-socket").map(|path| {
-        use chaperone_gateway_core::ConsoleHub;
-        let listener =
-            chaperone_gateway_core::console::UnixListener2::bind(std::path::Path::new(path))
-                .map_err(|e| e.to_string())?;
-        let hub = ConsoleHub::new(path.into());
-        ConsoleHub::spawn_acceptor(listener, Arc::clone(&hub));
-        println!(
-            "operator console listening on {path} (connect with: chaperone console --socket {path})"
-        );
-        Ok::<_, String>(hub)
-    });
-    let gate: Arc<dyn chaperone_gateway_core::ConfirmationGate> = if never_approve {
-        Arc::new(chaperone_gateway_core::AlwaysTimeoutGate)
-    } else if let Some(hub) = console_hub.transpose()? {
-        Arc::new(chaperone_gateway_core::OperatorGate::new(
-            Box::new(hub),
-            confirm_timeout,
-        ))
-    } else {
+
+    fn stdio_gate(timeout: Duration) -> Arc<dyn chaperone_gateway_core::ConfirmationGate> {
         struct StdioOperator;
         impl chaperone_gateway_core::OperatorIo for StdioOperator {
             fn write_prompt(&self, block: &str) -> std::io::Result<()> {
@@ -573,8 +554,9 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
                 out.flush()
             }
             fn read_answer(&self) -> std::io::Result<Option<String>> {
+                use std::io::BufRead as _;
                 let mut line = String::new();
-                match std::io::stdin().read_line(&mut line) {
+                match std::io::stdin().lock().read_line(&mut line) {
                     Ok(0) => Ok(None),
                     Ok(_) => Ok(Some(line.trim_end_matches(['\n', '\r']).to_owned())),
                     Err(e) => Err(e),
@@ -583,8 +565,36 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
         }
         Arc::new(chaperone_gateway_core::OperatorGate::new(
             Box::new(StdioOperator),
-            confirm_timeout,
+            timeout,
         ))
+    }
+
+    fn socket_gate(
+        path: &str,
+        timeout: Duration,
+    ) -> Result<Arc<dyn chaperone_gateway_core::ConfirmationGate>, String> {
+        use chaperone_gateway_core::{ConsoleHub, OperatorGate};
+        let listener =
+            chaperone_gateway_core::console::UnixListener2::bind(std::path::Path::new(path))
+                .map_err(|e| e.to_string())?;
+        let hub = ConsoleHub::new(path.into());
+        ConsoleHub::spawn_acceptor(listener, Arc::clone(&hub));
+        println!(
+            "operator console listening on {path} (attach with: chaperone console --socket {path})"
+        );
+        Ok(Arc::new(OperatorGate::new(Box::new(hub), timeout)))
+    }
+
+    let gate: Arc<dyn chaperone_gateway_core::ConfirmationGate> = if never_approve {
+        Arc::new(chaperone_gateway_core::AlwaysTimeoutGate)
+    } else {
+        match flags.values.get("console-socket") {
+            #[cfg(unix)]
+            Some(path) => socket_gate(path, confirm_timeout)?,
+            #[cfg(not(unix))]
+            Some(_) => stdio_gate(confirm_timeout),
+            None => stdio_gate(confirm_timeout),
+        }
     };
 
     let mut gateway_core = chaperone_gateway_core::Gateway::new(
@@ -592,13 +602,13 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
         policy,
         router,
         Arc::clone(&audit),
-        gate,
+        Arc::clone(&gate),
         config,
     )
     .map_err(|e| e.to_string())?;
 
-    // SSH sessions. Host-key policy is refuse-unknown unless explicitly
-    // overridden for this deployment (D23 - documented-weaker).
+    // SSH host-key policy: pin store (preferred), explicit trust-all, or
+    // strict refusal.
     let host_key_policy = if let Some(kh_path) = flags.values.get("ssh-known-hosts").cloned() {
         let store = chaperone_gateway_core::PinStore::load(std::path::Path::new(&kh_path))
             .map_err(|e| e.to_string())?;
