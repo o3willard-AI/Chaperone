@@ -170,10 +170,13 @@ async fn malformed_json_gets_error_frame_then_disconnect() {
         .unwrap();
     raw.write_all(body.as_slice()).await.unwrap();
 
-    let mut buf = vec![0u8; 512];
-    let n = raw.read(&mut buf).await.unwrap();
-    let text = String::from_utf8_lossy(&buf[..n]).to_string();
+    // Read until the server closes: error frames may arrive split across
+    // TCP segments.
+    let mut buf = Vec::new();
+    raw.read_to_end(&mut buf).await.unwrap();
+    let text = String::from_utf8_lossy(&buf).to_string();
     assert!(text.contains("not a JSON object"), "got: {text}");
+    assert!(text.contains("\"scope\":\"transport\""), "got: {text}");
 
     server.shutdown();
 }
