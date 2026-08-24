@@ -11,7 +11,7 @@ These four documents define the system. They all derive from one canonical inten
 | 3 | [Threat Model](03-threat-model.md) | Adversaries, the confused-deputy analysis, the secure-fragility tenet, and hardening. |
 | 4 | [Agent Skill](04-agent-skill.md) | The agent-facing projection of the schema. Source under [`../skill/`](../skill/). |
 
-**For implementers:** start with the [Implementation Agent Brief](IMPLEMENTATION_AGENT_BRIEF.md) — it explains how to read these documents and how to build out a phased implementation plan.
+**For implementers:** start with the [Implementation Agent Brief](IMPLEMENTATION_AGENT_BRIEF.md) — it explains how to read these documents and how to build out a phased implementation plan. Building on Apple hardware? Read [BUILDER-NOTES-MACOS.md](BUILDER-NOTES-MACOS.md).
 
 ## Status
 
