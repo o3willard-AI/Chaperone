@@ -236,6 +236,8 @@ external bureaucracy. Status:
       KV-v2 reads, #key selectors for multi-key secrets, auth/404 mapping,
       redirects off; proves scheme dispatch + migration story of ARCH §2.4.
       Provider trait promoted to async (D28) - required by any HTTP backend.
+- [x] **db-scram wire implementation** — SHIPPED in M12 (see above).
+- [x] **HashiCorp Vault provider** (`vault://`) — SHIPPED in M12 (see above).
 - [ ] Enterprise cloud backends (AWS Secrets Manager / GCP / Azure) behind
       the same provider trait, with least-privilege mint() implementations.
 - [ ] Host-key pin store (TOFU journal + known_hosts import) replacing D23's
