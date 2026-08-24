@@ -17,11 +17,13 @@
 //!
 //! Implemented in PLAN Phase 5 ([PLAN](../../docs/PLAN.md) M5).
 
+pub mod hashicorp;
 mod local;
 pub mod provider;
 pub mod sealer;
 mod secret;
 
+pub use hashicorp::VaultKv2;
 pub use local::{LocalVault, VaultError};
 pub use provider::{Provider, ResolveError, VaultRouter};
 #[cfg(feature = "keyring")]

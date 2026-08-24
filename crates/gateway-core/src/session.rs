@@ -68,7 +68,15 @@ pub type ConnectFuture<'a> = std::pin::Pin<
 /// once at establishment.
 pub trait SessionBackend: Send + Sync {
     /// Establishes the channel, consuming the secret exactly once.
-    fn connect<'a>(&'a self, operation: &'a Value, secret: &'a SecretString) -> ConnectFuture<'a>;
+    /// Establishes the channel, consuming the secret exactly once.
+    /// `target_uri` is the signed intent's endpoint; mechanisms that keep
+    /// their endpoint in the operation body may ignore it.
+    fn connect<'a>(
+        &'a self,
+        target_uri: &'a str,
+        operation: &'a Value,
+        secret: &'a SecretString,
+    ) -> ConnectFuture<'a>;
 }
 
 impl Default for SessionTable {

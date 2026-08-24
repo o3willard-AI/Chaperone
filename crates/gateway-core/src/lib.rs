@@ -32,11 +32,15 @@ use chaperone_protocol::ops::HttpOperation;
 use chaperone_vault::VaultRouter;
 use serde_json::{Value, json};
 
+#[cfg(feature = "postgres")]
+pub mod db;
 pub mod privilege;
 pub mod session;
 #[cfg(feature = "ssh")]
 pub mod ssh;
 
+#[cfg(feature = "postgres")]
+pub use db::DbBackend;
 pub use privilege::{LocalPrivBackend, PrivilegeAllowlist};
 pub use session::{OutputBatch, OutputChunk, SessionBackend, SessionChannel, SessionTable};
 #[cfg(feature = "ssh")]
@@ -322,7 +326,7 @@ impl Gateway {
             );
         };
 
-        let secret = match self.router.resolve(&envelope.cred_ref) {
+        let secret = match self.router.resolve(&envelope.cred_ref).await {
             Ok(s) => s,
             Err(e) => {
                 self.audit_decision(
@@ -335,9 +339,10 @@ impl Gateway {
             }
         };
         let operation = envelope.operation.clone();
-        let connect = backend.connect(&operation, &secret);
-        // NOTE: `secret` is still owned here; the future borrows both. It is
-        // dropped right after the await below completes.
+        // NOTE: `secret` and `operation`/`target_uri` are still owned here;
+        // the future borrows all three until the await below completes.
+        let target_uri = envelope.target.uri.clone();
+        let connect = backend.connect(&target_uri, &operation, &secret);
         let channel = match connect.await {
             Ok(c) => c,
             Err(e) => {
@@ -569,7 +574,7 @@ impl Gateway {
         }
 
         // ---- Mechanism routing (post-policy; pre-confirm/resolve) --------
-        const ONE_SHOT: [&str; 2] = ["http-bearer", "http-basic"];
+        const ONE_SHOT: [&str; 3] = ["http-bearer", "http-basic", "db-scram"];
         if !ONE_SHOT.contains(&envelope.mechanism.as_str()) {
             if matches!(envelope.mechanism.as_str(), "ssh" | "local-privilege") {
                 // An unconfigured backend is an honest E_MECHANISM - it must
@@ -677,6 +682,12 @@ impl Gateway {
                 mechanism: envelope.mechanism.clone(),
                 summary: serde_json::from_value::<HttpOperation>(envelope.operation.clone())
                     .map(|op| op.summary())
+                    .or_else(|_| {
+                        serde_json::from_value::<chaperone_protocol::DbOperation>(
+                            envelope.operation.clone(),
+                        )
+                        .map(|op| op.summary())
+                    })
                     .unwrap_or_else(|_| "operation".to_owned()),
             };
             match self.gate.confirm(ctx).await {
@@ -695,6 +706,103 @@ impl Gateway {
                     );
                 }
             }
+        }
+
+        // ---- db-scram one-shot: statement present => run and return -------
+        if envelope.mechanism == "db-scram" {
+            let db_op: chaperone_protocol::DbOperation =
+                match serde_json::from_value(envelope.operation.clone()) {
+                    Ok(op) => op,
+                    Err(e) => {
+                        self.audit_decision(
+                            &envelope,
+                            decision.effect.as_str(),
+                            Outcome::MechanismError,
+                        )
+                        .await;
+                        return Self::error(
+                            message,
+                            "E_MECHANISM",
+                            &format!("operation body invalid: {e}"),
+                        );
+                    }
+                };
+            if db_op.statement.is_some() {
+                let secret = match self.router.resolve(&envelope.cred_ref).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        self.audit_decision(
+                            &envelope,
+                            decision.effect.as_str(),
+                            Outcome::CredentialUnresolved,
+                        )
+                        .await;
+                        return Self::error(message, "E_CRED_UNRESOLVED", &e.to_string());
+                    }
+                };
+                #[cfg(feature = "postgres")]
+                {
+                    match crate::db::execute_one_shot(
+                        &envelope.target.uri.clone(),
+                        &serde_json::to_value(&db_op).unwrap_or(Value::Null),
+                        &secret,
+                    )
+                    .await
+                    {
+                        Ok(mut result) => {
+                            drop(secret);
+                            if let Some(obj) = result.as_object_mut() {
+                                obj.insert("decision".into(), json!(decision.effect.as_str()));
+                                obj.insert(
+                                    "msg_id".into(),
+                                    message.get("msg_id").cloned().unwrap_or(Value::Null),
+                                );
+                            }
+                            let seq = self
+                                .audit_decision(
+                                    &envelope,
+                                    decision.effect.as_str(),
+                                    Outcome::Proceeded,
+                                )
+                                .await
+                                .unwrap_or(0);
+                            if let Some(obj) = result.as_object_mut() {
+                                obj.insert("audit_id".into(), json!(audit_id(seq)));
+                            }
+                            return result;
+                        }
+                        Err(e) => {
+                            drop(secret);
+                            self.audit_decision(
+                                &envelope,
+                                decision.effect.as_str(),
+                                Outcome::MechanismError,
+                            )
+                            .await;
+                            return Self::error(message, "E_MECHANISM", &e);
+                        }
+                    }
+                }
+                #[cfg(not(feature = "postgres"))]
+                {
+                    drop(secret);
+                    self.audit_decision(
+                        &envelope,
+                        decision.effect.as_str(),
+                        Outcome::MechanismError,
+                    )
+                    .await;
+                    return Self::error(
+                        message,
+                        "E_MECHANISM",
+                        "db-scram is not compiled into this build",
+                    );
+                }
+            }
+            // statement-less opener falls through to session routing below.
+            return self
+                .open_session(message, &verified.agent_id.clone(), &envelope, decision)
+                .await;
         }
 
         // ---- Operation body parse (still post-signature) ------------------
@@ -721,7 +829,7 @@ impl Gateway {
         }
 
         // ---- Fetch-late vault resolution -----------------------------------
-        let secret = match self.router.resolve(&envelope.cred_ref) {
+        let secret = match self.router.resolve(&envelope.cred_ref).await {
             Ok(s) => s,
             Err(e) => {
                 self.audit_decision(

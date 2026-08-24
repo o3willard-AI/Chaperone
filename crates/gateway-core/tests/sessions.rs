@@ -12,7 +12,7 @@ use chaperone_gateway_core::{
 use chaperone_identity::{Attestor, EnrollmentStore, IdentityConfig, ReplayCache};
 use chaperone_policy::Policy;
 use chaperone_protocol::testutil::sign_envelope;
-use chaperone_vault::{LocalVault, Provider, ResolveError, SecretString, VaultRouter};
+use chaperone_vault::{LocalVault, Provider, SecretString, VaultRouter};
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
@@ -90,6 +90,7 @@ struct MockSsh {
 impl SessionBackend for MockSsh {
     fn connect<'a>(
         &'a self,
+        _target_uri: &'a str,
         operation: &'a Value,
         secret: &'a SecretString,
     ) -> std::pin::Pin<
@@ -166,12 +167,15 @@ async fn build() -> Spine {
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     struct Counting(Arc<LocalVault>, Arc<std::sync::atomic::AtomicUsize>);
     impl Provider for Counting {
-        fn resolve(&self, entry: &str) -> Result<SecretString, ResolveError> {
+        fn resolve<'a>(&'a self, entry: &'a str) -> chaperone_vault::provider::SecretFuture<'a> {
+            use std::sync::atomic::Ordering;
             self.1.fetch_add(1, Ordering::SeqCst);
-            self.0.resolve(entry)
+            let inner = Arc::clone(&self.0);
+            Box::pin(async move {
+                <chaperone_vault::LocalVault as Provider>::resolve(inner.as_ref(), entry).await
+            })
         }
     }
-    use std::sync::atomic::Ordering;
     let vault_calls = Arc::clone(&calls);
     let mut router = VaultRouter::new();
     router.register("local", Arc::new(Counting(Arc::new(store), vault_calls)));

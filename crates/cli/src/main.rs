@@ -548,6 +548,7 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
         "ssh",
         Arc::new(chaperone_gateway_core::SshBackend::new(host_key_policy)),
     );
+    gateway_core.with_session_backend("db-scram", Arc::new(chaperone_gateway_core::DbBackend));
 
     let gateway = Arc::new(gateway_core);
 

@@ -19,7 +19,7 @@ use chaperone_gateway_core::{
 use chaperone_identity::{Attestor, EnrollmentStore, IdentityConfig, ReplayCache};
 use chaperone_policy::Policy;
 use chaperone_protocol::testutil::sign_envelope;
-use chaperone_vault::{LocalVault, Provider, ResolveError, SecretString, VaultRouter};
+use chaperone_vault::{LocalVault, Provider, SecretString, VaultRouter};
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
@@ -177,9 +177,12 @@ async fn build_spine_with_gate(
         calls: Arc<AtomicUsize>,
     }
     impl Provider for Counting {
-        fn resolve(&self, entry: &str) -> Result<SecretString, ResolveError> {
+        fn resolve<'a>(&'a self, entry: &'a str) -> chaperone_vault::provider::SecretFuture<'a> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            self.inner.resolve(entry)
+            let inner = Arc::clone(&self.inner);
+            Box::pin(async move {
+                <chaperone_vault::LocalVault as Provider>::resolve(inner.as_ref(), entry).await
+            })
         }
     }
     let mut router = VaultRouter::new();

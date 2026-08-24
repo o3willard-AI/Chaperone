@@ -14,10 +14,14 @@ argon2.workspace = true
 base64.workspace = true
 rand_core.workspace = true
 serde.workspace = true
+reqwest.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 zeroize.workspace = true
 keyring = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio.workspace = true
 
 [features]
 # Platform credential-store sealing (D5 first preference). Off by default:

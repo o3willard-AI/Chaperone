@@ -11,6 +11,7 @@
 
 pub mod envelope;
 pub mod ops;
+pub use ops::{DbOperation, PgEndpoint, parse_pg_uri};
 #[cfg(feature = "test-util")]
 pub mod testutil;
 

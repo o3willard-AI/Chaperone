@@ -219,3 +219,29 @@ policy; four v1 mechanisms across both lifecycles; single confirmation gate;
 tamper-evident secret-free audit chain; ephemerality contract everywhere; isolated
 privileged helper; software-only ship with optional enclave mode; conformance suite
 the Agent Skill examples pass against; CI green; every §3 rule test-guarded.
+
+---
+
+## Phase 12 - Technology-spectrum completion *(milestone: M12)*
+
+Post-v1 backlog items pulled forward while release signing waits on
+external bureaucracy. Status:
+
+- [x] **db-scram wire implementation** (was M8's honest deferral): real
+      PostgreSQL SCRAM-SHA-256 via tokio-postgres; one-shot statements +
+      SQL-driven sessions; endpoint rules per D27; params bound as text;
+      NoTls gap documented. Env-gated live tests (`CHAPERONE_TEST_PG`) +
+      CI postgres service job.
+- [x] **HashiCorp Vault provider** (`vault://`): first remote backend,
+      KV-v2 reads, #key selectors for multi-key secrets, auth/404 mapping,
+      redirects off; proves scheme dispatch + migration story of ARCH §2.4.
+      Provider trait promoted to async (D28) - required by any HTTP backend.
+- [ ] Enterprise cloud backends (AWS Secrets Manager / GCP / Azure) behind
+      the same provider trait, with least-privilege mint() implementations.
+- [ ] Host-key pin store (TOFU journal + known_hosts import) replacing D23's
+      refuse-default/opt-out split.
+- [ ] True streaming session.output transport extension (beyond D24 batching).
+- [ ] cargo-fuzz targets layered over the deterministic harness.
+- [ ] Enclave runtime (TPM/SGX) per THREAT-MODEL §5 - the explicit honesty line.
+- [ ] Plugin ABI for injectors + browser-session reference mechanism.
+- [ ] Operator console socket superseding TTY prompting (D8).

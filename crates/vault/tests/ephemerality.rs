@@ -60,26 +60,32 @@ impl Counting {
 }
 
 impl Provider for Counting {
-    fn resolve(&self, entry: &str) -> Result<SecretString, ResolveError> {
+    fn resolve<'a>(&'a self, entry: &'a str) -> chaperone_vault::provider::SecretFuture<'a> {
         self.resolve_calls.fetch_add(1, Ordering::SeqCst);
-        self.inner.resolve(entry)
+        let inner = &self.inner;
+        Box::pin(async move {
+            inner
+                .get(entry)
+                .map_err(|e| ResolveError::Backend(e.to_string()))?
+                .ok_or_else(|| ResolveError::EntryNotFound(entry.to_owned()))
+        })
     }
 }
 
-#[test]
-fn cred_ref_resolves_through_scheme_dispatch() {
+#[tokio::test]
+async fn cred_ref_resolves_through_scheme_dispatch() {
     let dir = tempfile::tempdir().unwrap();
     let vault = Arc::new(seeded_store(dir.path()));
 
     let mut router = VaultRouter::new();
     router.register("local", vault.clone());
 
-    let secret = router.resolve(&format!("local://{ENTRY}")).unwrap();
+    let secret = router.resolve(&format!("local://{ENTRY}")).await.unwrap();
     assert_eq!(secret.expose(), "sk-simulated-value-not-a-real-key");
 }
 
-#[test]
-fn unsupported_schemes_report_cleanly() {
+#[tokio::test]
+async fn unsupported_schemes_report_cleanly() {
     let dir = tempfile::tempdir().unwrap();
     let vault = Arc::new(seeded_store(dir.path()));
     let mut router = VaultRouter::new();
@@ -93,7 +99,7 @@ fn unsupported_schemes_report_cleanly() {
         "noscheme",
         "local://",
     ] {
-        let err = router.resolve(r).unwrap_err();
+        let err = router.resolve(r).await.unwrap_err();
         assert!(
             matches!(
                 err,
@@ -104,8 +110,8 @@ fn unsupported_schemes_report_cleanly() {
     }
 }
 
-#[test]
-fn retry_refetches_two_backend_hits_no_cache() {
+#[tokio::test]
+async fn retry_refetches_two_backend_hits_no_cache() {
     let dir = tempfile::tempdir().unwrap();
     let counting = Counting {
         inner: Arc::new(seeded_store(dir.path())),
@@ -113,15 +119,15 @@ fn retry_refetches_two_backend_hits_no_cache() {
     };
 
     // Same reference twice - a retry-shaped pattern.
-    let first = counting.resolve(ENTRY).unwrap();
-    let second = counting.resolve(ENTRY).unwrap();
+    let first = counting.resolve(ENTRY).await.unwrap();
+    let second = counting.resolve(ENTRY).await.unwrap();
 
     assert_eq!(counting.calls(), 2, "every resolve must hit the backend");
     assert_eq!(first.expose(), second.expose());
 }
 
-#[test]
-fn router_itself_caches_nothing() {
+#[tokio::test]
+async fn router_itself_caches_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let counting = Arc::new(Counting {
         inner: Arc::new(seeded_store(dir.path())),
@@ -131,13 +137,13 @@ fn router_itself_caches_nothing() {
     router.register("local", counting.clone());
 
     for _ in 0..25 {
-        router.resolve(&format!("local://{ENTRY}")).unwrap();
+        router.resolve(&format!("local://{ENTRY}")).await.unwrap();
     }
     assert_eq!(counting.calls(), 25, "no memoization at any layer");
 }
 
-#[test]
-fn nothing_survives_restart_except_the_encrypted_store() {
+#[tokio::test]
+async fn nothing_survives_restart_except_the_encrypted_store() {
     let dir = tempfile::tempdir().unwrap();
     let counting = Arc::new(Counting {
         inner: Arc::new(seeded_store(dir.path())),
@@ -145,7 +151,7 @@ fn nothing_survives_restart_except_the_encrypted_store() {
     });
 
     // First process-generation resolves.
-    counting.resolve(ENTRY).unwrap();
+    counting.resolve(ENTRY).await.unwrap();
     assert_eq!(counting.calls(), 1);
 
     // Restart: fresh store handle + fresh cache state by construction.
@@ -161,7 +167,7 @@ fn nothing_survives_restart_except_the_encrypted_store() {
         inner: reopened,
         resolve_calls: AtomicUsize::new(0),
     };
-    fresh_counter.resolve(ENTRY).unwrap();
+    fresh_counter.resolve(ENTRY).await.unwrap();
     assert_eq!(fresh_counter.calls(), 1, "restart starts from zero cache");
 }
 
@@ -172,15 +178,17 @@ fn plaintext_is_redacted_in_accidental_channels() {
     assert!(!format!("{s}").contains("leak-me-not"));
 }
 
-#[test]
-fn missing_entries_fail_without_content_leaks() {
+#[tokio::test]
+async fn missing_entries_fail_without_content_leaks() {
     let dir = tempfile::tempdir().unwrap();
     let vault = seeded_store(dir.path());
     match vault.get("does/not/exist").unwrap() {
         None => {}
         Some(_) => panic!("missing entry resolved"),
     }
-    let err = Provider::resolve(&vault, "does/not/exist").unwrap_err();
+    let err = Provider::resolve(&vault, "does/not/exist")
+        .await
+        .unwrap_err();
     let rendered = err.to_string();
     assert!(
         rendered.contains("does/not/exist"),
@@ -256,10 +264,10 @@ fn writes_are_atomic_and_durable_across_reopen() {
     }
 }
 
-#[test]
-fn mint_on_static_local_reports_unsupported_not_fake_scoping() {
+#[tokio::test]
+async fn mint_on_static_local_reports_unsupported_not_fake_scoping() {
     let dir = tempfile::tempdir().unwrap();
     let vault = seeded_store(dir.path());
-    let err = Provider::mint(&vault, ENTRY, 300).unwrap_err();
+    let err = Provider::mint(&vault, ENTRY, 300).await.unwrap_err();
     assert!(err.to_string().contains("minting"), "{err}");
 }

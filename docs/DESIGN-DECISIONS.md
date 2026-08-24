@@ -379,3 +379,56 @@ vault's malformed-reference error must not echo that text back (it would
 land in logs and audit evidence verbatim). Malformed cred_ref errors are
 content-free and shape-teaching ("must look like scheme://entry-path").
 Pinned by test alongside the skill's paste-token anti-pattern case.
+
+## D27 - db-scram endpoint & lifecycle mapping
+
+PROTO-SPEC's db-scram operation body carries engine/database/statement/
+params but no host - so the connection endpoint lives in `target.uri`
+(`postgres://user@host:port/dbname`, hand-parsed tiny grammar, everything
+else rejected). Guards:
+
+- `operation.database` contradicting the URI path fails BEFORE connecting -
+  a signed-intent ambiguity must not silently resolve to whichever database
+  answered.
+- Statement present => ONE-SHOT (connect/auth/run/serialize/drop);
+  statement absent => SESSION opener. This mirrors the intent-catalog's
+  "single query vs session" split without inventing a third message type.
+- SCRAM-SHA-256 performed by tokio-postgres; the secret exists only as the
+  password inside one connect frame (never verbatim on the wire - that is
+  what SCRAM is).
+- Params bound AS TEXT via prepared statements (injection-safe); explicit
+  `$1::int` casts disambiguate types.
+- TLS-to-DB is NOT negotiated in v0 (NoTls): documented gap, tracked
+  post-v1 with the rustls connector work.
+
+## D28 - Provider goes async
+
+`Provider::resolve/mint` return boxed futures now: HTTP backends (Vault,
+cloud SDKs later) are inherently async and forcing sync signatures would
+push block_on into either providers or every call site. `VaultRouter::
+resolve` is async too but validates scheme dispatch synchronously first, so
+malformed refs fail without entering the future. LocalVault wraps its
+sync get in the same boxed shape. No caching appeared anywhere in the
+conversion (the counting tests still prove 25 calls = 25 hits).
+
+## D29 - HashiCorp Vault KV-v2 provider scope
+
+First remote backend (`vault://mount/data/path#key`):
+- KV-v2 READS over token-authenticated HTTP(S) via reqwest/rustls;
+  redirects disabled like injectors.
+- Single-key secrets resolve directly; multi-key secrets REQUIRE a
+  `#key` selector rather than guessing - ambiguity is refused loudly.
+- 401/403 map to "vault rejected the token", 404 to EntryNotFound;
+  neither echoes the requested path beyond what the caller already sent.
+- Dynamic engines (database creds, PKI) plug into mint() post-v1; KV is
+  static by nature so mint stays unsupported here.
+- serve wiring: --vault-url [--vault-mount], token from VAULT_TOKEN env
+  (operator-managed; interactive token entry lands with the console).
+
+## D30 - Post-v1 backlog codified
+
+The deferrals called out during M7-M11 are tracked in PLAN.md's new
+"Post-v1 backlog" section so they are roadmap, not folklore: db-scram wire
+implementation (SHIPPED this phase), enterprise providers (Vault SHIPPED),
+host-key pin store, streaming transport extension, cargo-fuzz targets,
+enclave runtime, plugin ABI + browser-session, operator console socket.

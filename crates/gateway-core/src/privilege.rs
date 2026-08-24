@@ -88,6 +88,7 @@ impl LocalPrivBackend {
 impl SessionBackend for LocalPrivBackend {
     fn connect<'a>(
         &'a self,
+        _target_uri: &'a str,
         operation: &'a Value,
         _secret: &'a SecretString,
     ) -> std::pin::Pin<

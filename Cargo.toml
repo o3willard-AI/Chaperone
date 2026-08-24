@@ -34,8 +34,9 @@ keyring = { version = "3", default-features = false, features = [
 ] }
 rpassword = "7"
 rand_core = { version = "0.6", features = ["getrandom"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 russh = "0.60"
+tokio-postgres = "0.7"
 sha2 = "0.10"
 zeroize = "1"
 serde = { version = "1", features = ["derive"] }

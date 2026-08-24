@@ -5,7 +5,14 @@
 //! performs no caching - every resolve is a fresh backend call (ARCH §2.9),
 //! which is what makes "a retry is a fresh fetch" true by construction.
 
+use std::future::Future;
+use std::pin::Pin;
+
 use crate::secret::SecretString;
+
+/// The boxed future `resolve`/`mint` return.
+pub type SecretFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<SecretString, ResolveError>> + Send + 'a>>;
 
 /// Failures resolving a credential reference.
 #[derive(Debug)]
@@ -53,24 +60,29 @@ impl std::error::Error for ResolveError {}
 /// Implementations MUST return a fresh fetch on every call: caching inside a
 /// provider would defeat ARCH §2.9's re-fetch-on-retry tenet.
 pub trait Provider: Send + Sync {
-    /// Freshly resolves one entry into a zeroizing handle.
-    fn resolve(&self, entry: &str) -> Result<SecretString, ResolveError>;
+    /// Freshly resolves one entry into a zeroizing handle. Every call hits
+    /// the backend - no caching at this layer (ARCH §2.9).
+    fn resolve<'a>(&'a self, entry: &'a str) -> SecretFuture<'a>;
 
     /// Mints the narrowest short-lived credential for an operation where the
     /// backend supports dynamic secrets (ARCH §2.4). Static backends report
     /// unsupported rather than pretending to scope.
-    fn mint(&self, _entry: &str, _ttl_secs: u64) -> Result<SecretString, ResolveError> {
-        Err(ResolveError::Backend(
-            "backend does not support short-lived minting".to_owned(),
-        ))
+    fn mint<'a>(&'a self, _entry: &'a str, _ttl_secs: u64) -> SecretFuture<'a> {
+        Box::pin(async {
+            Err(ResolveError::Backend(
+                "backend does not support short-lived minting".to_owned(),
+            ))
+        })
     }
 }
 
 impl Provider for crate::local::LocalVault {
-    fn resolve(&self, entry: &str) -> Result<SecretString, ResolveError> {
-        self.get(entry)
-            .map_err(|e| ResolveError::Backend(e.to_string()))?
-            .ok_or_else(|| ResolveError::EntryNotFound(entry.to_owned()))
+    fn resolve<'a>(&'a self, entry: &'a str) -> SecretFuture<'a> {
+        Box::pin(async move {
+            self.get(entry)
+                .map_err(|e| ResolveError::Backend(e.to_string()))?
+                .ok_or_else(|| ResolveError::EntryNotFound(entry.to_owned()))
+        })
     }
 }
 
@@ -99,20 +111,29 @@ impl VaultRouter {
     }
 
     /// Splits `scheme://entry` and resolves it fresh through the provider.
-    pub fn resolve(&self, cred_ref: &str) -> Result<SecretString, ResolveError> {
-        let (scheme, entry) = cred_ref
-            .split_once("://")
-            .ok_or_else(|| ResolveError::MalformedCredRef(cred_ref.to_owned()))?;
-        if scheme.is_empty() || entry.is_empty() {
-            return Err(ResolveError::MalformedCredRef(cred_ref.to_owned()));
-        }
-        let provider =
-            self.providers
-                .get(scheme)
-                .ok_or_else(|| ResolveError::UnsupportedScheme {
-                    scheme: scheme.to_owned(),
-                    supported: self.schemes(),
-                })?;
-        provider.resolve(entry)
+    pub fn resolve(&self, cred_ref: &str) -> SecretFuture<'_> {
+        // Validate + clone the dispatch decision synchronously, then hand
+        // the backend call to the returned future.
+        let dispatch: Result<(std::sync::Arc<dyn Provider>, String), ResolveError> = (|| {
+            let (scheme, entry) = cred_ref
+                .split_once("://")
+                .ok_or_else(|| ResolveError::MalformedCredRef(cred_ref.to_owned()))?;
+            if scheme.is_empty() || entry.is_empty() {
+                return Err(ResolveError::MalformedCredRef(cred_ref.to_owned()));
+            }
+            let provider =
+                self.providers
+                    .get(scheme)
+                    .ok_or_else(|| ResolveError::UnsupportedScheme {
+                        scheme: scheme.to_owned(),
+                        supported: self.schemes(),
+                    })?;
+            Ok((std::sync::Arc::clone(provider), entry.to_owned()))
+        })();
+
+        Box::pin(async move {
+            let (provider, entry) = dispatch?;
+            provider.resolve(&entry).await
+        })
     }
 }

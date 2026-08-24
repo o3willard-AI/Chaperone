@@ -59,6 +59,7 @@ impl SshBackend {
 impl SessionBackend for SshBackend {
     fn connect<'a>(
         &'a self,
+        _target_uri: &'a str,
         operation: &'a Value,
         secret: &'a SecretString,
     ) -> crate::session::ConnectFuture<'a> {
