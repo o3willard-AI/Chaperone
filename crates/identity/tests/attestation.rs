@@ -490,7 +490,10 @@ fn replay_cache_survives_restart() {
     );
     // Freshness fails first (old issued_at), which is fine — drive the cache
     // directly to prove expiry purges state.
-    assert!(cache.check_and_reserve(AGENT, "across-restart", later.unix_timestamp(), SKEW * 3));
+    assert_eq!(
+        cache.check_and_reserve(AGENT, "across-restart", later.unix_timestamp(), SKEW * 3),
+        chaperone_identity::replay::Reservation::Fresh
+    );
 }
 
 #[test]

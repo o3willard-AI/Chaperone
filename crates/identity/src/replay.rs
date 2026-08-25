@@ -40,6 +40,27 @@ struct Inner {
     journal_lines_written: u64,
 }
 
+/// Outcome of a reservation attempt (PROTO-SPEC §4 step 2a).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reservation {
+    /// Nonce unseen: reserved locally and journaled.
+    Fresh,
+    /// Nonce already reserved within retention: REPLAY.
+    Duplicate,
+    /// The persisted journal exceeded its size cap and compaction could not
+    /// reclaim enough space. The reservation was NOT made; the caller must
+    /// refuse the intent. Self-heals as entries age out (D34).
+    CapacityFull,
+}
+
+impl Reservation {
+    /// True only for [`Reservation::Fresh`].
+    #[must_use]
+    pub fn is_fresh(self) -> bool {
+        matches!(self, Reservation::Fresh)
+    }
+}
+
 /// Failures of the replay cache's persistence layer.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -67,7 +88,13 @@ impl std::error::Error for ReplayCacheError {}
 pub struct ReplayCache {
     inner: Mutex<Inner>,
     path: Option<PathBuf>,
+    max_journal_bytes: u64,
 }
+
+/// Default hard cap on the persisted journal (DESIGN-DECISIONS D34):
+/// bounds disk growth from unverified input. When exceeded, new intents
+/// are refused until entries age out and compaction reclaims space.
+pub const DEFAULT_MAX_JOURNAL_BYTES: u64 = 16 * 1024 * 1024;
 
 impl ReplayCache {
     /// In-memory cache only (tests).
@@ -80,7 +107,15 @@ impl ReplayCache {
                 journal_lines_written: 0,
             }),
             path: None,
+            max_journal_bytes: DEFAULT_MAX_JOURNAL_BYTES,
         }
+    }
+
+    /// Overrides the journal size cap (testing, constrained disks).
+    #[must_use]
+    pub fn with_journal_cap(mut self, bytes: u64) -> Self {
+        self.max_journal_bytes = bytes;
+        self
     }
 
     /// Opens (or creates) a persisted cache at `path`.
@@ -117,6 +152,7 @@ impl ReplayCache {
                 journal_lines_written: 0,
             }),
             path: Some(path.to_path_buf()),
+            max_journal_bytes: DEFAULT_MAX_JOURNAL_BYTES,
         };
         // If what survived is much smaller than what was written, start the
         // new journal fresh instead of appending onto dead weight.
@@ -134,42 +170,72 @@ impl ReplayCache {
         Ok(cache)
     }
 
-    /// Reserves `(agent, nonce)` if unseen within retention; returns whether
-    /// the pair was fresh.
+    /// Reserves `(agent, nonce)` if unseen within retention.
+    ///
+    /// Capacity policy (DESIGN-DECISIONS D34): if the persisted journal is
+    /// over its byte cap, compaction runs once; if it is STILL over (a flood
+    /// of not-yet-expired reservations), the reservation is rolled back and
+    /// [`Reservation::CapacityFull`] returned — fail closed, bounded disk,
+    /// self-healing as entries age out.
     pub fn check_and_reserve(
         &self,
         agent: &str,
         nonce: &str,
         now_unix: i64,
         retention_secs: i64,
-    ) -> bool {
+    ) -> Reservation {
         debug_assert!(retention_secs > 0);
         let expires = now_unix.saturating_add(retention_secs);
 
         let mut inner = self.lock_mut();
         inner.purge_expired(now_unix);
 
-        let key = (agent.to_owned(), nonce.to_owned());
-        if inner.seen.contains_key(&key) {
-            return false;
+        let agent_owned = agent.to_owned();
+        let nonce_owned = nonce.to_owned();
+        if inner
+            .seen
+            .contains_key(&(agent_owned.clone(), nonce_owned.clone()))
+        {
+            return Reservation::Duplicate;
         }
-        inner.seen.insert(key.clone(), expires);
-        inner.insertion_order.push_back((key.0, key.1, expires));
+        inner
+            .seen
+            .insert((agent_owned.clone(), nonce_owned.clone()), expires);
+        inner
+            .insertion_order
+            .push_back((agent_owned, nonce_owned, expires));
         inner.journal_lines_written += 1;
 
-        let mut already_journaled = false;
-        if self.path.is_some() && inner.journal_lines_written >= 1024 {
+        let journaled = if let Some(path) = self.path.as_deref() {
+            // Compact when the journal is mostly dead weight, or when it has
+            // blown through the size cap.
+            let len = journal_len(path);
             let live = u64::try_from(inner.seen.len()).unwrap_or(u64::MAX);
-            if live * 2 < inner.journal_lines_written {
-                // The rewrite includes the entry pushed above.
+            let due = inner.journal_lines_written >= 1024 && live * 2 < inner.journal_lines_written;
+            if len > self.max_journal_bytes || due {
                 self.rewrite_journal(&mut inner);
-                already_journaled = true;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if let Some(path) = self.path.as_deref() {
+            let len = journal_len(path);
+            if len > self.max_journal_bytes {
+                // Still over after compaction: roll back this reservation
+                // entirely and refuse. Nothing was appended for it.
+                inner.seen.remove(&(agent.to_owned(), nonce.to_owned()));
+                inner.insertion_order.pop_back();
+                return Reservation::CapacityFull;
+            }
+            if !journaled {
+                self.append_line(agent, nonce, expires);
             }
         }
-        if self.path.is_some() && !already_journaled {
-            self.append_line(agent, nonce, expires);
-        }
-        true
+        Reservation::Fresh
     }
 
     /// Number of currently-reserved nonces (observability/tests).
@@ -261,10 +327,84 @@ impl Inner {
     }
 }
 
+fn journal_len(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
 fn count_lines(path: &Path) -> Result<u64, ReplayCacheError> {
     match std::fs::File::open(path) {
         Ok(file) => Ok(std::io::BufReader::new(file).lines().count() as u64),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
         Err(e) => Err(ReplayCacheError::Io(e)),
+    }
+}
+
+// Tests are allowed to panic: a failing assert IS the test result.
+// Tests are allowed to panic: a failing assert IS the test result.
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+
+    #[test]
+    fn journal_cap_refuses_when_full_and_self_heals_after_expiry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("r.jsonl");
+        let now: i64 = 1_000_000;
+        // Tiny cap so ~a handful of entries blow through it.
+        let cache = ReplayCache::open(&path, now)
+            .unwrap()
+            .with_journal_cap(1024);
+
+        let mut reserved = 0;
+        let mut hit_cap = false;
+        for i in 0..500 {
+            let nonce = format!("flood-{i}");
+            match cache.check_and_reserve("agent:a", &nonce, now, 300) {
+                Reservation::Fresh => reserved += 1,
+                Reservation::CapacityFull => {
+                    hit_cap = true;
+                    break;
+                }
+                Reservation::Duplicate => unreachable!("unique nonces"),
+            }
+        }
+        assert!(
+            hit_cap,
+            "flood must eventually hit the cap (reserved={reserved})"
+        );
+
+        // Refusals must not have journaled the refused entry: file stays
+        // bounded.
+        let len = std::fs::metadata(&path).unwrap().len();
+        assert!(len <= 2048, "journal grew past cap: {len}");
+
+        // After entries age out, compaction reclaims and reservations resume.
+        let later = now + 301;
+        match cache.check_and_reserve("agent:a", "post-expiry", later, 300) {
+            Reservation::Fresh => {}
+            other => panic!("expected Fresh after expiry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_still_detected_alongside_capacity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("r.jsonl");
+        let now: i64 = 2_000_000;
+        let cache = ReplayCache::open(&path, now)
+            .unwrap()
+            .with_journal_cap(1024);
+
+        assert!(
+            cache
+                .check_and_reserve("agent:b", "keep-me", now, 600)
+                .is_fresh()
+        );
+        assert_eq!(
+            cache.check_and_reserve("agent:b", "keep-me", now + 1, 600),
+            Reservation::Duplicate,
+            "duplicate detection survives capacity pressure"
+        );
     }
 }

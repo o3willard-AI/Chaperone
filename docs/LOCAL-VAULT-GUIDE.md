@@ -81,6 +81,13 @@ printf '%s\n%s\n' "$PASSPHRASE" "$(cat deploy_key.pem)" | \
   chaperone vault-set --store v.bin --path prod/deploy/key --passphrase-stdin
 ```
 
+> **⚠️ Passphrase hygiene with pipes.** Anything you type literally on a
+> command line — including a passphrase — lands in your shell history
+> (`~/.bash_history`, `~/.zsh_history`). The examples above use a
+> `$PASSPHRASE` variable or a file *on purpose*. For real credentials:
+> prefer the interactive prompt (no `--passphrase-stdin`), or read from a
+> `0600` file/fd. Never inline production passphrases into commands.
+
 ### 3.3 Reading
 
 ```sh
@@ -145,7 +152,7 @@ chaperone serve \
   --policy     ~/.config/chaperone/policy.toml \
   --store      ~/.config/chaperone/vault.bin \
   --audit-journal ~/.config/chaperone/audit.jsonl \
-  --audit-key     ~/.config/chaperone/release.key \
+  --audit-key     ~/.config/chaperone/audit.key \
   [--console-socket ~/.config/chaperone/console.sock]
 ```
 

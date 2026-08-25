@@ -468,3 +468,26 @@ never contaminates the root build. Each target documents its invariant
 (Ok-or-typed-Err, never panic; policy evaluation additionally asserted
 PURE inside the loop). They complement - not replace - the deterministic
 20k-mutation harness that gates every CI run.
+
+## D34 - Replay-journal capacity policy
+
+The nonce reservation order in §4 (reserve BEFORE signature verification)
+is load-bearing against duplicate-intent races — but it means unverified
+input drives journal growth. Policy: the persisted replay journal has a
+hard byte cap (16 MiB default, overridable per-instance). When exceeded:
+
+1. Compaction runs once (purge expired, rewrite).
+2. If still over: the in-flight reservation is rolled back entirely and the
+   intent is refused `E_REPLAY` ("replay cache at capacity") — fail closed,
+   nothing journaled for refused intents.
+
+Self-healing: refusals persist only while flood-era entries remain within
+retention (~3× skew); as they expire, compaction reclaims space and service
+resumes without operator action.
+
+**Rejected alternative (B):** deferring persistence until after signature
+verification would keep garbage off disk but reintroduces a crash-window
+replay: a daemon crash between acceptance and persistence forgets the nonce,
+letting a captured intent be replayed once across restart — precisely what
+D6's persistence exists to prevent. Option B remains available if a future
+threat model prefers it; switching is a contained change.

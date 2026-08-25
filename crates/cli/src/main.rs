@@ -694,6 +694,17 @@ fn run(args: Vec<String>) -> Result<(), String> {
         print!("{USAGE}");
         return Ok(());
     };
+    match command.as_str() {
+        "version" | "--version" | "-V" => {
+            println!(
+                "chaperone {} (protocol {}, gateway spec v0.1)",
+                env!("CARGO_PKG_VERSION"),
+                chaperone_protocol::PROTOCOL_VERSION
+            );
+            return Ok(());
+        }
+        _ => {}
+    }
     let flags = parse_flags(&args[1..])?;
     match command.as_str() {
         "enroll" => cmd_enroll(&flags),

@@ -166,11 +166,19 @@ impl Attestor {
             _ => return Err(IdentityError::Replay("missing nonce")),
         };
         let retention = self.config.max_skew_secs.saturating_mul(3);
-        if !self
+        match self
             .replay
             .check_and_reserve(&agent_id, &nonce, now.unix_timestamp(), retention)
         {
-            return Err(IdentityError::Replay("nonce already used"));
+            replay::Reservation::Fresh => {}
+            replay::Reservation::Duplicate => {
+                return Err(IdentityError::Replay("nonce already used"));
+            }
+            replay::Reservation::CapacityFull => {
+                // D34 fail-closed: bounded journal; refusals self-heal as
+                // entries age out and compaction reclaims space.
+                return Err(IdentityError::Replay("replay cache at capacity"));
+            }
         }
 
         // ---- Step 3: signature over the canonical form ------------------
