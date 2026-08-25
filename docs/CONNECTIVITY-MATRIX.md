@@ -66,7 +66,7 @@ The agent never touches a secret.
 
 | Backend | Scheme | Status | Notes |
 |---|---|---|---|
-| Built-in sealed local vault | `local://` | ✅ | argon2id + AES-256-GCM, platform-keyring option behind feature flag |
+| Built-in sealed local vault | `local://` | ✅ | argon2id + AES-256-GCM, platform-keyring option behind feature flag. **User guide: [LOCAL-VAULT-GUIDE.md](LOCAL-VAULT-GUIDE.md)** |
 | **HashiCorp Vault KV-v2** | `vault://` | ✅ | Token auth; single-key direct, `path#key` selector for multi-key; dynamic engines via `mint()` post-v1 |
 | AWS Secrets Manager | 🗺️ `aws://` | planned | SigV4 signing needed; deferred until a verifiable test surface (LocalStack) exists |
 | GCP Secret Manager | 🗺️ `gcp://` | planned | OAuth2 service-account JWT |
