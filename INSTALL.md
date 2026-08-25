@@ -1,0 +1,110 @@
+# Installing Chaperone
+
+Per-user install from release archives. **No root/admin required for the
+base install**; no corporate code signing yet (see
+[RELEASE.md](RELEASE.md) for verification — do that first).
+
+Artifacts: `chaperone` (CLI + gateway daemon), `chaperone-helper` (isolated
+privileged-command helper), install scripts, service templates.
+
+## Linux
+
+```sh
+tar xzf chaperone-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
+cd chaperone-vX.Y.Z-x86_64-unknown-linux-gnu
+./install.sh
+```
+
+What it does: binaries → `~/.local/bin` · systemd **user** unit installed
+(`chaperoned.service`) · config skeleton at `~/.config/chaperone` · prints a
+post-install checklist including the optional sudoers line.
+
+Manage the service:
+
+```sh
+systemctl --user enable --now chaperoned   # start + enable at login
+systemctl --user status chaperoned
+journalctl --user -u chaperoned -f
+systemctl --user disable --now chaperoned  # stop
+```
+
+### Optional: privileged local commands (sudoers)
+
+The daemon runs unprivileged. To let agents run pinned commands as root:
+
+```sh
+sudo cp packaging/sudoers.chaperone-helper.example /etc/sudoers.d/chaperone-helper
+sudo mkdir -p /etc/chaperone && sudo install -m 0444 -o root \
+  packaging/helper-allow.toml.example /etc/chaperone/helper-allow.toml
+sudo visudo -c   # validate!
+```
+
+Edit BOTH files to your reality first. The allowlist must stay ROOT-OWNED:
+the helper refuses user-owned allowlists when elevated, because editing your
+own list would otherwise become arbitrary-root-exec. Then point the daemon's
+`helper_argv` (serve config) at `sudo -n /usr/local/bin/chaperone-helper`.
+
+## macOS
+
+```sh
+tar xzf chaperone-vX.Y.Z-aarch64-apple-darwin.tar.gz
+cd chaperone-vX.Y.Z-aarch64-apple-darwin
+./install.sh
+launchctl load ~/Library/LaunchAgents/ai.chaperone.gw.plist   # start
+launchctl list | grep chaperone                               # verify
+launchctl unload ~/Library/LaunchAgents/ai.chaperone.gw.plist # stop
+```
+
+Gatekeeper will warn on first download — verify per [RELEASE.md](RELEASE.md)
+instead of bypassing blindly. Privileged commands: same sudoers approach as
+Linux above.
+
+## Windows (preview quality)
+
+```powershell
+Expand-Archive chaperone-vX.Y.Z-x86_64-pc-windows-msvc.zip
+cd chaperone-vX.Y.Z-x86_64-pc-windows-msvc
+powershell -ExecutionPolicy Bypass -File install.ps1
+Start-ScheduledTask -TaskName ChaperoneGateway     # start
+Get-ScheduledTask ChaperoneGateway                 # verify
+schtasks /End /TN ChaperoneGateway                 # stop
+```
+
+SmartScreen may prompt; verify hash+signature. The daemon runs as a logon
+Scheduled Task (no service account without codesigning — preview tradeoff).
+Privilege elevation on Windows is not yet packaged.
+
+## Vault passphrase for services
+
+The daemon unlocks your vault at startup. Headless services read it from a
+file you protect:
+
+```sh
+umask 077
+printf 'your-passphrase\n' > ~/.config/chaperone/vault.pass
+```
+
+(Windows: `Set-Content $HOME\.config\chaperone\vault.pass "your-passphrase"`.)
+Tradeoff documented: file-on-disk beats command-line/history leakage, but is
+still plaintext at rest — protect it like the vault itself.
+
+## Upgrades
+
+1. Stop the service.
+2. Extract the new archive; re-run `./install.sh` (binaries and units are
+   replaced; **data in `~/.config/chaperone` is never touched**).
+3. Start the service; `chaperone version` to confirm.
+
+Data formats are versioned; format migrations are explicit releases notes
+items, never silent.
+
+## Uninstall
+
+```sh
+./uninstall.sh        # or uninstall.ps1 on Windows
+```
+
+Stops/removes services and binaries. Your data directory
+(`~/.config/chaperone`) is preserved — delete it manually only when certain;
+it contains your vault (unrecoverable passphrase protection applies) and the
+audit chain (your evidence).

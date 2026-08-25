@@ -51,6 +51,9 @@ jobs:
           cp target/release/chaperone "$STAGE/"
           cp target/release/chaperone-helper "$STAGE/"
           cp README.md LICENSE "$STAGE/"
+          cp install.sh uninstall.sh "$STAGE/"
+          mkdir -p "$STAGE/packaging"
+          cp packaging/* "$STAGE/packaging/"
           tar czf "chaperone-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" -C stage .
 
       - name: Package (windows)
@@ -63,6 +66,8 @@ jobs:
           Copy-Item target/release/chaperone-helper.exe $stage/
           Copy-Item README.md $stage/
           Copy-Item LICENSE $stage/
+          if (Test-Path install.ps1) { Copy-Item install.ps1 $stage/ }
+          if (Test-Path uninstall.ps1) { Copy-Item uninstall.ps1 $stage/ }
           Compress-Archive -Path $stage -DestinationPath "$stage.zip"
 
       - name: Checksum

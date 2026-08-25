@@ -13,6 +13,7 @@ name = "chaperone"
 path = "src/main.rs"
 
 [dev-dependencies]
+tempfile.workspace = true
 serde_json.workspace = true
 
 [dependencies]

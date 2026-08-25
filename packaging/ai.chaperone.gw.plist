@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.chaperone.gw</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>%H/.local/bin/chaperone</string>
+        <string>serve</string>
+        <string>--enrollment</string>
+        <string>%H/.config/chaperone/enrollment.json</string>
+        <string>--policy</string>
+        <string>%H/.config/chaperone/policy.toml</string>
+        <string>--store</string>
+        <string>%H/.config/chaperone/vault.bin</string>
+        <string>--audit-journal</string>
+        <string>%H/.config/chaperone/audit.jsonl</string>
+        <string>--audit-key</string>
+        <string>%H/.config/chaperone/audit.key</string>
+        <string>--passphrase-file</string>
+        <string>%H/.config/chaperone/vault.pass</string>
+        <string>--console-socket</string>
+        <string>%H/.config/chaperone/console.sock</string>
+    </array>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+</dict>
+</plist>

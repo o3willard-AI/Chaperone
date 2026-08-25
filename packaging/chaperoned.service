@@ -1,0 +1,18 @@
+[Unit]
+Description=Chaperone gateway daemon (per-user)
+After=network-online.target
+
+[Service]
+ExecStart=%H/.local/bin/chaperone serve \
+  --enrollment %H/.config/chaperone/enrollment.json \
+  --policy %H/.config/chaperone/policy.toml \
+  --store %H/.config/chaperone/vault.bin \
+  --audit-journal %H/.config/chaperone/audit.jsonl \
+  --audit-key %H/.config/chaperone/audit.key \
+  --passphrase-file %H/.config/chaperone/vault.pass \
+  --console-socket %H/.config/chaperone/console.sock
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

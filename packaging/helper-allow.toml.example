@@ -1,0 +1,12 @@
+# Chaperone privileged-helper allowlist.
+# Install ROOT-OWNED (0444) at /etc/chaperone/helper-allow.toml.
+# Each entry pins an EXACT command plus a required argument prefix;
+# anything not matching is refused by the helper itself.
+
+[[allow]]
+command = "/usr/bin/systemctl"
+args = ["restart", "app.service"]
+
+[[allow]]
+command = "/usr/bin/journalctl"
+args = ["-u", "app.service"]

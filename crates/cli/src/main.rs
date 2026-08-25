@@ -32,6 +32,7 @@ GATEWAY DAEMON:
     chaperone serve --socket <PATH> --enrollment <FILE> --policy <TOML>
                     --store <VAULT> --audit-journal <FILE> --audit-key <SEED>
                     [--tcp-port N] [--max-response-bytes N] [--timeout-secs N]
+                    [--passphrase-file PATH]
                     [--confirm-timeout-secs N|--confirm never-approve]
                     [--console-socket PATH] [--trust-host-keys]
                     [--ssh-known-hosts PATH] [--ssh-tofu]
@@ -362,8 +363,18 @@ fn cmd_audit_export(flags: &Flags) -> Result<(), String> {
 
 // ---------- local vault ----------
 
-/// Passphrase from stdin (first line, piped scripts) or a hidden prompt.
+/// Passphrase from a 0600 file (service-friendly), stdin first line
+/// (piped scripts), or a hidden prompt.
 fn read_passphrase(flags: &Flags, confirm: bool) -> Result<Zeroizing<String>, String> {
+    if let Some(path) = flags.values.get("passphrase-file") {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| format!("cannot read passphrase file {path}: {e}"))?;
+        let line = text.lines().next().unwrap_or_default().to_owned();
+        if line.is_empty() {
+            return Err(format!("passphrase file {path} is empty"));
+        }
+        return Ok(Zeroizing::new(line));
+    }
     if flags.has("passphrase-stdin") {
         use std::io::BufRead;
         let mut line = String::new();

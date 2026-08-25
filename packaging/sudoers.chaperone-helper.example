@@ -1,0 +1,10 @@
+# Chaperone privileged-helper sudoers rule (install with: sudo visudo -f /etc/sudoers.d/chaperone-helper)
+#
+# Grants the members of this group passwordless root execution of the helper,
+# whose allowlist pins exact commands + argument prefixes. The allowlist file
+# MUST be root-owned: the helper refuses a user-writable allowlist when
+# elevated (--elevated), because editing your own list would otherwise be
+# arbitrary-root-exec.
+#
+# Replace `%chaperone-agents` with your user/group, and verify paths:
+%chaperone-agents ALL=(root) NOPASSWD: /usr/local/bin/chaperone-helper --elevated --allowlist /etc/chaperone/helper-allow.toml

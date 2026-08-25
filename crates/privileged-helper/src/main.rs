@@ -18,9 +18,7 @@ fn main_inner() -> Result<(), String> {
     // STRICTER - never weaker - so a non-elevated caller passing it just
     // fails their own (user-owned) file.
     let elevated = args.iter().position(|a| a == "--elevated").is_some();
-    if elevated
-        && let Some(pos) = args.iter().position(|a| a == "--elevated")
-    {
+    if elevated && let Some(pos) = args.iter().position(|a| a == "--elevated") {
         args.remove(pos);
     }
 
