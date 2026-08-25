@@ -1,0 +1,89 @@
+name: "Connectivity / service request"
+description: "Ask for a new application, service, protocol, or credential backend to be supported by Chaperone"
+labels: ["connectivity-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This drives the [connectivity matrix](https://github.com/o3willard-AI/Chaperone/blob/main/docs/CONNECTIVITY-MATRIX.md)
+        — the living list of what agents can reach through Chaperone and what
+        is missing. Prioritization = community demand × verifiability × fit
+        with the security rules. The more verifiable your request (a free
+        test surface!), the faster it can move.
+
+  - type: input
+    id: service
+    attributes:
+      label: Service / application / protocol
+      description: e.g. "GitLab REST API", "MySQL 8", "Kafka", "S3-compatible object storage"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - HTTP(S) API (REST/GraphQL)
+        - Database
+        - Shell / remote execution
+        - Credential backend (where secrets live)
+        - Message queue / streaming
+        - Email
+        - Cloud provider API
+        - Browser / interactive SSO flow
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: auth
+    attributes:
+      label: Authentication scheme
+      options:
+        - Bearer token
+        - Basic (user + password)
+        - SCRAM / DB native challenge
+        - SSH key
+        - OAuth2 client credentials
+        - mTLS client certificate
+        - Signed requests (SigV4-style)
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: test-surface
+    attributes:
+      label: Verifiable test surface
+      description: >
+        Is there a free way to test this — a container image, emulator,
+        sandbox account, or public API? We ship only what we can verify, so
+        this field heavily influences prioritization.
+      placeholder: "e.g. official docker image; public sandbox; none but I can provide an account"
+
+  - type: checkboxes
+    id: existing-fit
+    attributes:
+      label: Does an existing mechanism partially cover it?
+      description: >
+        e.g. a bearer-token API already works via http-bearer today even if
+        ergonomics are rough. See docs/CONNECTIVITY-MATRIX.md first.
+      options:
+        - label: "Yes — works but painful (tell us more below)"
+        - label: "No — genuinely new capability needed"
+        - label: "Not sure"
+
+  - type: textarea
+    id: need
+    attributes:
+      label: What breaks today without it / why you need it
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: help-test
+    attributes:
+      label: Willingness to help test
+      options:
+        - label: "Yes, I can run acceptance builds against my environment"

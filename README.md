@@ -47,6 +47,7 @@ Implementation working documents:
 
 - [PLAN.md](docs/PLAN.md) — phased plan: goals, spec sections, acceptance tests, security rules.
 - [BUILDER-NOTES-MACOS.md](docs/BUILDER-NOTES-MACOS.md) — brief for building and validating on Apple hardware.
+- [CONNECTIVITY-MATRIX.md](docs/CONNECTIVITY-MATRIX.md) — every application/service type agents can reach today, how, and what is missing. File a connectivity request to shape the roadmap.
 - [DESIGN-DECISIONS.md](docs/DESIGN-DECISIONS.md) — explicit decisions where the specs are silent.
 - [SPEC-ISSUES.md](docs/SPEC-ISSUES.md) — discrepancies found while reading, tracked rather than papered over.
 

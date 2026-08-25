@@ -222,6 +222,15 @@ the Agent Skill examples pass against; CI green; every §3 rule test-guarded.
 
 ---
 
+### Backlog item C1 (discovered while writing the connectivity matrix)
+
+Custom/private CA roots for outbound HTTPS are not configurable yet
+(webpki bundle via reqwest rustls-tls). This blocks "internal HTTPS services
+behind a private PKI" — a first-class enterprise use case. Fix: a gateway
+config knob supplying extra root certificates to the shared reqwest client,
+with tests against a locally generated CA. Tracked here rather than silently
+shipped.
+
 ## Phase 12 - Technology-spectrum completion *(milestone: M12)*
 
 Post-v1 backlog items pulled forward while release signing waits on
