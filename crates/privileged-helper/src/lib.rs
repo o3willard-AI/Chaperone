@@ -9,6 +9,64 @@ use serde_json::{Value, json};
 pub use allowlist::{Allowlist, AllowlistEntry};
 pub use frame_io::{read_frame, write_frame};
 
+/// Validates an allowlist file's ownership/mode for ELEVATED operation.
+///
+/// Threat model: a sudoers rule lets the helper run as root against a fixed
+/// allowlist path. If that path were user-writable, the user could pin any
+/// command and get arbitrary-root-exec from their own list. An elevated
+/// helper therefore requires the file to be ROOT-OWNED and not
+/// group/other-writable.
+///
+/// Pure predicate so the rule itself is unit-testable without privileges.
+pub fn validate_allowlist_ownership(uid: u32, mode: u32) -> Result<(), String> {
+    if uid != 0 {
+        return Err(format!(
+            "allowlist must be root-owned when running elevated (owner uid {uid})"
+        ));
+    }
+    if mode & 0o022 != 0 {
+        return Err(format!(
+            "allowlist must not be group/other writable (mode {mode:04o})"
+        ));
+    }
+    Ok(())
+}
+
+/// Checks the allowlist file for elevated operation (unix).
+#[cfg(unix)]
+pub fn check_allowlist_for_elevated(path: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::PermissionsExt as _;
+    let meta = std::fs::metadata(path).map_err(|e| format!("allowlist stat: {e}"))?;
+    validate_allowlist_ownership(meta.uid(), meta.permissions().mode())
+}
+
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    #[test]
+    fn root_owned_read_only_passes() {
+        assert!(validate_allowlist_ownership(0, 0o644).is_ok());
+        assert!(validate_allowlist_ownership(0, 0o600).is_ok());
+        assert!(validate_allowlist_ownership(0, 0o400).is_ok());
+    }
+
+    #[test]
+    fn non_root_owner_fails() {
+        let err = validate_allowlist_ownership(1000, 0o644).unwrap_err();
+        assert!(err.contains("root-owned"), "{err}");
+    }
+
+    #[test]
+    fn group_or_other_writable_fails_even_root_owned() {
+        assert!(validate_allowlist_ownership(0, 0o664).is_err());
+        assert!(validate_allowlist_ownership(0, 0o666).is_err());
+        assert!(validate_allowlist_ownership(0, 0o602).is_err());
+    }
+}
+
 /// Fail-safe caps.
 /// Hard cap on any single framed message (bytes).
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
