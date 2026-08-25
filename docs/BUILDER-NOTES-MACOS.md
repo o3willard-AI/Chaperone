@@ -100,7 +100,7 @@ Open — these are exactly your first tasks:
 | **launchd integration** | ARCH-SPEC assigns launchd to the privileged-helper role. We ship the helper binary but elevation mechanics are deployment config. Draft the launchd plist(s) + sudoers/pin allowlist walkthrough for a real Mac. |
 | **Gatekeeper/quarantine validation** | Download the published v0.1.0-alpha.1 asset, document the exact prompts and the verification flow from docs/RELEASE.md on a clean machine. |
 | **Universal2 option** | Evaluate `lipo` of aarch64+x86_64 builds for one fat archive; only if both halves stay reproducible. |
-| **Full test matrix on hardware** | `cargo test --locked --workspace` — expect ~154 green. db-scram tests skip without `CHAPERONE_TEST_PG`; console/fuzz unix-gated ✓. Report ANY failure with full log; do not patch around a failing test silently. |
+| **Full test matrix on hardware** | `cargo test --locked --workspace` — 165 green as of the 2026-08-25 hardware pass (QA report: all suites incl. end_to_end, conformance, github_api, db_scram, sessions, privilege, console). Report ANY failure with full log; do not patch around a failing test silently. |
 
 ## 5. Rules you must not break
 
@@ -135,6 +135,22 @@ the format); when the spec is wrong, file it in `docs/SPEC-ISSUES.md`.
   anything credential-shaped as radioactive anyway.
 - Vulnerabilities go through [SECURITY.md](../SECURITY.md) privately — never
   public issues.
+
+## 6b. Hardware-pass findings (2026-08-25 QA) — already folded in
+
+The first hardware pass verified arm64 AND x86_64 builds (both reproducible;
+x86_64 via Rosetta), full workspace tests green on macOS, and a real
+install/smoke run. Items it surfaced, now addressed or tracked:
+
+- **install.sh repo-root fallback** missed `$SCRIPT_DIR/target/release` —
+  fixed (child-first candidate order).
+- **Cross-target repro checks**: `repro-check.sh --target <triple>` now makes
+  the manual two-clean-builds procedure scriptable for x86_64.
+- Machine provisioning (rustup/Go/Rosetta was missing entirely): formalize a
+  setup script if this becomes the standing build host.
+- Still open for the next hardware pass: Keychain-sealed vault validation,
+  launchd guide beyond the installer plist, Gatekeeper walkthrough of a
+  PUBLISHED artifact, Universal2 lipo packaging.
 
 ## 7. Definition of done for the Mac engagement
 

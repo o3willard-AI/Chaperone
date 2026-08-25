@@ -18,8 +18,13 @@ echo "== Chaperone installer (${OS})"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="$SCRIPT_DIR"
 if [ ! -x "$BIN_DIR/chaperone" ]; then
-    # Fallback: already-installed repo build.
-    for cand in "$SCRIPT_DIR/../target/release" "$SCRIPT_DIR/../../target/release"; do
+    # Fallback: repo checkout builds. When the script lives at the repo root,
+    # target/release is a CHILD of SCRIPT_DIR - checked first (QA report
+    # 2026-08-25 found this gap), then parent-dir layouts for scripts run
+    # from crates/<name> style locations.
+    for cand in "$SCRIPT_DIR/target/release" \
+                "$SCRIPT_DIR/../target/release" \
+                "$SCRIPT_DIR/../../target/release"; do
         if [ -x "$cand/chaperone" ]; then BIN_DIR="$(cd "$cand" && pwd)"; break; fi
     done
 fi
