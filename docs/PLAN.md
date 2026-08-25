@@ -274,3 +274,45 @@ external bureaucracy. Status:
       capability boundary per ARCH §2.5) - sequenced after the streaming
       protocol work it depends on for session-shaped plugins.
 - [ ] Operator console socket superseding TTY prompting (D8).
+
+---
+
+## Phase 13 - Installer-grade release *(milestone: M13 — SCOPED, AWAITING DECISIONS)*
+
+Goal: move from "archives you unzip by hand" to a real install experience —
+service definitions, elevation packaging, upgrade/uninstall semantics —
+while staying inside the no-codesigning, no-entity reality. Native package
+formats (deb/rpm/msi/pkg) collide with that reality: apt/rpm/dpkg expect
+GPG-signed repos and Apple pkg wants Developer ID. **Proposed middle path:
+reviewed, idempotent install scripts** that do the right things without new
+signing infrastructure, keeping native packages as a later step once an
+entity exists.
+
+### Phased breakdown
+
+| # | Item | Deliverable | Notes |
+|---|---|---|---|
+| 13a | **Helper allowlist hardening** | When the helper runs elevated (euid 0), it REFUSES to honor an allowlist file that is not root-owned / not group-or-other-writable. Otherwise a user-editable allowlist behind a sudoers rule becomes arbitrary-root-exec. Predicate unit-tested; enforcement active only when elevated (dev/test runs unaffected). | Security fix, ships first regardless of other decisions |
+| 13b | **POSIX install script** (`install.sh`, `uninstall.sh`) | Binaries → `~/.local/bin`; systemd *user* unit (Linux) + launchd *agent* plist (macOS); config skeleton `~/.config/chaperone/`; prints post-install checklist incl. the exact sudoers line for the operator to review — never writes sudoers itself | Scripts ship inside release archives too |
+| 13c | **Windows install script** (`install.ps1`) | Binaries → `%LOCALAPPDATA%\Programs\chaperone`; logon Scheduled Task instead of a service (honest: no service account story without codesigning); PATH update | Weakest platform; explicitly labeled preview |
+| 13d | **INSTALL.md** | Per-OS install/upgrade/uninstall/rollback, service management commands, elevation setup walkthrough (sudoers example w/ root-owned allowlist), Gatekeeper/SmartScreen guidance, upgrade semantics (vault/journal formats versioned; installers never touch data) | |
+| 13e | **Pipeline + release** | release.yml bundles scripts in archives; tag `v0.1.0-alpha.2`; published & verified end-to-end | Includes 13a fix |
+
+### Explicitly out of scope for M13
+
+Native packages (.deb/.rpm/.msi/.pkg) — blocked on repo-signing /
+Developer-ID infrastructure (same entity dependency as codesigning).
+Auto-update mechanism. System-wide multi-user daemon mode. Notarization.
+
+### Decisions required before execution
+
+| ID | Decision | Options | Recommendation |
+|---|---|---|---|
+| DA | Distribution format this round | (1) install-scripts-only (2) also attempt native pkgs | (1) — native packaging inherits the same signing bureaucracy we just deferred |
+| DB | Daemon service model | (1) per-user services everywhere (2) system-wide daemon | (1) — matches the same-user security model exactly; system-wide changes the trust boundary |
+| DC | macOS helper elevation | (1) sudoers-snippet walkthrough now (2) defer macOS elevation entirely this round | (1) — works without Developer ID; SMJobBless path needs it |
+| DD | Elevated allowlist ownership enforcement (13a) | (1) refuse non-root-owned allowlist when euid=0 (2) warn only | (1) — warn-only leaves an arbitrary-root-exec footgun |
+
+Rough shape once approved: 13a (small, security) → 13b/13c in parallel →
+13d/13e docs+pipeline → alpha.2 tag. Each lands as its own commit set with
+tests/gates green; nothing executes until decisions land here.
