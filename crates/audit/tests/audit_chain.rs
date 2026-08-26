@@ -41,6 +41,8 @@ fn signed_intent_envelope() -> Value {
 
 fn stripe_event<'a>(envelope: &'a Value) -> AuditEvent<'a> {
     AuditEvent {
+        record_kind: chaperone_audit::RecordKind::IntentDecision,
+        ruleset_hash: String::new(),
         agent_id: envelope["agent_id"].as_str().unwrap(),
         msg_id: envelope["msg_id"].as_str().unwrap(),
         mechanism: envelope["mechanism"].as_str().unwrap(),
@@ -230,6 +232,8 @@ fn resolved_secrets_never_reach_the_journal_references_do() {
 
     let envelope = signed_intent_envelope();
     let event = AuditEvent {
+        record_kind: chaperone_audit::RecordKind::IntentDecision,
+        ruleset_hash: String::new(),
         agent_id: AGENT,
         msg_id: "a3f1c9",
         mechanism: "http-bearer",
@@ -303,6 +307,7 @@ fn record_schema_is_pinned_top_level_keys_are_allowlisted() {
             "chain_version",
             "kind",
             "prev_hash",
+            "ruleset_hash",
             "seq",
             "sig",
             "this_hash",
@@ -330,6 +335,7 @@ fn record_schema_is_pinned_top_level_keys_are_allowlisted() {
             "msg_id",
             "outcome",
             "prev_hash",
+            "ruleset_hash",
             "seq",
             "sig",
             "target_label",

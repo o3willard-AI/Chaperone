@@ -219,7 +219,8 @@ impl AuditWriter {
             let body = json!({
                 "chain_version": CHAIN_VERSION,
                 "seq": next_seq,
-                "kind": "intent_decision",
+                "kind": event.record_kind.as_str(),
+                "ruleset_hash": event.ruleset_hash,
                 "ts": now_rfc3339,
                 "prev_hash": hex(&st.prev_hash),
                 "agent_id": event.agent_id,
@@ -253,6 +254,7 @@ impl AuditWriter {
             "chain_version": CHAIN_VERSION,
             "seq": 0,
             "kind": "genesis",
+            "ruleset_hash": "",
             "ts": now_rfc3339,
             "prev_hash": hex(&zeros),
         });

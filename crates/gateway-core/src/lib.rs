@@ -235,6 +235,7 @@ pub struct Gateway {
     sessions: SessionTable,
     backends: Mutex<HashMap<String, Arc<dyn SessionBackend>>>,
     privilege_allowlist: Mutex<Option<PrivilegeAllowlist>>,
+    ruleset_hash: String,
 }
 
 impl Gateway {
@@ -248,7 +249,8 @@ impl Gateway {
         gate: Arc<dyn ConfirmationGate>,
         config: GatewayConfig,
     ) -> Result<Self, chaperone_injectors::InjectorError> {
-        Ok(Self {
+        let ruleset_hash = policy.source_hash().to_owned();
+        let mut this = Self {
             attestor,
             policy,
             router,
@@ -259,7 +261,35 @@ impl Gateway {
             sessions: SessionTable::new(),
             backends: Mutex::new(HashMap::new()),
             privilege_allowlist: Mutex::new(None),
-        })
+            ruleset_hash,
+        };
+
+        // D38: anchor the governing ruleset into the audit chain at start,
+        // so any post-hoc policy widening is detectable as a hash break.
+        let load_event = AuditEvent {
+            record_kind: chaperone_audit::RecordKind::PolicyLoad,
+            agent_id: "",
+            msg_id: "",
+            mechanism: "policy",
+            target_uri: "",
+            target_label: "",
+            cred_ref: "",
+            effect: "allow",
+            outcome: chaperone_audit::Outcome::Proceeded,
+            intent_envelope: &Value::Null,
+            ruleset_hash: this.ruleset_hash.clone(),
+        };
+        this.audit
+            .append(&load_event)
+            .map_err(|e| chaperone_injectors::InjectorError::Transport(e.to_string()))?;
+
+        Ok(this)
+    }
+
+    /// Hex SHA-256 of the governing policy document (D38).
+    #[must_use]
+    pub fn ruleset_hash(&self) -> &str {
+        &self.ruleset_hash
     }
 
     /// Provides the daemon-side mirror of the operator allowlist used to
@@ -423,6 +453,8 @@ impl Gateway {
             let channel = entry.channel_arc();
             (**channel.lock().await).shutdown().await;
             let event = AuditEvent {
+            record_kind: chaperone_audit::RecordKind::IntentDecision,
+            ruleset_hash: self.ruleset_hash.clone(),
                 agent_id: &agent_id,
                 msg_id: message.get("msg_id").and_then(Value::as_str).unwrap_or(""),
                 mechanism: "session.close",
@@ -489,6 +521,8 @@ impl Gateway {
                     (**channel.lock().await).shutdown().await;
                 }
                 let event = AuditEvent {
+            record_kind: chaperone_audit::RecordKind::IntentDecision,
+            ruleset_hash: self.ruleset_hash.clone(),
                     agent_id: &agent_id,
                     msg_id: message.get("msg_id").and_then(Value::as_str).unwrap_or(""),
                     mechanism: "session.command",
@@ -896,6 +930,8 @@ impl Gateway {
     /// Records an identity-stage rejection as evidence.
     async fn audit_identity_failure(&self, message: &Value, code: &chaperone_protocol::ErrorCode) {
         let event = AuditEvent {
+            record_kind: chaperone_audit::RecordKind::IntentDecision,
+            ruleset_hash: self.ruleset_hash.clone(),
             agent_id: message
                 .get("agent_id")
                 .and_then(Value::as_str)
@@ -937,6 +973,8 @@ impl Gateway {
     ) -> Option<u64> {
         let evidence = serde_json::to_value(envelope).ok()?;
         let event = AuditEvent {
+            record_kind: chaperone_audit::RecordKind::IntentDecision,
+            ruleset_hash: self.ruleset_hash.clone(),
             agent_id: &envelope.agent_id,
             msg_id: &envelope.msg_id,
             mechanism: &envelope.mechanism,

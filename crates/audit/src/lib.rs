@@ -22,7 +22,7 @@ mod keys;
 mod verify;
 mod writer;
 
-pub use event::{AuditEvent, Outcome};
+pub use event::{AuditEvent, Outcome, RecordKind};
 pub use keys::{AuditKey, verifying_key_from_b64url};
 pub use verify::{Break, Report, Tail, verify_file};
 pub use writer::{AuditError, AuditWriter, CHAIN_VERSION, Head, compute_hash, hex, unhex};

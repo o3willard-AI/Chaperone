@@ -70,6 +70,30 @@ impl Outcome {
     }
 }
 
+/// What kind of chain record this is (PROTO-SPEC §9.3 + D38).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordKind {
+    /// Chain anchor (written once per journal).
+    Genesis,
+    /// A completed intent decision or identity rejection.
+    IntentDecision,
+    /// The gateway loaded a policy ruleset; carries its hash so any
+    /// post-hoc widening is detectable across restarts.
+    PolicyLoad,
+}
+
+impl RecordKind {
+    /// Wire string for the record's `kind` field.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RecordKind::Genesis => "genesis",
+            RecordKind::IntentDecision => "intent_decision",
+            RecordKind::PolicyLoad => "policy_load",
+        }
+    }
+}
+
 /// One terminal outcome to be recorded.
 ///
 /// Everything here is reference-shaped by construction: ids, URIs, labels,
@@ -77,6 +101,12 @@ impl Outcome {
 /// policy effect string (`allow` / `deny` / `needs_confirmation`).
 #[derive(Debug, Clone)]
 pub struct AuditEvent<'a> {
+    /// Which chain-record shape to emit.
+    pub record_kind: RecordKind,
+    /// Hex SHA-256 of the governing policy document ('' when N/A, D38).
+    pub ruleset_hash: String,
+    /// Hex SHA-256 of the governing policy document ('' when not applicable,
+    /// e.g. genesis). D38: decisions bind to the ruleset that governed them.
     /// Authenticated agent identity.
     pub agent_id: &'a str,
     /// Correlation id from the envelope.

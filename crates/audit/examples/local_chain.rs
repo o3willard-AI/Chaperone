@@ -33,6 +33,8 @@ fn main() {
         "operation": {"method": "POST"}, "sig": "evidence-bytes"
     });
     let event = AuditEvent {
+        record_kind: chaperone_audit::RecordKind::IntentDecision,
+        ruleset_hash: String::new(),
         agent_id: "agent:planner-7",
         msg_id: "a3f1c9",
         mechanism: "http-bearer",

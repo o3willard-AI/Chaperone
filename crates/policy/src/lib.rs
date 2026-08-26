@@ -203,17 +203,24 @@ struct LimitsDef {
     session_ttl_s: Option<u64>,
 }
 
-/// The active ruleset.
+/// The active ruleset, bound to the hash of the document it was parsed
+/// from (DESIGN-DECISIONS D38): every decision can name the exact ruleset
+/// that governed it, and any post-hoc edit shows up as a hash break in the
+/// audit chain at next load.
 #[derive(Debug, Clone, Default)]
 pub struct Policy {
     rules: Vec<Rule>,
+    source_hash_hex: String,
 }
 
 impl Policy {
     /// An empty policy: everything denied, provably.
     #[must_use]
     pub fn empty() -> Self {
-        Self { rules: Vec::new() }
+        Self {
+            rules: Vec::new(),
+            source_hash_hex: String::new(),
+        }
     }
 
     /// Parses the TOML ruleset (DESIGN-DECISIONS D3).
@@ -264,19 +271,36 @@ impl Policy {
                     .unwrap_or_default(),
             });
         }
-        Ok(Policy { rules })
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(doc.as_bytes());
+        let digest: [u8; 32] = hasher.finalize().into();
+        let source_hash_hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+        Ok(Policy {
+            rules,
+            source_hash_hex,
+        })
     }
 
     /// Builds directly from rules (programmatic construction / tests).
     #[must_use]
     pub fn from_rules(rules: Vec<Rule>) -> Self {
-        Self { rules }
+        Self {
+            rules,
+            source_hash_hex: String::new(),
+        }
     }
 
     /// Number of rules loaded.
     #[must_use]
     pub fn len(&self) -> usize {
         self.rules.len()
+    }
+
+    /// Hex SHA-256 of the raw document bytes this ruleset was parsed from.
+    #[must_use]
+    pub fn source_hash(&self) -> &str {
+        &self.source_hash_hex
     }
 
     /// True when there are no rules at all (then EVERYTHING is denied).
