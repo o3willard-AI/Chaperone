@@ -1,8 +1,8 @@
 # Chaperone — Session Handoff & Status Document
 
-**Last updated:** 2026-08-26 (post-Phase-14 session)
-**Branch:** `main` — Phase 14 complete, awaiting `v0.1.0-alpha.3` tag
-**Tests:** 189 passed / 0 failed · clippy `-D warnings` clean · fmt clean · cargo audit (CI ignore list) + cargo deny green
+**Last updated:** 2026-08-26 (post-D41 session)
+**Branch:** `main` — Phase 14 + D41 security fix complete, awaiting `v0.1.0-alpha.4` tag
+**Tests:** 199 passed / 0 failed · clippy `-D warnings` clean · fmt clean · cargo audit (CI ignore list) + cargo deny green
 
 ---
 
@@ -112,7 +112,9 @@ at `docs/release-notes/v0.1.0-alpha.3.md`. **Tag v0.1.0-alpha.3 next.**
 | M14b | Events feed socket + notify knob (D35); CLI binding landed with 14c work | ✅ |
 | M14c-pre | Policy-file integrity guard: perm gate + drift watch + halt (D39) | ✅ |
 | M14c | Config UI web crate `chaperone-ui` (D36/D40) | ✅ |
-| M14d | GETTING-STARTED.md, PLAN/DESIGN-DECISIONS updates, tag v0.1.0-alpha.3 | ⏳ TAG NEXT |
+| M14d | GETTING-STARTED.md, PLAN/DESIGN-DECISIONS updates, tag v0.1.0-alpha.3 | ✅ |
+| D41 | UI access token gate (supersedes D40's bare-loopback trust; §8 fix) | ✅ |
+| D41-release | Tag v0.1.0-alpha.4 | ⏳ TAG NEXT |
 
 ## Post-v1 Backlog (dispositioned)
 

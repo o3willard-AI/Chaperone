@@ -36,7 +36,25 @@ $ chaperone version
 chaperone 0.1.0-alpha.3 (protocol 0.1, gateway spec v0.1)
 ```
 
-## Step 1 — First run starts the wizard
+## Step 1 — Create the UI access token
+
+Unlike the agent/console sockets (Unix domain sockets at `0600`, uid-gated
+by the OS), the config UI listens on loopback TCP — which has no per-user
+ACL. A per-instance access token (D41) closes that gap: any local account
+can reach the port, but only the token holder can drive the UI.
+
+```console
+$ chaperone ui-token rotate --token ~/.config/chaperone/ui.token
+rotated UI token at ~/.config/chaperone/ui.token (0600)
+UI token:  l1ekCcKelYBLxg2ySrN67iqKr9pylEyJzFC9_xUQKz0
+open:      http://127.0.0.1:8720/?token=l1ekCcKelYBLxg2ySrN67iqKr9pylEyJzFC9_xUQKz0
+```
+
+The token is created **once**, persisted at `0600` beside your audit key,
+and never auto-regenerated. Bookmark the URL — `serve` won't print the
+token again.
+
+## Step 2 — First run starts the wizard
 
 ```console
 $ chaperone serve \
@@ -49,13 +67,16 @@ $ chaperone serve \
 
 CHAPERONE SETUP
   required artifacts are missing; starting the setup wizard only.
-  open: http://127.0.0.1:8720
+  open: http://127.0.0.1:8720/?token=<TOKEN>
+  token: chaperone ui-token show --token ~/.config/chaperone/ui.token
 ```
 
 No artifacts yet means there is nothing to broker and no passphrase to ask
 for — so serve runs **setup mode only**: just the wizard on your loopback.
+Open the URL from Step 1 in your browser (with `?token=…` on the first
+load); the UI sets a cookie for the session.
 
-> **Terminal equivalent:** keep reading; steps 2–4 each show the command
+> **Terminal equivalent:** keep reading; steps 3–5 each show the command
 > the wizard button corresponds to.
 
 ## Step 2 — Create the vault

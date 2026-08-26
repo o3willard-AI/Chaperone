@@ -570,13 +570,56 @@ Ratified E-decisions, as built:
 - **Served from `chaperone serve`**, including a setup-only mode that runs
   just the wizard when required artifacts are missing (a gateway cannot run
   without an audit chain, so first-run cannot be full-broker).
-- **Bare loopback trust**: bound to 127.0.0.1 only; no login, no token -
-  same trust tier as the console client (D32). A Host/Origin guard refuses
-  requests whose Host is not the loopback address or whose Origin does not
-  match, which closes browser-tab CSRF and DNS rebinding (the remote-web →
-  local-UI paths) without operator-visible friction. Honest residual risk,
-  accepted at decision time: any process running as the user can reach the
-  UI directly - the same trust tier as the CLI reading the same files.
+- **~~Bare loopback trust~~ → D41 token gate**: D40's original "no login,
+  no token" call was **superseded by D41** after live review: plain TCP on
+  127.0.0.1 has no OS-level per-user ACL the way a `0600` UDS does, so any
+  local OS account could reach the port. D41 adds a per-instance access
+  token; D40's Host/Origin guard stays as defense against a different
+  attack (remote browser CSRF/DNS-rebinding). D40's other calls — axum,
+  in-daemon, server-rendered, zero JS — are unaffected.
 - **Server-rendered HTML/CSS, zero JS build step**: forms POST and
   redirect; no node/npm anywhere near reproducible builds; one hand-rolled,
   tested HTML escaper instead of a template-engine dependency.
+
+## D41 - Per-instance UI access token (supersedes D40's access-control half)
+
+D40 shipped the config UI on bare loopback TCP with "no login, no token."
+A live review confirmed the gap this opens: unlike every Unix domain
+socket in the system (`0600`, uid-gated by the OS), a plain TCP listener on
+127.0.0.1 has **no per-user ACL** — any local OS account can reach the port
+and drive the full config surface. The Host/Origin guard stops remote
+browser CSRF/DNS-rebinding; it does nothing against a second local account.
+
+**Fix:** a per-instance access token, 32 random bytes (base64url),
+persisted at `0600` in the config directory alongside `audit.key`. The
+token inherits the directory's existing OS-level owner restriction on all
+three platforms — no new platform-specific socket/pipe ACL code. The token
+is required before the UI renders or accepts anything beyond the paste
+page itself.
+
+- **Generation:** `chaperone ui-token rotate --token <PATH>`; `show`
+  prints it and the URL. `serve` **never auto-generates** — it refuses to
+  start the UI until the token file exists. A stable URL an operator can
+  bookmark matters more than rotation-by-default; `rotate` exists for the
+  case that actually calls for it (suspected local compromise).
+- **Enforcement:** first load needs `?token=…`; the UI sets a scoped
+  `HttpOnly; SameSite=Strict` cookie and 303-redirects to the same path
+  with the token stripped. Subsequent requests use the cookie. Any request
+  without a valid token or cookie: GET → paste page; non-GET → 403.
+  The Host/Origin guard (D40) stays layered underneath: a foreign Host is
+  refused even with a valid cookie (the token answers "which local
+  account," the guard answers "which origin").
+- **Constant-time comparison** so a timing oracle cannot recover the
+  token byte by byte.
+
+**Rejected alternatives:** (a) auto-generating the token at serve startup
+and printing it — convenient but puts a secret in process stdout/logs, and
+means the browser-based wizard would create its own gate (chicken-and-egg).
+(b) A transport-level fix (UDS-only UI) — browsers cannot connect to UDS,
+so the UI would need a local forwarder, adding a moving part. (c) Per-user
+encrypted config (§8.2 backlog) — explicitly not a substitute; an isolated
+per-user vault does nothing to stop an unauthenticated local port.
+
+**Backlog (§8.2):** per-user encrypted config for a future native-app UI.
+Explicitly deferred; explicitly not a substitute for D41. Needs its own
+design pass (one install per OS account vs. shared-daemon multi-tenancy).

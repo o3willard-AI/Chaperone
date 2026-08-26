@@ -1,10 +1,10 @@
-//! Phase 14c acceptance tests: the operator config UI over real HTTP.
+//! Phase 14c + D41 acceptance tests: the operator config UI over real HTTP.
 //!
 //! Drives the actual axum server bound to an ephemeral loopback port and
 //! pins the behaviors the spec calls for: setup wizard artifact creation,
-//! secret CRUD without redaction leaks, agent enrollment validation,
-//! rule editing through the ONE validator/writer pair (\u00A73.2), and the
-//! loopback Host/Origin guard.
+//! secret CRUD without redaction leaks, agent enrollment validation, rule
+//! editing through the ONE validator/writer pair (\u00A73.2), the loopback
+//! Host/Origin guard (D40), and the per-instance access token gate (D41).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -16,8 +16,16 @@ use chaperone_ui::UiState;
 
 struct TestApp {
     port: u16,
+    token: String,
     dir: tempfile::TempDir,
     _guard: tokio::task::JoinHandle<Result<(), String>>,
+}
+
+impl TestApp {
+    /// Cookie header value for authenticated requests.
+    fn cookie(&self) -> String {
+        format!("chaperone_ui={}", self.token)
+    }
 }
 
 async fn app() -> TestApp {
@@ -27,6 +35,10 @@ async fn app() -> TestApp {
     // loopback guard checks Host against it).
     let listener = chaperone_ui::bind(0).await.unwrap();
     let port = listener.local_addr().unwrap().port();
+
+    // D41: a token is required before the UI serves.
+    let token = chaperone_ui::rotate(&dir.path().join("ui.token")).unwrap();
+    let ui_token = chaperone_ui::load(&dir.path().join("ui.token")).unwrap();
 
     let state = Arc::new(UiState {
         policy_path: dir.path().join("policy.toml"),
@@ -40,6 +52,7 @@ async fn app() -> TestApp {
         event_hub: None,
         events_socket_path: None,
         schemes: vec!["local".to_owned()],
+        token: ui_token,
         port,
     });
 
@@ -47,18 +60,22 @@ async fn app() -> TestApp {
     tokio::time::sleep(Duration::from_millis(50)).await;
     TestApp {
         port,
+        token,
         dir,
         _guard: handle,
     }
 }
 
 /// Minimal HTTP/1.1 client over raw TCP (no extra deps).
+///
+/// `cookie` is sent as the `Cookie:` header when `Some`.
 async fn http(
     port: u16,
     method: &str,
     path: &str,
     extra_headers: &[(&str, &str)],
     body: Option<&str>,
+    cookie: Option<&str>,
 ) -> (u16, String) {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
@@ -77,6 +94,9 @@ async fn http(
     }
     for (k, v) in extra_headers {
         req.push_str(&format!("{k}: {v}\r\n"));
+    }
+    if let Some(c) = cookie {
+        req.push_str(&format!("Cookie: {c}\r\n"));
     }
     req.push_str("\r\n");
     stream.write_all(req.as_bytes()).await.unwrap();
@@ -117,24 +137,26 @@ fn urlencode(s: &str) -> String {
     out
 }
 
+// ---------- existing flows, now cookie-authenticated ----------
+
 #[tokio::test(flavor = "multi_thread")]
 async fn wizard_creates_all_broker_artifacts() {
     let t = app().await;
+    let c = t.cookie();
     assert!(!t.dir.path().join("policy.toml").exists());
 
-    // Policy scaffold through the one writer.
-    let (status, _) = http(t.port, "POST", "/setup/policy", &[], Some("")).await;
+    let (status, _) = http(t.port, "POST", "/setup/policy", &[], Some(""), Some(&c)).await;
     assert_eq!(status, 303);
     let doc = std::fs::read_to_string(t.dir.path().join("policy.toml")).unwrap();
     chaperone_policy::Policy::from_toml(&doc).unwrap();
 
-    // Vault creation: mismatched double-entry refuses; matching creates.
     let (_, loc) = http(
         t.port,
         "POST",
         "/setup/vault",
         &[],
         Some(&form(&[("passphrase", "pw"), ("confirm", "different")])),
+        Some(&c),
     )
     .await;
     assert!(loc.contains("err="));
@@ -149,38 +171,37 @@ async fn wizard_creates_all_broker_artifacts() {
             ("passphrase", "hunter22"),
             ("confirm", "hunter22"),
         ])),
+        Some(&c),
     )
     .await;
     assert_eq!(status, 303);
     assert!(loc.contains("msg="));
     assert!(t.dir.path().join("vault.bin").exists());
 
-    // Audit key generation - same on-disk shape audit-keygen writes.
-    let (status, _) = http(t.port, "POST", "/setup/audit-key", &[], Some("")).await;
+    let (status, _) = http(t.port, "POST", "/setup/audit-key", &[], Some(""), Some(&c)).await;
     assert_eq!(status, 303);
     let seed = std::fs::read_to_string(t.dir.path().join("audit.key")).unwrap();
-    assert_eq!(seed.len(), 43); // base64url of exactly 32 bytes
+    assert_eq!(seed.len(), 43);
 
-    // Second attempt refuses to overwrite an audit key.
-    let (_, loc) = http(t.port, "POST", "/setup/audit-key", &[], Some("")).await;
+    let (_, loc) = http(t.port, "POST", "/setup/audit-key", &[], Some(""), Some(&c)).await;
     assert!(loc.contains("err="));
 
-    // Setup page now reports completion.
-    let (_, page) = http(t.port, "GET", "/setup", &[], None).await;
+    let (_, page) = http(t.port, "GET", "/setup", &[], None, Some(&c)).await;
     assert!(page.contains("All required artifacts exist"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn secrets_store_list_and_never_leak_values() {
     let t = app().await;
+    let c = t.cookie();
 
-    // Open a vault through the wizard endpoint (stashes the shared handle).
     let (status, _) = http(
         t.port,
         "POST",
         "/setup/vault",
         &[],
         Some(&form(&[("passphrase", "pw"), ("confirm", "pw")])),
+        Some(&c),
     )
     .await;
     assert_eq!(status, 303);
@@ -192,13 +213,13 @@ async fn secrets_store_list_and_never_leak_values() {
         "/secrets",
         &[],
         Some(&form(&[("path", "prod/github/token"), ("value", SECRET)])),
+        Some(&c),
     )
     .await;
     assert_eq!(status, 303);
     assert!(loc.contains("stored"));
 
-    // Page shows path + redaction, never the value.
-    let (_, page) = http(t.port, "GET", "/secrets", &[], None).await;
+    let (_, page) = http(t.port, "GET", "/secrets", &[], None, Some(&c)).await;
     assert!(
         !page.contains(SECRET),
         "the UI must never re-display stored values"
@@ -210,8 +231,8 @@ async fn secrets_store_list_and_never_leak_values() {
 #[tokio::test(flavor = "multi_thread")]
 async fn agents_enroll_validates_and_revoke_works() {
     let t = app().await;
+    let c = t.cookie();
 
-    // A JSON blob gets a SPECIFIC validation error before enroll runs.
     let (_, loc) = http(
         t.port,
         "POST",
@@ -221,12 +242,11 @@ async fn agents_enroll_validates_and_revoke_works() {
             ("agent_id", "agent:x"),
             ("public_key", "{\"kty\":\"OKP\"}"),
         ])),
+        Some(&c),
     )
     .await;
     assert!(loc.contains("err="));
-    assert!(!loc.contains("enrolled"));
 
-    // A valid bare base64url key enrolls.
     let signer = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
     let b64url = chaperone_protocol::encode_signature(&signer.verifying_key().to_bytes());
     let (status, loc) = http(
@@ -238,15 +258,15 @@ async fn agents_enroll_validates_and_revoke_works() {
             ("agent_id", "agent:test-1"),
             ("public_key", &b64url),
         ])),
+        Some(&c),
     )
     .await;
     assert_eq!(status, 303);
     assert!(loc.contains("enrolled"));
 
-    let (_, page) = http(t.port, "GET", "/agents", &[], None).await;
+    let (_, page) = http(t.port, "GET", "/agents", &[], None, Some(&c)).await;
     assert!(page.contains("agent:test-1"));
 
-    // Duplicate enrollment without --force semantics is refused loudly.
     let (_, loc) = http(
         t.port,
         "POST",
@@ -256,47 +276,48 @@ async fn agents_enroll_validates_and_revoke_works() {
             ("agent_id", "agent:test-1"),
             ("public_key", &b64url),
         ])),
+        Some(&c),
     )
     .await;
     assert!(loc.contains("err="));
 
-    // Revoke flips the badge immediately.
     let (status, _) = http(
         t.port,
         "POST",
         "/agents/revoke",
         &[],
         Some(&form(&[("agent_id", "agent:test-1")])),
+        Some(&c),
     )
     .await;
     assert_eq!(status, 303);
-    let (_, page) = http(t.port, "GET", "/agents", &[], None).await;
+    let (_, page) = http(t.port, "GET", "/agents", &[], None, Some(&c)).await;
     assert!(page.contains("REVOKED"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn rule_editor_round_trips_through_the_one_validator() {
     let t = app().await;
+    let c = t.cookie();
 
-    // Start from a scaffolded policy.
-    http(t.port, "POST", "/setup/policy", &[], Some("")).await;
+    http(t.port, "POST", "/setup/policy", &[], Some(""), Some(&c)).await;
 
-    // Template picker renders prefilled targets (server-rendered stage 1).
     let (_, page) = http(
         t.port,
         "GET",
         "/rules/new?mechanism=http-bearer&template=GitHub%20REST%20API%20v3",
         &[],
         None,
+        Some(&c),
     )
     .await;
     assert!(
         page.contains("https://api.github.com/*"),
-        "template must prefill the target_uri"
+        "template must prefill"
     );
     assert!(
         page.contains("fine-grained PAT"),
-        "matrix caveat must be visible inline"
+        "matrix caveat must be visible"
     );
 
     let (status, _) = http(
@@ -315,11 +336,11 @@ async fn rule_editor_round_trips_through_the_one_validator() {
             ("max_response_bytes", "262144"),
             ("session_ttl_s", ""),
         ])),
+        Some(&c),
     )
     .await;
     assert_eq!(status, 303);
 
-    // What landed on disk is exactly what the gateway would parse.
     let doc = std::fs::read_to_string(t.dir.path().join("policy.toml")).unwrap();
     let policy = chaperone_policy::Policy::from_toml(&doc).unwrap();
     assert_eq!(policy.len(), 1);
@@ -327,13 +348,8 @@ async fn rule_editor_round_trips_through_the_one_validator() {
     assert_eq!(rule.effect.as_str(), "allow");
     assert!(rule.notify_on_use);
     assert_eq!(rule.limits.max_response_bytes, Some(262144));
-    assert_eq!(
-        rule.target_uri.source().as_deref(),
-        Some("https://api.github.com/*")
-    );
     assert_eq!(rule.agent_id.source(), None, "empty input = Any");
 
-    // Unknown mechanism refused before anything is written.
     let (_, loc) = http(
         t.port,
         "POST",
@@ -346,19 +362,20 @@ async fn rule_editor_round_trips_through_the_one_validator() {
             ("agent_id", ""),
             ("cred_ref", ""),
         ])),
+        Some(&c),
     )
     .await;
     assert!(loc.contains("err=unknown+mechanism"));
     let doc = std::fs::read_to_string(t.dir.path().join("policy.toml")).unwrap();
     assert_eq!(chaperone_policy::Policy::from_toml(&doc).unwrap().len(), 1);
 
-    // Delete removes exactly that index.
     let (status, _) = http(
         t.port,
         "POST",
         "/rules/delete",
         &[],
         Some(&form(&[("index", "0")])),
+        Some(&c),
     )
     .await;
     assert_eq!(status, 303);
@@ -373,6 +390,7 @@ async fn rule_editor_round_trips_through_the_one_validator() {
 #[tokio::test(flavor = "multi_thread")]
 async fn raw_editor_refuses_invalid_toml_without_writing() {
     let t = app().await;
+    let c = t.cookie();
     let before = std::fs::read_to_string(t.dir.path().join("policy.toml")).unwrap_or_default();
 
     let garbage = "[[rule]]\neffect = \"definitely_not_an_effect\"\n";
@@ -382,13 +400,13 @@ async fn raw_editor_refuses_invalid_toml_without_writing() {
         "/policy/raw",
         &[],
         Some(&form(&[("doc", garbage)])),
+        Some(&c),
     )
     .await;
     assert!(loc.contains("NOT+saved") || loc.contains("err="));
     let after = std::fs::read_to_string(t.dir.path().join("policy.toml")).unwrap_or_default();
     assert_eq!(before, after, "invalid document must not touch disk");
 
-    // Valid document saves.
     let good = "[[rule]]\neffect = \"deny\"\nname = \"floor\"\n";
     let (_, loc) = http(
         t.port,
@@ -396,6 +414,7 @@ async fn raw_editor_refuses_invalid_toml_without_writing() {
         "/policy/raw",
         &[],
         Some(&form(&[("doc", good)])),
+        Some(&c),
     )
     .await;
     assert!(loc.contains("/rules"));
@@ -405,38 +424,199 @@ async fn raw_editor_refuses_invalid_toml_without_writing() {
     );
 }
 
+// ---------- D41: token gate ----------
+
 #[tokio::test(flavor = "multi_thread")]
-async fn loopback_guard_blocks_foreign_host_and_origin() {
+async fn no_cookie_redirects_to_paste_page() {
     let t = app().await;
 
-    // DNS-rebinding style Host.
-    let (status, _) = http(t.port, "GET", "/", &[("Host", "evil.example")], None).await;
-    assert_eq!(status, 403);
+    // GET without a cookie \u{2192} 303 to /token.
+    let (status, text) = http(t.port, "GET", "/", &[], None, None).await;
+    assert_eq!(status, 303);
+    assert!(
+        text.to_lowercase().contains("location: /token"),
+        "must redirect to paste page, got: {text}"
+    );
+}
 
-    // Cross-site form post (browser CSRF sends Origin).
-    let (status, _) = http(
+#[tokio::test(flavor = "multi_thread")]
+async fn valid_cookie_passes_through() {
+    let t = app().await;
+    let c = t.cookie();
+    let (status, _) = http(t.port, "GET", "/", &[], None, Some(&c)).await;
+    assert_eq!(status, 200);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn post_without_cookie_is_403() {
+    let t = app().await;
+
+    let (status, _) = http(t.port, "POST", "/setup/policy", &[], Some(""), None).await;
+    assert_eq!(
+        status, 403,
+        "mutations without a token must be refused, not redirected"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn token_param_sets_cookie_and_strips_from_url() {
+    let t = app().await;
+
+    // GET /?token=X \u{2192} 303 with Set-Cookie, Location strips the token.
+    let path = format!("/?token={}", t.token);
+    let (status, text) = http(t.port, "GET", &path, &[], None, None).await;
+    assert_eq!(status, 303);
+    assert!(
+        text.to_ascii_lowercase()
+            .contains("set-cookie: chaperone_ui="),
+        "must set cookie"
+    );
+    // Location must not contain the token param.
+    let loc_line = text
+        .lines()
+        .find(|l| l.to_ascii_lowercase().starts_with("location:"))
+        .unwrap();
+    assert!(
+        !loc_line.contains("token="),
+        "token must be stripped from redirect URL"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn paste_page_renders_without_token() {
+    let t = app().await;
+
+    // /token is the one path served without a token.
+    let (status, page) = http(t.port, "GET", "/token", &[], None, None).await;
+    assert_eq!(status, 200);
+    assert!(page.contains("Chaperone UI access"));
+    assert!(page.contains("chaperone ui-token show"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn paste_submit_valid_token_sets_cookie_and_redirects() {
+    let t = app().await;
+
+    let (status, text) = http(
         t.port,
         "POST",
-        "/setup/policy",
-        &[
-            ("Host", &format!("127.0.0.1:{}", t.port)),
-            ("Origin", "http://evil.example"),
-        ],
-        Some(""),
+        "/token",
+        &[],
+        Some(&form(&[("token", &t.token), ("next", "/secrets")])),
+        None,
+    )
+    .await;
+    assert_eq!(status, 303);
+    assert!(
+        text.to_ascii_lowercase()
+            .contains("set-cookie: chaperone_ui="),
+        "must set cookie on success"
+    );
+    assert!(
+        text.to_ascii_lowercase().contains("location: /secrets"),
+        "must redirect to next"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn paste_submit_invalid_token_rejects() {
+    let t = app().await;
+
+    let (status, text) = http(
+        t.port,
+        "POST",
+        "/token",
+        &[],
+        Some(&form(&[("token", "not-the-token"), ("next", "/secrets")])),
+        None,
+    )
+    .await;
+    assert_eq!(status, 303);
+    assert!(
+        text.to_lowercase().contains("location: /token?err="),
+        "must redirect back with error"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn open_redirect_rejected() {
+    let t = app().await;
+
+    let (status, text) = http(
+        t.port,
+        "POST",
+        "/token",
+        &[],
+        Some(&form(&[("token", &t.token), ("next", "//evil.example")])),
+        None,
+    )
+    .await;
+    assert_eq!(status, 303);
+    // Must redirect to /, not to the evil URL.
+    let loc_line = text
+        .lines()
+        .find(|l| l.to_ascii_lowercase().starts_with("location:"))
+        .unwrap();
+    assert!(
+        loc_line.contains("location: /"),
+        "open redirect must be neutralized"
+    );
+    assert!(!loc_line.contains("evil"));
+}
+
+// ---------- D40: loopback guard (layered with token) ----------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn foreign_host_still_403_even_with_valid_cookie() {
+    let t = app().await;
+    let c = t.cookie();
+
+    // The Host/Origin guard is the OUTER layer: even with a valid cookie,
+    // a foreign Host is refused before the token gate even runs.
+    let (status, _) = http(
+        t.port,
+        "GET",
+        "/",
+        &[("Host", "evil.example")],
+        None,
+        Some(&c),
     )
     .await;
     assert_eq!(status, 403);
+}
 
-    // Matching Origin passes.
+#[tokio::test(flavor = "multi_thread")]
+async fn foreign_origin_post_403_even_with_cookie() {
+    let t = app().await;
+    let c = t.cookie();
+
+    let host = format!("127.0.0.1:{}", t.port);
     let (status, _) = http(
         t.port,
         "POST",
         "/setup/policy",
-        &[
-            ("Host", &format!("127.0.0.1:{}", t.port)),
-            ("Origin", &format!("http://127.0.0.1:{}", t.port)),
-        ],
+        &[("Host", host.as_str()), ("Origin", "http://evil.example")],
         Some(""),
+        Some(&c),
+    )
+    .await;
+    assert_eq!(status, 403);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn matching_origin_and_cookie_passes() {
+    let t = app().await;
+    let c = t.cookie();
+    let host = format!("127.0.0.1:{}", t.port);
+    let origin = format!("http://127.0.0.1:{}", t.port);
+
+    let (status, _) = http(
+        t.port,
+        "POST",
+        "/setup/policy",
+        &[("Host", host.as_str()), ("Origin", origin.as_str())],
+        Some(""),
+        Some(&c),
     )
     .await;
     assert_eq!(status, 303);

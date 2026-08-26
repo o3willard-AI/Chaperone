@@ -36,6 +36,9 @@ pub struct UiState {
     /// Registered `cred_ref` schemes (picker suggestions).
     pub schemes: Vec<String>,
 
+    /// The per-instance access token required before the UI serves (D41).
+    pub token: crate::token::UiToken,
+
     /// Loopback port this UI is bound to (host/origin checks).
     pub port: u16,
 }

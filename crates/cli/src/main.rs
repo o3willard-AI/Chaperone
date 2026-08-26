@@ -36,7 +36,7 @@ GATEWAY DAEMON:
                     [--confirm-timeout-secs N|--confirm never-approve]
                     [--console-socket PATH] [--events-socket PATH] [--trust-host-keys]
                     [--ssh-known-hosts PATH] [--ssh-tofu]
-                    [--ui-port N] [--no-ui]
+                    [--ui-port N] [--no-ui] [--ui-token PATH]
 
 LOCAL VAULT (operator CRUD):
     chaperone vault-init  --store <FILE> [--sealer passphrase] [--passphrase-stdin]
@@ -44,6 +44,10 @@ LOCAL VAULT (operator CRUD):
     chaperone vault-get   --store <FILE> --path <P> [--passphrase-stdin] [--show]
     chaperone vault-list  --store <FILE> [--passphrase-stdin]
     chaperone vault-del   --store <FILE> --path <P> [--passphrase-stdin]
+
+UI ACCESS TOKEN (required before the config UI serves; D41):
+    chaperone ui-token show   --token <PATH>
+    chaperone ui-token rotate --token <PATH>
 
 RELEASE SIGNING (PLAN Phase 10):
     chaperone release-sign  --key <SEEDFILE> --file <ARTIFACT>   # writes ARTIFACT.sig
@@ -480,6 +484,43 @@ fn cmd_vault_del(flags: &Flags) -> Result<(), String> {
     Ok(())
 }
 
+fn cmd_ui_token(args: &[String]) -> Result<(), String> {
+    // `ui-token show --token X` / `ui-token rotate --token X`. The action
+    // is a bare positional, which the generic flag parser rejects, so this
+    // command peels it off before delegating to the flag parser for the
+    // rest.
+    let (action, rest) = match args.split_first().map(|(a, r)| (a.as_str(), r)) {
+        Some(("show", r)) => ("show", r),
+        Some(("rotate", r)) => ("rotate", r),
+        _ => return Err("usage: chaperone ui-token show|rotate --token <PATH>".to_owned()),
+    };
+    let flags = parse_flags(rest)?;
+    let token_path = flags.require("token")?;
+    let port = flags
+        .values
+        .get("ui-port")
+        .map_or(8720, |v| v.parse().unwrap_or(8720));
+    let token_path = std::path::Path::new(&token_path);
+    match action {
+        "show" => {
+            let token = chaperone_ui::load(token_path).map_err(|e| e.to_string())?;
+            println!("UI token:  {}", token.as_str());
+            println!(
+                "open:      http://127.0.0.1:{port}/?token={}",
+                token.as_str()
+            );
+        }
+        "rotate" => {
+            let token = chaperone_ui::rotate(token_path).map_err(|e| e.to_string())?;
+            println!("rotated UI token at {} (0600)", token_path.display());
+            println!("UI token:  {token}");
+            println!("open:      http://127.0.0.1:{port}/?token={token}");
+        }
+        _ => unreachable!(),
+    }
+    Ok(())
+}
+
 fn cmd_serve(flags: &Flags) -> Result<(), String> {
     use std::sync::Arc;
 
@@ -494,6 +535,16 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
         .map_or(8720, |v| v.parse().unwrap_or(8720));
     let ui_enabled = !flags.has("no-ui");
 
+    // D41: the UI token path defaults to beside the audit key (same config
+    // directory, same 0600 discipline). The operator creates it with
+    // `chaperone ui-token rotate` before first serve; we never auto-generate.
+    let ui_token_path = flags.values.get("ui-token").cloned().unwrap_or_else(|| {
+        std::path::Path::new(&key_path)
+            .with_file_name("ui.token")
+            .to_string_lossy()
+            .to_string()
+    });
+
     // First-run detection: without the three broker-required artifacts
     // there is nothing to serve and no vault passphrase to prompt for -
     // run the setup wizard instead (OPERATOR-UI-SPEC §3.3).
@@ -501,7 +552,7 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
         && std::path::Path::new(&store_path).exists()
         && std::path::Path::new(&key_path).exists();
     if !provisioned {
-        return cmd_serve_setup(flags, ui_port);
+        return cmd_serve_setup(flags, ui_port, &ui_token_path);
     }
 
     // D39: the integrity gate runs before anything else touches the file.
@@ -683,8 +734,17 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
 
     let gateway = Arc::new(gateway_core);
 
-    let ui_state = ui_enabled.then(|| {
-        std::sync::Arc::new(chaperone_ui::UiState {
+    let ui_state = if ui_enabled {
+        // D41: refuse to serve the UI without a token file. The operator
+        // creates it with `chaperone ui-token rotate` before first serve.
+        let token = chaperone_ui::load(std::path::Path::new(&ui_token_path)).map_err(|e| {
+            format!(
+                "{e}\n\nThe config UI requires an access token (D41). Create one with:\n  \
+                     chaperone ui-token rotate --token {ui_token_path}\n\
+                     Then restart `chaperone serve`."
+            )
+        })?;
+        Some(std::sync::Arc::new(chaperone_ui::UiState {
             policy_path: std::path::PathBuf::from(&policy_path),
             vault_path: std::path::PathBuf::from(&store_path),
             enrollment_path: std::path::PathBuf::from(&enrollment_path),
@@ -699,9 +759,12 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
                 .get("events-socket")
                 .map(std::path::PathBuf::from),
             schemes,
+            token,
             port: ui_port,
-        })
-    });
+        }))
+    } else {
+        None
+    };
 
     let spec = if let Some(path) = flags.values.get("socket") {
         chaperone_transport::ListenSpec::UnixSocket { path: path.into() }
@@ -748,7 +811,7 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
             match chaperone_ui::bind(ui_port).await {
                 Ok(listener) => {
                     println!(
-                        "config UI on http://127.0.0.1:{ui_port} (loopback only; no auth by design - same trust tier as the console client)"
+                        "config UI on http://127.0.0.1:{ui_port} (token required; run 'chaperone ui-token show --token {ui_token_path}')"
                     );
                     tokio::spawn(chaperone_ui::serve_on(listener, state));
                 }
@@ -769,7 +832,7 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
 }
 
 /// Setup-only daemon: no gateway, no vault prompt - just the wizard.
-fn cmd_serve_setup(flags: &Flags, ui_port: u16) -> Result<(), String> {
+fn cmd_serve_setup(flags: &Flags, ui_port: u16, ui_token_path: &str) -> Result<(), String> {
     use std::sync::Arc;
     if flags.has("no-ui") {
         return Err(
@@ -783,6 +846,17 @@ fn cmd_serve_setup(flags: &Flags, ui_port: u16) -> Result<(), String> {
     let store_path = flags.require("store")?;
     let journal_path = flags.require("audit-journal")?;
     let key_path = flags.require("audit-key")?;
+
+    // D41: setup mode serves the UI too, so the token gate is required
+    // here as well. The operator creates it with `chaperone ui-token
+    // rotate` before first serve.
+    let token = chaperone_ui::load(std::path::Path::new(ui_token_path)).map_err(|e| {
+        format!(
+            "{e}\n\nThe setup wizard is also token-gated (D41). Create one with:\n  \
+             chaperone ui-token rotate --token {ui_token_path}\n\
+             Then restart `chaperone serve`."
+        )
+    })?;
 
     let enrollment = Arc::new(
         chaperone_identity::EnrollmentStore::load(std::path::Path::new(&enrollment_path))
@@ -800,12 +874,14 @@ fn cmd_serve_setup(flags: &Flags, ui_port: u16) -> Result<(), String> {
         event_hub: None,
         events_socket_path: None,
         schemes: Vec::new(),
+        token,
         port: ui_port,
     });
 
     println!("CHAPERONE SETUP");
     println!("  required artifacts are missing; starting the setup wizard only.");
-    println!("  open: http://127.0.0.1:{ui_port}");
+    println!("  open: http://127.0.0.1:{ui_port}/?token=<TOKEN>");
+    println!("  token: chaperone ui-token show --token {ui_token_path}");
     println!("  after setup, restart this command to broker intents.");
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -840,6 +916,11 @@ fn run(args: Vec<String>) -> Result<(), String> {
             return Ok(());
         }
         _ => {}
+    }
+    // `ui-token show|rotate` carries a bare positional sub-action that the
+    // generic flag parser rejects; handle it before parse_flags.
+    if command.as_str() == "ui-token" {
+        return cmd_ui_token(&args[1..]);
     }
     let flags = parse_flags(&args[1..])?;
     match command.as_str() {
