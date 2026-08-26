@@ -88,6 +88,8 @@ impl Limits {
 pub struct Rule {
     /// Optional human label, echoed in decisions for audit legibility.
     pub name: Option<String>,
+    /// Whether use under this rule should emit a notification event.
+    pub notify_on_use: bool,
     /// Verdict when this rule matches.
     pub effect: Effect,
     /// Which agents.
@@ -137,6 +139,8 @@ pub enum DecisionSource {
 pub struct Decision {
     /// What policy permits.
     pub effect: Effect,
+    /// Whether the matched rule requests a notification on use (D38).
+    pub notify_on_use: bool,
     /// Why: which rule, or the floor.
     pub source: DecisionSource,
     /// Effective limits: min(matched-rule limits, agent-declared). For
@@ -192,6 +196,19 @@ struct RuleDef {
     mechanism: Option<String>,
     #[serde(default)]
     limits: Option<LimitsDef>,
+    #[serde(default)]
+    notify: Option<NotifyDef>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NotifyDef {
+    #[serde(default = "default_true")]
+    on_use: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -255,20 +272,23 @@ impl Policy {
                         .map_err(|e| PolicyError::Schema(format!("rule {i}: {label}: {e}"))),
                 }
             };
+            let notify_on_use = def.notify.as_ref().map(|n| n.on_use).unwrap_or(true);
+            let limits = def
+                .limits
+                .map(|l| Limits {
+                    max_response_bytes: l.max_response_bytes,
+                    session_ttl_s: l.session_ttl_s,
+                })
+                .unwrap_or_default();
             rules.push(Rule {
                 name: def.name,
+                notify_on_use,
                 effect,
                 agent_id: axis("agent_id", &def.agent_id)?,
                 cred_ref: axis("cred_ref", &def.cred_ref)?,
                 target_uri: axis("target_uri", &def.target_uri)?,
                 mechanism: axis("mechanism", &def.mechanism)?,
-                limits: def
-                    .limits
-                    .map(|l| Limits {
-                        max_response_bytes: l.max_response_bytes,
-                        session_ttl_s: l.session_ttl_s,
-                    })
-                    .unwrap_or_default(),
+                limits,
             });
         }
         use sha2::{Digest, Sha256};
@@ -328,6 +348,7 @@ impl Policy {
             {
                 return Decision {
                     effect: rule.effect,
+                    notify_on_use: rule.notify_on_use,
                     source: DecisionSource::Rule {
                         index,
                         name: rule.name.clone(),
@@ -339,6 +360,7 @@ impl Policy {
 
         Decision {
             effect: Effect::Deny,
+            notify_on_use: false,
             source: DecisionSource::DefaultDeny,
             // Nothing was granted; report bare declared limits unchanged so
             // callers cannot read a widening out of a denial.

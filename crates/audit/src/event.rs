@@ -13,6 +13,7 @@ use serde_json::Value;
 
 /// How the brokered action ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(serde::Serialize)]
 pub enum Outcome {
     /// Policy allowed and injection completed.
     Proceeded,

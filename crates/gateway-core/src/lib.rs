@@ -36,6 +36,7 @@ use serde_json::{Value, json};
 pub mod console;
 #[cfg(feature = "postgres")]
 pub mod db;
+pub mod events;
 pub mod known_hosts;
 pub mod privilege;
 pub mod session;
@@ -47,6 +48,7 @@ pub use console::ConsoleHub;
 #[cfg(feature = "postgres")]
 pub use db::DbBackend;
 pub use known_hosts::{PinStore, PinStoreError};
+pub use events::EventHub;
 pub use privilege::{LocalPrivBackend, PrivilegeAllowlist};
 pub use session::{OutputBatch, OutputChunk, SessionBackend, SessionChannel, SessionTable};
 #[cfg(feature = "ssh")]
@@ -236,6 +238,7 @@ pub struct Gateway {
     backends: Mutex<HashMap<String, Arc<dyn SessionBackend>>>,
     privilege_allowlist: Mutex<Option<PrivilegeAllowlist>>,
     ruleset_hash: String,
+    event_hub: Option<Arc<EventHub>>,
 }
 
 impl Gateway {
@@ -261,6 +264,7 @@ impl Gateway {
             sessions: SessionTable::new(),
             backends: Mutex::new(HashMap::new()),
             privilege_allowlist: Mutex::new(None),
+            event_hub: None,
             ruleset_hash,
         };
 
@@ -292,6 +296,11 @@ impl Gateway {
         &self.ruleset_hash
     }
 
+
+
+    /// Provides the daemon-side mirror of the operator allowlist used to
+    /// decide whether local-privilege may proceed unattended. The helper
+    /// re-checks authoritatively regardless.
     /// Provides the daemon-side mirror of the operator allowlist used to
     /// decide whether local-privilege may proceed unattended. The helper
     /// re-checks authoritatively regardless.
@@ -300,6 +309,12 @@ impl Gateway {
             .privilege_allowlist
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(al);
+    }
+
+    /// Attaches the event hub for live notification broadcasting (D35).
+    pub fn with_event_hub(&mut self, hub: Arc<EventHub>) -> &mut Self {
+        self.event_hub = Some(hub);
+        self
     }
 
     /// Registers a session backend for a mechanism (e.g. "ssh").
@@ -985,7 +1000,19 @@ impl Gateway {
             outcome,
             intent_envelope: &evidence,
         };
-        self.audit.append(&event).ok().map(|h| h.seq)
+        let seq = self.audit.append(&event).ok().map(|h| h.seq);
+        if let Some(hub) = &self.event_hub {
+            hub.broadcast(&format!(
+                "{{\"audit_id\":\"aud_{}\",\"agent_id\":\"{}\",\"effect\":\"{}\",\"mechanism\":\"{}\",\"target_uri\":\"{}\",\"outcome\":{}}}",
+                seq.unwrap_or(0),
+                event.agent_id,
+                event.effect,
+                event.mechanism,
+                event.target_uri,
+                serde_json::to_string(&event.outcome).unwrap_or_default(),
+            ));
+        }
+        seq
     }
 
     /// Error response: echoes `msg_id`, carries a §10.1 code and a
