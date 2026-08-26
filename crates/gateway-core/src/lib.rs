@@ -250,7 +250,7 @@ impl Gateway {
         config: GatewayConfig,
     ) -> Result<Self, chaperone_injectors::InjectorError> {
         let ruleset_hash = policy.source_hash().to_owned();
-        let mut this = Self {
+        let this = Self {
             attestor,
             policy,
             router,
@@ -453,8 +453,8 @@ impl Gateway {
             let channel = entry.channel_arc();
             (**channel.lock().await).shutdown().await;
             let event = AuditEvent {
-            record_kind: chaperone_audit::RecordKind::IntentDecision,
-            ruleset_hash: self.ruleset_hash.clone(),
+                record_kind: chaperone_audit::RecordKind::IntentDecision,
+                ruleset_hash: self.ruleset_hash.clone(),
                 agent_id: &agent_id,
                 msg_id: message.get("msg_id").and_then(Value::as_str).unwrap_or(""),
                 mechanism: "session.close",
@@ -521,8 +521,8 @@ impl Gateway {
                     (**channel.lock().await).shutdown().await;
                 }
                 let event = AuditEvent {
-            record_kind: chaperone_audit::RecordKind::IntentDecision,
-            ruleset_hash: self.ruleset_hash.clone(),
+                    record_kind: chaperone_audit::RecordKind::IntentDecision,
+                    ruleset_hash: self.ruleset_hash.clone(),
                     agent_id: &agent_id,
                     msg_id: message.get("msg_id").and_then(Value::as_str).unwrap_or(""),
                     mechanism: "session.command",
