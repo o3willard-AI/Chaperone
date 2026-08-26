@@ -316,3 +316,43 @@ Auto-update mechanism. System-wide multi-user daemon mode. Notarization.
 Rough shape once approved: 13a (small, security) → 13b/13c in parallel →
 13d/13e docs+pipeline → alpha.2 tag. Each lands as its own commit set with
 tests/gates green; nothing executes until decisions land here.
+
+---
+
+## Phase 14 - Operator UI, notifications, and policy integrity *(milestone: M14)*
+
+Goal: close the front-door failure mode from user acceptance testing — the
+security model's first real-world failure was a cooperative user asking
+their agent to hand-write `policy.toml` for them (OPERATOR-UI-SPEC §1) —
+and the silence-after-approval gap (§1.2). Two additive client surfaces
+(config UI + live event feed), one integrity guard that makes them honest,
+zero changes to wire protocol or security semantics. Decisions E1–E5 were
+ratified as recommended: E1=(2) loopback web UI, E2=(1) dedicated events
+socket, E3=(1) notify-default-true, E4 resolved by 14c-pre below rather
+than an ownership check, E5=(1) in-tree crate.
+
+### Phased breakdown
+
+| # | Item | Deliverable | Notes |
+|---|---|---|---|
+| 14a | **Ruleset hash anchoring** (D38) | Every gateway start appends a `policy_load` record carrying SHA-256 of the governing policy TOML; every decision carries the same hash; post-hoc widening is detectable as a hash break at next restart. Detection-over-prevention matches D7/D18. | ✅ shipped |
+| 14b | **Events feed socket + notify knob** (D35/D37) | `EventHub`: read-only fan-out UDS broadcasting one JSON line per terminal intent decision. `[rule.notify] on_use` per rule (default true). Emission at the `audit_decision` choke point. | ✅ shipped |
+| 14c-pre | **Policy-file integrity guard** (D39) | Load-time permission gate (refuse group/other-writable or foreign-owned policy.toml); live drift watch while serving: any content change/deletion under a running gateway appends a signed `policy_drift` record, broadcasts on the feed, and HALTS brokering until operator restart. Restart re-runs the gate and re-anchors the chain. | ✅ shipped |
+| 14c | **Config UI web crate** (D36/D40) | `chaperone-ui`: axum, server-rendered HTML/CSS, zero JS build step, loopback-only with Host/Origin guard. Setup wizard (creates vault.bin / audit.key / default-deny policy scaffold), secret CRUD (never re-displays values), rule editor (mechanism picker + service templates + maturity badges from CONNECTIVITY-MATRIX; saves through `Policy::to_toml`, validated via `Policy::from_toml` before disk), raw TOML editor, agent enroll/revoke with client-side key decode. Served from `chaperone serve`; missing artifacts ⇒ setup-only mode. Hard constraint §3.2: no second parser anywhere. | ✅ shipped |
+| 14d | **GETTING-STARTED.md + release** | On-ramp doc (UI-first, CLI equivalents at every step); tag `v0.1.0-alpha.3`. | |
+
+### Acceptance tests
+
+- Guard: loose modes refused at load (`0646/666/622` fail, `600/400/644/604` pass);
+  content drift halts within one watch tick, appends exactly one signed
+  `policy_drift` record to the SAME chain, broadcasts on the feed; deletion halts;
+  untouched files never trip it; halted gateway answers every message type
+  with `E_GATEWAY_HALTED`.
+- Policy crate: canonical writer round-trips every matcher kind through
+  `source()`/`parse()`; regenerated rulesets evaluate identically; empty
+  policy serializes to empty document.
+- UI: wizard creates all three broker artifacts (audit key refuses overwrite);
+  secrets stored via UI never appear in page HTML; enrollment rejects JSON-blob
+  keys with a specific error before calling enroll; rule editor output parses
+  under the real schema with expected effect/notify/limits; unknown mechanisms
+  refused pre-write; invalid raw TOML never touches disk; foreign Host/Origin → 403.

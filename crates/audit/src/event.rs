@@ -12,8 +12,7 @@
 use serde_json::Value;
 
 /// How the brokered action ended.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum Outcome {
     /// Policy allowed and injection completed.
     Proceeded,
@@ -44,6 +43,15 @@ pub enum Outcome {
         /// Exit code if the channel reported one.
         exit_code: Option<i32>,
     },
+    /// The governing policy file changed under a running gateway (D39).
+    /// Carries what was observed; the record's `ruleset_hash` field holds
+    /// the baseline hash the gateway loaded at start.
+    PolicyDrift {
+        /// Hex SHA-256 of the file as now observed ('' when unreadable).
+        observed_hash: String,
+        /// What kind of divergence: "content changed" | "file missing".
+        detail: String,
+    },
 }
 
 impl Outcome {
@@ -67,6 +75,14 @@ impl Outcome {
                 "reason": reason,
                 "exit_code": exit_code,
             }),
+            Outcome::PolicyDrift {
+                observed_hash,
+                detail,
+            } => serde_json::json!({
+                "status": "policy_drift",
+                "observed_hash": observed_hash,
+                "detail": detail,
+            }),
         }
     }
 }
@@ -81,6 +97,10 @@ pub enum RecordKind {
     /// The gateway loaded a policy ruleset; carries its hash so any
     /// post-hoc widening is detectable across restarts.
     PolicyLoad,
+    /// Live detection of a policy file change under a running gateway
+    /// (D39). The record's `ruleset_hash` is the baseline the gateway
+    /// loaded; the outcome carries what was observed.
+    PolicyDrift,
 }
 
 impl RecordKind {
@@ -91,6 +111,7 @@ impl RecordKind {
             RecordKind::Genesis => "genesis",
             RecordKind::IntentDecision => "intent_decision",
             RecordKind::PolicyLoad => "policy_load",
+            RecordKind::PolicyDrift => "policy_drift",
         }
     }
 }

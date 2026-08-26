@@ -49,6 +49,7 @@ Implementation working documents:
 - [BUILDER-NOTES-MACOS.md](docs/BUILDER-NOTES-MACOS.md) — brief for building and validating on Apple hardware.
 - [CONNECTIVITY-MATRIX.md](docs/CONNECTIVITY-MATRIX.md) — every application/service type agents can reach today, how, and what is missing. File a connectivity request to shape the roadmap.
 - [LOCAL-VAULT-GUIDE.md](docs/LOCAL-VAULT-GUIDE.md) — user guide for the built-in encrypted vault: create, store, rotate, back up — no third-party service required.
+- [GETTING-STARTED.md](docs/GETTING-STARTED.md) — the friendly on-ramp: zero to a brokered, audited agent action via the setup wizard (or CLI equivalents).
 - [DESIGN-DECISIONS.md](docs/DESIGN-DECISIONS.md) — explicit decisions where the specs are silent.
 - [SPEC-ISSUES.md](docs/SPEC-ISSUES.md) — discrepancies found while reading, tracked rather than papered over.
 

@@ -22,6 +22,7 @@
 //! arrive in M8, the real confirmation UX in M7.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -38,6 +39,7 @@ pub mod console;
 pub mod db;
 pub mod events;
 pub mod known_hosts;
+pub mod policy_guard;
 pub mod privilege;
 pub mod session;
 #[cfg(feature = "ssh")]
@@ -47,8 +49,11 @@ pub mod ssh;
 pub use console::ConsoleHub;
 #[cfg(feature = "postgres")]
 pub use db::DbBackend;
-pub use known_hosts::{PinStore, PinStoreError};
 pub use events::EventHub;
+pub use known_hosts::{PinStore, PinStoreError};
+pub use policy_guard::{
+    Drift, Observation, PolicyWatch, default_watch_interval, hash_doc_bytes, verify_permissions,
+};
 pub use privilege::{LocalPrivBackend, PrivilegeAllowlist};
 pub use session::{OutputBatch, OutputChunk, SessionBackend, SessionChannel, SessionTable};
 #[cfg(feature = "ssh")]
@@ -239,6 +244,9 @@ pub struct Gateway {
     privilege_allowlist: Mutex<Option<PrivilegeAllowlist>>,
     ruleset_hash: String,
     event_hub: Option<Arc<EventHub>>,
+    /// D39: set once by the policy-integrity guard; brokering stops.
+    halted: AtomicBool,
+    halt_reason: Mutex<Option<String>>,
 }
 
 impl Gateway {
@@ -265,6 +273,8 @@ impl Gateway {
             backends: Mutex::new(HashMap::new()),
             privilege_allowlist: Mutex::new(None),
             event_hub: None,
+            halted: AtomicBool::new(false),
+            halt_reason: Mutex::new(None),
             ruleset_hash,
         };
 
@@ -296,7 +306,33 @@ impl Gateway {
         &self.ruleset_hash
     }
 
+    /// Stops all brokering until process restart (D39). Idempotent; the
+    /// first reason wins and is the one reported.
+    pub fn halt(&self, reason: &str) {
+        let mut guard = self
+            .halt_reason
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.is_none() {
+            *guard = Some(reason.to_owned());
+            self.halted.store(true, Ordering::SeqCst);
+        }
+    }
 
+    /// Whether [`Gateway::halt`] has fired.
+    #[must_use]
+    pub fn is_halted(&self) -> bool {
+        self.halted.load(Ordering::SeqCst)
+    }
+
+    /// Why the gateway halted, if it has.
+    #[must_use]
+    pub fn halt_reason(&self) -> Option<String> {
+        self.halt_reason
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
 
     /// Provides the daemon-side mirror of the operator allowlist used to
     /// decide whether local-privilege may proceed unattended. The helper
@@ -333,6 +369,17 @@ impl Gateway {
     /// Handles one inbound JSON-object message and produces the response
     /// value (`msg_id` stamping stays with the transport).
     pub async fn handle_message(&self, message: &Value) -> Value {
+        // D39: a halted gateway brokers nothing, answers nothing with
+        // side effects. Every message type funnels through here.
+        if self.is_halted() {
+            return Self::error(
+                message,
+                "E_GATEWAY_HALTED",
+                &self
+                    .halt_reason()
+                    .unwrap_or_else(|| "gateway halted".to_owned()),
+            );
+        }
         match message.get("type").and_then(Value::as_str) {
             Some("intent") => self.handle_intent(message).await,
             Some("session.command") => {

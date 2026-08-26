@@ -491,3 +491,92 @@ replay: a daemon crash between acceptance and persistence forgets the nonce,
 letting a captured intent be replayed once across restart — precisely what
 D6's persistence exists to prevent. Option B remains available if a future
 threat model prefers it; switching is a contained change.
+
+## D35 - Event feed transport
+
+The console socket is deliberately 1:1 answer-oriented; notifications want
+fan-out. A second read-only Unix socket (`chaperone-events.sock`, owner-only,
+identical discipline to agent/console sockets) broadcasts one JSON line per
+terminal intent decision to unlimited simultaneous readers. Nothing is ever
+written back; no new fact is invented - fields are exactly what
+`audit-export` already produces, so the only novelty is timing. Denies are
+broadcast deliberately: repeated quiet refusal is itself signal.
+
+**Rejected:** extending the console protocol with a subscribe verb - it
+would entangle 1:1 confirm-and-answer semantics with fan-out in one state
+machine for no shared-code benefit.
+
+## D36 - The UI is a thin client over existing crates
+
+The config UI must never parse or write policy TOML, vault format, or
+enrollment JSON. Every mutation goes through `chaperone-policy`,
+`chaperone-vault`, or `chaperone-identity` - the same implementations, and
+therefore the same tests and fuzz targets, as the CLI. Rule documents are
+produced by `Policy::to_toml` (the one canonical writer, living beside the
+one parser) and re-validated with `Policy::from_toml` before any byte hits
+disk. This is D12/D33's single-source-of-truth reasoning applied to a new
+surface: a second validator in UI code is how "the UI let me create a
+state the CLI would have refused" bugs get made.
+
+## D37 - Notify defaults to on
+
+`[rule.notify] on_use` defaults to **true**; quiet is opt-out. Inverted on
+purpose: the rules where notification matters most (brokered sessions after
+one-time approval, `never-approve` deployments) are precisely those where
+no prompt would otherwise ever surface use. Opt-in would ship the feature
+silent by default, which is the bug it exists to fix.
+
+## D38 - Ruleset hash anchoring
+
+Every gateway start appends a signed `policy_load` record carrying SHA-256
+of the governing policy document; every decision record carries the same
+hash under `ruleset_hash`. Any post-hoc edit of `policy.toml` is therefore
+detectable as a hash break across restarts. Detection-over-prevention:
+in the per-user model an ownership check is a no-op against the very actor
+it would target (the same-user agent), matching D7/D18's honesty posture.
+Strengthened from restart-time detection to live detection by D39.
+
+## D39 - Policy-file integrity guard: perm gate + drift watch + halt
+
+Two layers over D38:
+
+1. **Load gate:** refuse a policy file that is group/other-writable or not
+   owned by the running account, with a remediation-shaped message. Cheap,
+   portable hygiene (ssh `authorized_keys` discipline).
+2. **Live watch:** while serving, re-hash the file periodically against the
+   anchored baseline. Content change, deletion, or persistent unreadability
+   appends one signed `policy_drift` record, broadcasts on the events feed,
+   prints a loud banner, and **halts brokering** until operator restart.
+
+Halt-on-drift is fail-closed by construction: rules edited out-of-band can
+never take effect silently because the daemon stops consulting its in-memory
+ruleset entirely. The cost is availability - an accidental editor touch
+takes the broker down until a human restarts it - accepted deliberately at
+decision time. The restart that follows re-runs the load gate and re-anchors
+the chain, so only what an operator implicitly re-approved by starting up
+survives.
+
+**Rejected:** updating the watch baseline when the config UI saves policy.
+It would spare operators a restart cycle but means any local process able
+to reach the UI endpoint could rewrite policy AND suppress the alarm -
+trading a loud halt for a silent widening path. Not worth it.
+
+## D40 - Operator UI shape: axum, in-daemon, bare loopback, server-rendered
+
+Ratified E-decisions, as built:
+
+- **axum**, sharing the workspace tokio runtime (D11) rather than adding a
+  sync HTTP crate and bridge layer.
+- **Served from `chaperone serve`**, including a setup-only mode that runs
+  just the wizard when required artifacts are missing (a gateway cannot run
+  without an audit chain, so first-run cannot be full-broker).
+- **Bare loopback trust**: bound to 127.0.0.1 only; no login, no token -
+  same trust tier as the console client (D32). A Host/Origin guard refuses
+  requests whose Host is not the loopback address or whose Origin does not
+  match, which closes browser-tab CSRF and DNS rebinding (the remote-web →
+  local-UI paths) without operator-visible friction. Honest residual risk,
+  accepted at decision time: any process running as the user can reach the
+  UI directly - the same trust tier as the CLI reading the same files.
+- **Server-rendered HTML/CSS, zero JS build step**: forms POST and
+  redirect; no node/npm anywhere near reproducible builds; one hand-rolled,
+  tested HTML escaper instead of a template-engine dependency.

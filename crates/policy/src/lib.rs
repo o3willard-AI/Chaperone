@@ -36,7 +36,10 @@ pub enum Effect {
 }
 
 impl Effect {
-    fn parse(raw: &str) -> Option<Effect> {
+    /// Wire string -> effect. Public for operator tooling that builds rules
+    /// programmatically (the config UI); the TOML schema remains the only
+    /// path rules actually enter service through.
+    pub fn parse(raw: &str) -> Option<Effect> {
         match raw {
             "allow" => Some(Effect::Allow),
             "deny" => Some(Effect::Deny),
@@ -169,6 +172,16 @@ impl fmt::Display for PolicyError {
 }
 
 impl std::error::Error for PolicyError {}
+
+/// Appends `key = "escaped"` using the toml crate's own string quoting so
+/// escapes are never hand-rolled here.
+fn push_kv(out: &mut String, key: &str, value: &str) {
+    let quoted = toml::Value::from(value).to_string();
+    out.push_str(key);
+    out.push_str(" = ");
+    out.push_str(&quoted);
+    out.push('\n');
+}
 
 // Wire format: deliberately strict. deny_unknown_fields means a misspelled
 // axis ("agents_id") fails the load instead of silently matching-any.
@@ -309,6 +322,62 @@ impl Policy {
             rules,
             source_hash_hex: String::new(),
         }
+    }
+
+    /// The loaded rules, in precedence order (first match wins).
+    ///
+    /// Read-only view for operator tooling (the config UI lists these);
+    /// mutating goes through a document rebuild + [`Policy::from_toml`]
+    /// validation, never by editing this slice.
+    #[must_use]
+    pub fn rules(&self) -> &[Rule] {
+        &self.rules
+    }
+
+    /// Canonical TOML serialization of this ruleset (D40).
+    ///
+    /// ONE writer, living beside the one parser: the config UI saves
+    /// through this method and then re-validates with [`Policy::from_toml`],
+    /// so "what the UI wrote" is exactly "what the CLI would have parsed".
+    /// Round-trip guarantee (tested): `from_toml(&to_toml())` yields a
+    /// policy that evaluates identically, and every matcher survives via
+    /// its `source()` form.
+    #[must_use]
+    pub fn to_toml(&self) -> String {
+        let mut out = String::new();
+        for (index, rule) in self.rules.iter().enumerate() {
+            if index > 0 {
+                out.push('\n');
+            }
+            out.push_str("[[rule]]\n");
+            if let Some(name) = &rule.name {
+                push_kv(&mut out, "name", name);
+            }
+            out.push_str(&format!("effect = \"{}\"\n", rule.effect.as_str()));
+            for (key, matcher) in [
+                ("agent_id", &rule.agent_id),
+                ("cred_ref", &rule.cred_ref),
+                ("target_uri", &rule.target_uri),
+                ("mechanism", &rule.mechanism),
+            ] {
+                if let Some(source) = matcher.source() {
+                    push_kv(&mut out, key, &source);
+                }
+            }
+            // Sub-tables must follow every bare key of this rule.
+            if rule.limits.max_response_bytes.is_some() || rule.limits.session_ttl_s.is_some() {
+                out.push_str("[rule.limits]\n");
+                if let Some(v) = rule.limits.max_response_bytes {
+                    out.push_str(&format!("max_response_bytes = {v}\n"));
+                }
+                if let Some(v) = rule.limits.session_ttl_s {
+                    out.push_str(&format!("session_ttl_s = {v}\n"));
+                }
+            }
+            out.push_str("[rule.notify]\n");
+            out.push_str(&format!("on_use = {}\n", rule.notify_on_use));
+        }
+        out
     }
 
     /// Number of rules loaded.
@@ -608,6 +677,107 @@ mod tests {
         let d = p.evaluate(&req("agent:a", "vault://x", "https://t", "http-bearer"));
         assert_eq!(d.effect, Effect::Deny);
         assert_eq!(d.source, DecisionSource::DefaultDeny);
+    }
+
+    // ---------- canonical writer (D40) ----------
+
+    #[test]
+    fn to_toml_parses_back_to_identical_ruleset() {
+        let doc = r#"
+            [[rule]]
+            name = "stripe \"prod\" # not a comment"
+            effect = "allow"
+            agent_id = "agent:planner-7"
+            cred_ref = "vault://prod/stripe/*"
+            target_uri = "https://api.stripe.com/v1/*"
+            mechanism = "http-bearer"
+            [rule.limits]
+            max_response_bytes = 262144
+            [rule.notify]
+            on_use = false
+
+            [[rule]]
+            effect = "deny"
+            target_uri = "prefix:https://api.github.com/orgs/*/hooks*"
+
+            [[rule]]
+            effect = "needs_confirmation"
+            cred_ref = "exact:local://weird*path"
+        "#;
+        let p = Policy::from_toml(doc).unwrap();
+        let regenerated = Policy::from_toml(&p.to_toml()).unwrap();
+        assert_eq!(p.rules(), regenerated.rules());
+        assert_eq!(p.len(), 3);
+
+        // And evaluation agrees everywhere.
+        for (a, c, t, m) in [
+            (
+                "agent:planner-7",
+                "vault://prod/stripe/k",
+                "https://api.stripe.com/v1/x",
+                "http-bearer",
+            ),
+            (
+                "agent:other",
+                "vault://prod/stripe/k",
+                "https://api.stripe.com/v1/x",
+                "http-bearer",
+            ),
+            (
+                "a",
+                "local://weird*path",
+                "https://api.github.com/orgs/x/hooksY",
+                "ssh",
+            ),
+        ] {
+            assert_eq!(
+                p.evaluate(&req(a, c, t, m)),
+                regenerated.evaluate(&req(a, c, t, m)),
+                "{a} {c} {t} {m}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_matcher_kind_round_trips_through_source() {
+        use crate::matcher::Matcher;
+        for m in [
+            Matcher::Any,
+            Matcher::Exact("plain".to_owned()),
+            Matcher::Exact("has*star".to_owned()),
+            Matcher::Prefix("pre*fix".to_owned()),
+            Matcher::Glob("https://x/*".to_owned()),
+            Matcher::Glob("no-star".to_owned()),
+            Matcher::Glob(String::new()),
+        ] {
+            match (&m, m.source()) {
+                (Matcher::Any, None) => {}
+                (_, Some(src)) => {
+                    assert_eq!(&Matcher::parse(&src).unwrap(), &m, "source {src:?}");
+                }
+                (_, None) => assert!(matches!(m, Matcher::Any), "only Any serializes as absent"),
+            }
+        }
+    }
+
+    #[test]
+    fn empty_policy_serializes_to_empty_document() {
+        assert_eq!(Policy::empty().to_toml(), "");
+        assert!(Policy::empty().is_empty());
+    }
+
+    #[test]
+    fn writer_output_is_stable_and_explicit_about_notify() {
+        let p = Policy::from_toml(
+            "[[rule]]\neffect = \"allow\"\n[[rule]]\neffect=\"deny\"\n[rule.notify]\non_use=false\n",
+        )
+        .unwrap();
+        let out = p.to_toml();
+        // Both rules carry an explicit notify block; default-true is written
+        // out so the file reads the way it behaves.
+        assert_eq!(out.matches("[rule.notify]").count(), 2);
+        assert!(out.contains("on_use = true"));
+        assert!(out.contains("on_use = false"));
     }
 
     #[test]

@@ -34,8 +34,9 @@ GATEWAY DAEMON:
                     [--tcp-port N] [--max-response-bytes N] [--timeout-secs N]
                     [--passphrase-file PATH]
                     [--confirm-timeout-secs N|--confirm never-approve]
-                    [--console-socket PATH] [--trust-host-keys]
+                    [--console-socket PATH] [--events-socket PATH] [--trust-host-keys]
                     [--ssh-known-hosts PATH] [--ssh-tofu]
+                    [--ui-port N] [--no-ui]
 
 LOCAL VAULT (operator CRUD):
     chaperone vault-init  --store <FILE> [--sealer passphrase] [--passphrase-stdin]
@@ -487,6 +488,24 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
     let store_path = flags.require("store")?;
     let journal_path = flags.require("audit-journal")?;
     let key_path = flags.require("audit-key")?;
+    let ui_port = flags
+        .values
+        .get("ui-port")
+        .map_or(8720, |v| v.parse().unwrap_or(8720));
+    let ui_enabled = !flags.has("no-ui");
+
+    // First-run detection: without the three broker-required artifacts
+    // there is nothing to serve and no vault passphrase to prompt for -
+    // run the setup wizard instead (OPERATOR-UI-SPEC §3.3).
+    let provisioned = std::path::Path::new(&policy_path).exists()
+        && std::path::Path::new(&store_path).exists()
+        && std::path::Path::new(&key_path).exists();
+    if !provisioned {
+        return cmd_serve_setup(flags, ui_port);
+    }
+
+    // D39: the integrity gate runs before anything else touches the file.
+    chaperone_gateway_core::verify_permissions(std::path::Path::new(&policy_path))?;
 
     let now = chaperone_gateway_core::chaperone_time_now();
 
@@ -513,11 +532,18 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
 
     // Vault passphrase: prompted (or piped first stdin line) at startup.
     let pass = read_passphrase(flags, false)?;
-    let router = {
-        let vault = chaperone_vault::LocalVault::open(std::path::Path::new(&store_path), pass)
-            .map_err(|e| e.to_string())?;
+    let shared_vault = chaperone_vault::SharedVault::new(
+        chaperone_vault::LocalVault::open(std::path::Path::new(&store_path), pass)
+            .map_err(|e| e.to_string())?,
+    );
+    let schemes = {
         let mut r = chaperone_vault::VaultRouter::new();
-        r.register("local", Arc::new(vault));
+        r.register("local", Arc::new(shared_vault.clone()));
+        r.schemes()
+    };
+    let router = {
+        let mut r = chaperone_vault::VaultRouter::new();
+        r.register("local", Arc::new(shared_vault.clone()));
         r
     };
 
@@ -640,7 +666,42 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
     );
     gateway_core.with_session_backend("db-scram", Arc::new(chaperone_gateway_core::DbBackend));
 
+    // Event feed: always constructed (the policy-integrity guard and the
+    // config UI broadcast through it); bound to a socket when requested.
+    let event_hub = chaperone_gateway_core::EventHub::new();
+    if let Some(path) = flags.values.get("events-socket") {
+        event_hub.listen(std::path::Path::new(path))?;
+        println!("event feed listening on {path} (tail with any stream reader)");
+    }
+    gateway_core.with_event_hub(Arc::clone(&event_hub));
+
+    let policy_watch = chaperone_gateway_core::PolicyWatch::new(
+        std::path::PathBuf::from(&policy_path),
+        gateway_core.ruleset_hash().to_owned(),
+    );
+    let watch_audit = Arc::clone(&audit);
+
     let gateway = Arc::new(gateway_core);
+
+    let ui_state = ui_enabled.then(|| {
+        std::sync::Arc::new(chaperone_ui::UiState {
+            policy_path: std::path::PathBuf::from(&policy_path),
+            vault_path: std::path::PathBuf::from(&store_path),
+            enrollment_path: std::path::PathBuf::from(&enrollment_path),
+            audit_key_path: std::path::PathBuf::from(&key_path),
+            journal_path: std::path::PathBuf::from(&journal_path),
+            vault: std::sync::RwLock::new(Some(shared_vault)),
+            enrollment: Arc::clone(&enrollment),
+            gateway: Some(Arc::clone(&gateway)),
+            event_hub: Some(Arc::clone(&event_hub)),
+            events_socket_path: flags
+                .values
+                .get("events-socket")
+                .map(std::path::PathBuf::from),
+            schemes,
+            port: ui_port,
+        })
+    });
 
     let spec = if let Some(path) = flags.values.get("socket") {
         chaperone_transport::ListenSpec::UnixSocket { path: path.into() }
@@ -682,12 +743,76 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     // Bind + accept inside the runtime: async listeners need a reactor.
     rt.block_on(async move {
+        // Operator config UI on the loopback (D40).
+        if let Some(state) = ui_state {
+            match chaperone_ui::bind(ui_port).await {
+                Ok(listener) => {
+                    println!(
+                        "config UI on http://127.0.0.1:{ui_port} (loopback only; no auth by design - same trust tier as the console client)"
+                    );
+                    tokio::spawn(chaperone_ui::serve_on(listener, state));
+                }
+                Err(e) => eprintln!("config UI disabled: {e}"),
+            }
+        }
+
+        // D39: live policy drift watch - any change to the governing file
+        // under a running gateway halts brokering, loudly.
+        tokio::spawn(policy_watch.run(Arc::clone(&gateway), watch_audit, Some(event_hub)));
+
         let server = chaperone_transport::serve(&spec, handler).map_err(|e| e.to_string())?;
         println!("press Ctrl-C to stop");
         server.joined().await;
         Ok::<(), String>(())
     })?;
     Ok(())
+}
+
+/// Setup-only daemon: no gateway, no vault prompt - just the wizard.
+fn cmd_serve_setup(flags: &Flags, ui_port: u16) -> Result<(), String> {
+    use std::sync::Arc;
+    if flags.has("no-ui") {
+        return Err(
+            "required artifacts are missing and --no-ui was given; cannot start. \
+             Create policy.toml, the vault store, and an audit key first."
+                .to_owned(),
+        );
+    }
+    let enrollment_path = flags.require("enrollment")?;
+    let policy_path = flags.require("policy")?;
+    let store_path = flags.require("store")?;
+    let journal_path = flags.require("audit-journal")?;
+    let key_path = flags.require("audit-key")?;
+
+    let enrollment = Arc::new(
+        chaperone_identity::EnrollmentStore::load(std::path::Path::new(&enrollment_path))
+            .map_err(|e| e.to_string())?,
+    );
+    let state = Arc::new(chaperone_ui::UiState {
+        policy_path: std::path::PathBuf::from(&policy_path),
+        vault_path: std::path::PathBuf::from(&store_path),
+        enrollment_path: std::path::PathBuf::from(&enrollment_path),
+        audit_key_path: std::path::PathBuf::from(&key_path),
+        journal_path: std::path::PathBuf::from(&journal_path),
+        vault: std::sync::RwLock::new(None),
+        enrollment,
+        gateway: None,
+        event_hub: None,
+        events_socket_path: None,
+        schemes: Vec::new(),
+        port: ui_port,
+    });
+
+    println!("CHAPERONE SETUP");
+    println!("  required artifacts are missing; starting the setup wizard only.");
+    println!("  open: http://127.0.0.1:{ui_port}");
+    println!("  after setup, restart this command to broker intents.");
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    rt.block_on(chaperone_ui::serve(state))
 }
 
 fn load_audit_seed_text(text: &str) -> Result<chaperone_audit::AuditKey, String> {

@@ -33,7 +33,7 @@ use time::format_description::well_known::Rfc3339;
 pub mod enrollment;
 pub mod replay;
 
-pub use enrollment::{EnrollmentError, EnrollmentStore};
+pub use enrollment::{EnrollmentError, EnrollmentStore, decode_public_key};
 pub use replay::ReplayCache;
 
 /// Verification parameters.

@@ -1,9 +1,8 @@
 # Chaperone — Session Handoff & Status Document
 
-**Last updated:** 2026-08-26
-**Branch:** `main` @ `44572a9` — all commits pushed, CI green across Linux/macOS/Windows
-**Latest published release:** [`v0.1.0-alpha.2`](https://github.com/o3willard-AI/Chaperone/releases/tag/v0.1.0-alpha.2)
-**Tests:** 165 passed / 0 failed · clippy `-D warnings` clean · fmt clean · cargo audit + cargo deny green
+**Last updated:** 2026-08-26 (post-Phase-14 session)
+**Branch:** `main` — Phase 14 complete, awaiting `v0.1.0-alpha.3` tag
+**Tests:** 189 passed / 0 failed · clippy `-D warnings` clean · fmt clean · cargo audit (CI ignore list) + cargo deny green
 
 ---
 
@@ -22,59 +21,73 @@ built-in sealed local vault.
 
 ---
 
-## Current State: Phase 14 In Progress
+## Current State: Phase 14 COMPLETE
 
-Phase 14 implements the OPERATOR-UI-SPEC (`/home/sblanken/workspace/
-OPERATOR-UI-SPEC.md`, not yet in repo) which was derived from user acceptance
-testing on macOS. It has two parts:
+The OPERATOR-UI-SPEC (`/home/sblanken/workspace/OPERATOR-UI-SPEC.md`, not
+yet in repo) is fully implemented. E1–E5 ratified: E1=(2) loopback web UI,
+E2=(1) dedicated events socket, E3=(1) notify-default-true, E4 resolved via
+14c-pre (detection + fail-closed halt, not an ownership check), E5=(1)
+in-tree crate.
 
-### ✅ DONE: 14a — Ruleset hash anchoring (D38)
+### ✅ 14a — Ruleset hash anchoring (D38)
 
 Every gateway start appends a `policy_load` record carrying SHA-256 of the
-governing policy TOML. Every intent_decision record carries the same hash.
-Any post-hoc policy widening is detectable as a hash break in the audit
-chain at next restart. Detection-over-prevention matches D7/D18 philosophy
-(ownership checks are no-ops in the per-user model).
+governing policy TOML; every decision carries the same hash.
 
-Files touched: `crates/policy/src/lib.rs` (source_hash field),
-`crates/gateway-core/src/lib.rs` (ruleset_hash on Gateway, policy_load
-record at construction), `crates/audit/src/event.rs` (+RecordKind enum,
-+ruleset_hash field), schema-pin test updated.
+### ✅ 14b — Events feed socket + notify knob (D35/D37)
 
-### ✅ DONE: 14b — Events feed socket + notify knob (D35)
+`EventHub` fan-out UDS; `[rule.notify] on_use` default true. **This session:
+serve now actually binds it via `--events-socket PATH`** (previously built
+but unreachable from the CLI).
 
-`EventHub`: read-only fan-out Unix domain socket broadcasting one JSON line
-per terminal intent decision to any connected subscriber. Unlike the console
-socket's 1:1 answer semantics, supports unlimited simultaneous readers.
+### ✅ 14c-pre — Policy-file integrity guard (D39) [NEW this session]
 
-Policy schema gains `[rule.notify]` with `on_use` field (default true per
-E3 — quiet is opt-out). Decision carries `notify_on_use` so the gateway
-knows whether to broadcast. Emission happens at the same `audit_decision`
-choke point that already centralizes every terminal outcome.
+E4 revisit decided BEFORE the UI shipped:
 
-Files: `crates/gateway-core/src/events.rs` (EventHub), policy schema
-extension in `crates/policy/src/lib.rs`, `Gateway::with_event_hub()` wiring.
+- Load gate: refuse group/other-writable or foreign-owned `policy.toml`.
+- Live drift watch (`PolicyWatch` in gateway-core): content change/deletion/
+  persistent unreadability under a running gateway ⇒ signed `policy_drift`
+  audit record + events broadcast + loud banner + **halt brokering**
+  (`Gateway::halt`, every message type answers `E_GATEWAY_HALTED`) until
+  restart. Restart re-runs the gate and re-anchors.
+- Rejected alternative recorded in D39: updating the watch baseline on UI
+  saves would trade a loud halt for a silent widening path.
 
-### ⏳ TODO: 14c — Config UI web crate
+Files: `crates/gateway-core/src/policy_guard.rs`, `Gateway` halt machinery,
+audit `RecordKind::PolicyDrift`/`Outcome::PolicyDrift`,
+CLI perm-gate + watch wiring. rustix (safe geteuid; workspace forbids
+unsafe) + sha2 added to gateway-core.
 
-Loopback HTTP server with forms for first-run setup, vault CRUD, rule
-editing (mechanism picker populated from CONNECTIVITY-MATRIX), agent
-enrollment. **Hard constraint (§3.2): drives existing crates directly — no
-second TOML parser.** Recommended shape: loopback web UI served from daemon
-(E1=2). Also needs GETTING-STARTED.md written (referenced by spec but never
-created).
+### ✅ 14c — Config UI web crate (D36/D40) [NEW this session]
 
-This is the biggest remaining item. Suggest new crate `chaperone-ui` in the
-workspace using axum or tiny_http, calling chaperone-policy/vault/identity
-directly in-process (satisfies §3.2 even stronger than subprocess).
+New workspace crate **`chaperone-ui`** (axum, server-rendered HTML/CSS,
+zero JS build step):
 
-### ⏳ TODO: 14d — Release v0.1.0-alpha.3
+- Served from `chaperone serve` (default 127.0.0.1:8720; `--ui-port`,
+  `--no-ui`). Missing broker artifacts ⇒ setup-only mode (wizard only).
+- Wizard creates vault.bin / audit.key / empty default-deny policy through
+  the real crates; vault handle is SHARED with the gateway via
+  `SharedVault` (vault crate) — one open vault, two consumers.
+- Secrets CRUD (never re-displays values), agents enroll/revoke (client-side
+  b64url key decode before calling enroll), rule editor driven by an
+  embedded CONNECTIVITY-MATRIX snapshot (`matrix.rs`: mechanisms with
+  maturity badges + service templates prefilling target_uri globs).
+- §3.2 honored structurally: rule docs are serialized by the NEW
+  `Policy::to_toml` (canonical writer living IN chaperone-policy) and
+  re-validated by `Policy::from_toml` before atomic 0600 write. Also new:
+  `Policy::rules()` accessor, `exact:` matcher tag for lossless matcher
+  round-trip.
+- Loopback guard middleware: Host must be 127.0.0.1/localhost(:port),
+  Origin must match when present ⇒ CSRF + DNS-rebinding refused without
+  operator-visible friction. Residual same-user-process risk accepted and
+  documented in D40.
 
-Tag after 14c lands. Pipeline is fully automated (release.yml): locked
-builds on 3 platforms, ed25519 signatures via RELEASE_KEY_SEED secret,
-GitHub release with notes from `docs/release-notes/<tag>.md`.
+### ✅ 14d — Docs + release
 
----
+GETTING-STARTED.md written (UI-first, CLI equivalents per step). PLAN.md
+Phase 14 entry with acceptance tests. DESIGN-DECISIONS.md backfilled
+D35–D38 (were referenced but never written!) + new D39/D40. Release notes
+at `docs/release-notes/v0.1.0-alpha.3.md`. **Tag v0.1.0-alpha.3 next.**
 
 ## Complete Phase History
 
@@ -96,9 +109,10 @@ GitHub release with notes from `docs/release-notes/<tag>.md`.
 | M12b | HashiCorp Vault KV-v2 provider | ✅ |
 | M13 | Installer-grade release: install scripts, service definitions, elevated allowlist enforcement | ✅ |
 | M14a | Ruleset hash anchoring (D38) | ✅ |
-| M14b | Events feed socket + notify knob (D35) | ✅ |
-| M14c | Config UI web crate | ⏳ NEXT |
-| M14d | Tag v0.1.0-alpha.3 | ⏳ AFTER 14c |
+| M14b | Events feed socket + notify knob (D35); CLI binding landed with 14c work | ✅ |
+| M14c-pre | Policy-file integrity guard: perm gate + drift watch + halt (D39) | ✅ |
+| M14c | Config UI web crate `chaperone-ui` (D36/D40) | ✅ |
+| M14d | GETTING-STARTED.md, PLAN/DESIGN-DECISIONS updates, tag v0.1.0-alpha.3 | ⏳ TAG NEXT |
 
 ## Post-v1 Backlog (dispositioned)
 
@@ -149,6 +163,7 @@ Full text for each: see DESIGN-DECISIONS.md §D1–§D38.
 | `docs/CONNECTIVITY-MATRIX.md` | Living table of what agents can reach |
 | `docs/RELEASE.md` | Artifact verification instructions + public key |
 | `docs/BUILDER-NOTES-MACOS.md` | Apple hardware build/validation brief |
+| `docs/GETTING-STARTED.md` | The friendly on-ramp (wizard-first, CLI equivalents) |
 | `docs/LOCAL-VAULT-GUIDE.md` | User guide for built-in encrypted vault |
 | `docs/INSTALL.md` | Per-OS installation instructions |
 | `docs/release-notes/` | Per-tag release notes |

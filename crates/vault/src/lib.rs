@@ -22,6 +22,7 @@ mod local;
 pub mod provider;
 pub mod sealer;
 mod secret;
+pub mod shared;
 
 pub use hashicorp::VaultKv2;
 pub use local::{LocalVault, VaultError};
@@ -30,3 +31,4 @@ pub use provider::{Provider, ResolveError, VaultRouter};
 pub use sealer::KeyringSealer;
 pub use sealer::{KdfParams, PassphraseSealer, Sealer, SealerError};
 pub use secret::SecretString;
+pub use shared::SharedVault;

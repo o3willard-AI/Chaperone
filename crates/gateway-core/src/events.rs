@@ -11,7 +11,7 @@
 
 use std::io::Write as _;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 /// The event hub: holds active subscriber streams and broadcasts lines.
@@ -20,8 +20,21 @@ pub struct EventHub {
 }
 
 impl EventHub {
-    /// Binds the events socket at `path` and spawns the accept loop.
-    pub fn spawn(path: &PathBuf) -> Result<Arc<EventHub>, String> {
+    /// An unbound hub: broadcasts are buffered to zero subscribers until
+    /// [`EventHub::listen`] attaches a socket (or never - the in-process
+    /// UI and the policy-integrity guard broadcast regardless).
+    #[must_use]
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            subscribers: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// Binds the events socket at `path` and spawns its accept loop.
+    ///
+    /// # Errors
+    /// The socket path is unusable or a live feed already owns it.
+    pub fn listen(self: &Arc<Self>, path: &Path) -> Result<(), String> {
         if path.exists() {
             match UnixStream::connect(path) {
                 Ok(_) => return Err(format!("a live event feed already owns {}", path.display())),
@@ -34,24 +47,27 @@ impl EventHub {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(
-                path,
-                std::fs::Permissions::from_mode(0o600),
-            )
-            .map_err(|e| e.to_string())?;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| e.to_string())?;
         }
 
-        let hub = Arc::new(EventHub {
-            subscribers: Mutex::new(Vec::new()),
-        });
-
-        let accept_hub = Arc::clone(&hub);
+        let accept_hub = Arc::clone(self);
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 accept_hub.add_subscriber(stream);
             }
         });
 
+        Ok(())
+    }
+
+    /// Convenience constructor that binds immediately (D35 shape).
+    ///
+    /// # Errors
+    /// Same as [`EventHub::listen`].
+    pub fn spawn(path: &Path) -> Result<Arc<EventHub>, String> {
+        let hub = Self::new();
+        hub.listen(path)?;
         Ok(hub)
     }
 

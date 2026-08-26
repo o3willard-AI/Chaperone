@@ -11,6 +11,7 @@ members = [
     "crates/audit",
     "crates/privileged-helper",
     "crates/cli",
+    "crates/ui",
 ]
 
 [workspace.package]
@@ -23,6 +24,7 @@ authors = ["Chaperone contributors"]
 [workspace.dependencies]
 aes-gcm = "0.10"
 async-trait = "0.1"
+axum = { version = "0.8", default-features = false, features = ["form", "http1", "query", "tokio"] }
 argon2 = "0.5"
 base64 = "0.22"
 canon-json = "0.2"
@@ -34,6 +36,7 @@ keyring = { version = "3", default-features = false, features = [
 ] }
 rpassword = "7"
 rand_core = { version = "0.6", features = ["getrandom"] }
+rustix = { version = "1", default-features = false, features = ["process", "std"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 russh = "0.60"
 tokio-postgres = "0.7"

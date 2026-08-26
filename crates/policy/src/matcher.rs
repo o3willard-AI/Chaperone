@@ -7,11 +7,14 @@
 //! | field absent          | `Any` — matches everything                       |
 //! | `glob:<pattern>`      | `Glob` — `*` matches any run of characters       |
 //! | `prefix:<literal>`    | `Prefix` — literal byte-prefix                   |
+//! | `exact:<literal>`     | `Exact` — full-string equality, even with `*`    |
 //! | anything containing `*` (no tag) | same as `glob:`                       |
 //! | otherwise             | `Exact` — full-string equality, case-sensitive   |
 //!
-//! No regex. A literal value that must contain `*` uses the explicit
-//! `prefix:` or `exact:`-style tags; there is no escaping to misread.
+//! No regex. The `exact:` tag exists so every matcher kind round-trips
+//! through [`Matcher::parse`] losslessly (the canonical TOML writer relies
+//! on it); before it was added, a literal value containing `*` could not be
+//! written as an exact match at all.
 //!
 //! SECURITY NOTE: `*` spans ALL characters including `/` and `:`. A pattern
 //! like `https://*.example.com/x` does NOT enforce hostname boundaries
@@ -43,6 +46,9 @@ impl Matcher {
         if let Some(lit) = raw.strip_prefix("prefix:") {
             return Ok(Matcher::Prefix(lit.to_owned()));
         }
+        if let Some(lit) = raw.strip_prefix("exact:") {
+            return Ok(Matcher::Exact(lit.to_owned()));
+        }
         if raw.contains('*') {
             return Ok(Matcher::Glob(raw.to_owned()));
         }
@@ -57,6 +63,36 @@ impl Matcher {
             Matcher::Exact(v) => v == candidate,
             Matcher::Prefix(p) => candidate.starts_with(p.as_str()),
             Matcher::Glob(g) => glob_match(g, candidate),
+        }
+    }
+
+    /// The rule-file string that parses back to exactly this matcher
+    /// (`None` for [`Matcher::Any`], which is written by omitting the axis).
+    ///
+    /// This is the canonical serialization used by the TOML writer; the
+    /// invariant `parse(source()) == *self` (for non-Any) is tested.
+    #[must_use]
+    pub fn source(&self) -> Option<String> {
+        match self {
+            Matcher::Any => None,
+            Matcher::Exact(v) => {
+                if v.contains('*') {
+                    Some(format!("exact:{v}"))
+                } else {
+                    Some(v.clone())
+                }
+            }
+            Matcher::Prefix(p) => Some(format!("prefix:{p}")),
+            Matcher::Glob(g) => {
+                if g.contains('*') {
+                    // A bare pattern containing `*` re-parses as Glob.
+                    Some(g.clone())
+                } else {
+                    // Wildcard-less globs (incl. the empty glob) need the
+                    // tag to keep their kind across a save/load cycle.
+                    Some(format!("glob:{g}"))
+                }
+            }
         }
     }
 }

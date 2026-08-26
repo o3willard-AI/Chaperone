@@ -30,5 +30,7 @@ chaperone-protocol = { path = "../protocol" }
 tempfile.workspace = true
 time.workspace = true
 
+chaperone-ui = { path = "../ui" }
+
 [lints]
 workspace = true
