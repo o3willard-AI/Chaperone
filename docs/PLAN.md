@@ -108,7 +108,7 @@ Goal: provider interface + zero-dependency usable store; ephemerality contract l
 - [x] Provider trait; `cred_ref` scheme dispatch (`local://` in v1; `vault://` etc. shaped but not shipped).
 - [x] Built-in encrypted local vault: user-only CRUD, sealed to platform key store
       (kernel keyring / Keychain / DPAPI); software fallback per D5.
-- [x] Least-privilege/short-lived minting path where backend supports it.
+- [ ] Least-privilege/short-lived minting path where backend supports it.
 - [x] Ephemerality contract (ARCH §2.9): fetch-late, hold-minimally (zeroize-on-drop),
       scrub-always on success AND failure, re-fetch-on-retry; no cache anywhere.
 
@@ -185,10 +185,10 @@ no root code in main daemon path.
 Goal: make the TCB handoffs real controls.
 
 - [x] Reproducible builds verified byte-for-byte from source; hash-verified releases (no signing).
-- [x] Optional hardware-backed mode as install switch (TPM/Secure Enclave/HSM/enclave);
+- [ ] Optional hardware-backed mode as install switch (TPM/Secure Enclave/HSM/enclave);
       software-only default preserved.
 - [x] Supply-chain checks in CI (cargo audit + cargo-deny style checks, locked deps).
-- [x] Threat Model §5 controls filled in as testable artifacts.
+- [ ] Threat Model §5 controls filled in as testable artifacts.
 
 **Spec sections:** THREAT-MODEL §5 (all), §1.2 handoffs; ARCH-SPEC §4.4; Brief §3 TCB bullet.
 **Acceptance:** third party reproduces release binary; enclave mode (where available)
