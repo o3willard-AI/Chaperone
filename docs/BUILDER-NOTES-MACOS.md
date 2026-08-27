@@ -152,6 +152,23 @@ install/smoke run. Items it surfaced, now addressed or tracked:
   launchd guide beyond the installer plist, Gatekeeper walkthrough of a
   PUBLISHED artifact, Universal2 lipo packaging.
 
+## 6c. Hardware-pass findings (2026-08-27 QA, v0.1.0-alpha.5 verification)
+
+Full verification of current `main` (Phase 14 + D41/D42-era code — events
+feed, policy-file integrity guard, `chaperone-ui`, per-instance UI access
+token) on Apple Silicon (`aarch64-apple-darwin`), ahead of the alpha.5 tag
+that fixes the Windows build break:
+
+- `cargo build --release --locked -p chaperone-cli -p chaperone-privileged-helper` — clean.
+- `cargo test --locked --workspace` — **203 passed, 0 failed**, matching the
+  count in `docs/HANDOFF.md`.
+- `scripts/repro-check.sh` — **OK: byte-for-byte identical** across two clean
+  builds, both binaries.
+
+No fixes required — macOS was never blocking this release. The items listed
+in §6b as "still open for the next hardware pass" remain open and don't
+block v0.1.0-alpha.5; they're future-milestone work, not release gates.
+
 ## 7. Definition of done for the Mac engagement
 
 1. `scripts/repro-check.sh` green on Apple silicon, with findings documented
