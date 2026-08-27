@@ -83,7 +83,7 @@ impl std::fmt::Display for MessageError {
 
 impl std::error::Error for MessageError {}
 
-/// Builds a transport-level error frame (DESIGN-DECISIONS D13).
+/// Builds a transport-level error frame (DESIGN-DECISIONS D12).
 ///
 /// These frames report framing/parsing problems on connections that never got
 /// far enough to carry a valid message, so they deliberately do NOT use the
@@ -154,6 +154,6 @@ mod tests {
         let frame = transport_error_frame("declared length exceeds limit");
         assert_eq!(frame["scope"], "transport");
         assert_eq!(frame["reason"], "declared length exceeds limit");
-        assert!(frame.get("code").is_none(), "no invented E_* codes (D13)");
+        assert!(frame.get("code").is_none(), "no invented E_* codes (D12)");
     }
 }

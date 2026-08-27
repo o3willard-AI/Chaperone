@@ -127,7 +127,7 @@ impl ServerHandle {
 ///
 /// Each accepted connection runs its own unary loop ([`drive_connection`]);
 /// a protocol-violating peer is answered with a transport error frame
-/// (DESIGN-DECISIONS D13) and disconnected without affecting other peers.
+/// (DESIGN-DECISIONS D12) and disconnected without affecting other peers.
 pub fn serve(spec: &ListenSpec, handler: Handler) -> Result<ServerHandle, BindError> {
     match spec {
         #[cfg(unix)]

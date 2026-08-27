@@ -4,7 +4,7 @@
 //! `first_pipe_instance`, so binding twice reports an error rather than
 //! silently sharing the namespace.
 //!
-//! Security posture (DESIGN-DECISIONS D14): v1 relies on the default DACL
+//! Security posture (DESIGN-DECISIONS D13): v1 relies on the default DACL
 //! derived from the creating process token (the current user plus system),
 //! which matches the owner-only intent for typical single-user setups.
 //! Constructing an explicit restrictive ACL would require unsafe Win32 calls
