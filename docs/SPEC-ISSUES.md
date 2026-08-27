@@ -8,7 +8,7 @@ ruled otherwise. Each item becomes a GitHub issue when tracking is available.
 | ID | Severity | Where | Summary | Status |
 |---|---|---|---|---|
 | SI-1 | Editorial | 04-agent-skill.md, docs/README.md, IMPLEMENTATION_AGENT_BRIEF.md | Broken skill-path references (resolved to `skill/…` relative to `docs/`) | Resolved |
-| SI-2 | Clarification | PROTO-SPEC §7 / intent-catalog | `http-basic` operation body never specified | Open |
+| SI-2 | Clarification | PROTO-SPEC §7 / intent-catalog | `http-basic` operation body never specified | Resolved |
 | SI-3 | Assumption | PROTO-SPEC §8 | Verification order/replay rules not restated for session frames | Open |
 | SI-4 | Editorial | THREAT-MODEL §2 | Adversary numbering skips T5 in §2.x (covered in §3) | Open |
 | SI-5 | Editorial | SKILL.md vs PROTO-SPEC §5/§7.1 | Worked-example bodies differ between artifacts | Open |
@@ -35,11 +35,20 @@ PROTO-SPEC §7.1 specifies only `http-bearer`; the intent-catalog lists both
 mechanisms against one body (`method`/`headers`/`body_b64`). Basic auth needs a
 *username* in addition to the secret — where does it come from?
 
-**Assumption until ruled otherwise:** identical body to `http-bearer` plus an
-optional, non-secret `username` field inside `operation` (signed like everything
-else); when absent, the gateway derives the username from vault metadata if the
-backend provides it, else errors `E_CRED_UNRESOLVED`. Recorded in
-[DESIGN-DECISIONS.md](DESIGN-DECISIONS.md) as D14 when first implemented (Phase 6).
+**Original assumption:** identical body to `http-bearer` plus an optional,
+non-secret `username` field inside `operation` (signed like everything else);
+when absent, the gateway derives the username from vault metadata if the
+backend provides it, else errors `E_CRED_UNRESOLVED`. Recorded as D14 when
+first implemented (Phase 6).
+
+**Resolved (Divergence):** The implementation diverged from the vault-metadata
+fallback assumption. D14 records that the username is **mandatory** — the
+injector errors `"http-basic requires a username field (D14)"` if absent. There
+is no vault-metadata fallback; the username belongs in the signed operation body
+(non-secret, attributable), and the password remains solely in the `cred_ref`.
+Authorization is `Basic` standard-base64(`username:password`) per RFC 7617, with
+the username rejecting any `:` and the combined string dropped immediately after
+encoding. See [DESIGN-DECISIONS.md](DESIGN-DECISIONS.md#d14).
 
 ## SI-3 — Session-frame verification underspecified
 

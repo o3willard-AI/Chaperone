@@ -20,6 +20,7 @@ superseded — superseded entries stay, marked as such, with a pointer.
 | D11 | Async runtime & I/O stack | tokio; one accept loop, task per connection; session streaming later rides the same runtime | Accepted |
 | D12 | Transport-level error frames | `{"type":"error","scope":"transport","reason":…}` for framing/parsing violations; NO invented `E_*` codes | Accepted |
 | D13 | Windows named-pipe ACLs | v1 uses tokio default DACL (process-token derived); explicit restrictive ACL deferred to hardening — tracked, not silent | Accepted |
+| D14 | http-basic username resolution | Non-secret `username` is a required field inside the signed operation body; absent → error; no vault-metadata fallback; Basic auth per RFC 7617 (no `:` in username). | Accepted |
 
 ---
 
@@ -177,6 +178,36 @@ single-user local deployment Chaperone targets. Building an explicit
 restrictive ACL requires unsafe Win32 calls, which the workspace forbids
 workspace-wide; the tightening work belongs to the hardening phase (PLAN M10)
 and is tracked here rather than silently accepted.
+
+## D14 — http-basic username resolution
+
+PROTO-SPEC §7.1 specifies only `http-bearer`; the intent-catalog lists both
+mechanisms against a shared operation body. Basic auth requires a *username* in
+addition to the secret — the spec does not state where it comes from.
+
+**Decision (matches `assemble_authorization` in `crates/injectors/src/http.rs`):**
+
+- The `username` is a **required** field inside the signed operation body. The
+  `http-basic` arm reads `operation.username`; if it is absent the injector
+  returns a `BadOperation` error: `"http-basic requires a username field (D14)"`.
+- There is **no vault-metadata fallback** for the username. SI-2's original
+  assumption proposed deriving it from the vault backend; the implementation
+  instead made it mandatory, matching the RFC 7617 model where the username is
+  not secret and belongs in the signed intent alongside `method`/`headers`.
+- The username **must not** contain `:` — a colon would corrupt the
+  `user:password` pairing before base64 encoding. The injector checks
+  `username.contains(':')` and rejects with `"username must not contain ':'
+  (RFC 7617)"`.
+- Authorization is built as `Basic <standard-base64-of("username:password")>`
+  (RFC 7617, with padding) — the same base64 STANDARD engine used for
+  `body_b64`. The `username:password` string is dropped immediately after
+  encoding so no plaintext lingers beyond the call frame.
+
+**Reasoning:** the username is non-secret and agent-supplied; the vault's job
+is the *password* in the `cred_ref`, not identity metadata. Forcing the
+username into the signed operation body makes the full credential identity
+attributable (which user is being authenticated against) without expanding
+the vault provider interface or trusting backend-specific metadata formats.
 
 ## D15 — Pre-schema failure mapping & verification-order details
 
