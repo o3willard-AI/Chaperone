@@ -16,9 +16,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chaperone_audit::{AuditKey, AuditWriter};
+#[cfg(unix)]
+use chaperone_gateway_core::verify_permissions;
 use chaperone_gateway_core::{
     AlwaysTimeoutGate, EventHub, Gateway, GatewayConfig, PolicyWatch, hash_doc_bytes,
-    verify_permissions,
 };
 use chaperone_identity::{Attestor, EnrollmentStore, IdentityConfig, ReplayCache};
 use chaperone_policy::Policy;
