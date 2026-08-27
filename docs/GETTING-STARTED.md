@@ -33,7 +33,7 @@ See [INSTALL.md](../INSTALL.md). Verify:
 
 ```console
 $ chaperone version
-chaperone 0.1.0-alpha.3 (protocol 0.1, gateway spec v0.1)
+chaperone 0.1.0 (protocol 0.1, gateway spec v0.1)
 ```
 
 ## Step 1 — Create the UI access token
@@ -79,7 +79,7 @@ load); the UI sets a cookie for the session.
 > **Terminal equivalent:** keep reading; steps 3–5 each show the command
 > the wizard button corresponds to.
 
-## Step 2 — Create the vault
+## Step 3 — Create the vault
 
 In the wizard: **Setup → Local secret vault**, pick a passphrase twice.
 
@@ -88,7 +88,7 @@ recovery. Losing it means re-entering every secret.
 
 > **Terminal equivalent:** `chaperone vault-init --store ~/.config/chaperone/vault.bin`
 
-## Step 3 — Generate the audit key
+## Step 4 — Generate the audit key
 
 Wizard: **Setup → Audit chain signing key**, press generate.
 
@@ -98,7 +98,7 @@ your chain later with the public key the wizard prints.
 
 > **Terminal equivalent:** `chaperone audit-keygen --out ~/.config/chaperone/audit.key`
 
-## Step 4 — Write the policy scaffold
+## Step 5 — Write the policy scaffold
 
 Wizard: **Setup → Policy file**, press write. You get an empty document,
 which is a valid pure default-deny ruleset: until you add rules, **every**
@@ -106,25 +106,31 @@ intent is refused.
 
 > **Terminal equivalent:** `touch ~/.config/chaperone/policy.toml` (empty is valid)
 
-## Step 5 — Restart into broker mode
+## Step 6 — Restart into broker mode
 
 Ctrl-C the process and run the same serve command again. Now it prompts for
 the vault passphrase, prints three lines — event feed, gateway socket, UI —
 and brokers intents. The dashboard at <http://127.0.0.1:8720> says
 **brokering**.
 
-## Step 6 — Add a secret
+## Step 7 — Add a secret
 
 Wizard: **Secrets**, e.g. path `prod/github/token`, paste a GitHub
 fine-grained PAT once. It is never displayed again — pages show only
 `[redacted] N bytes present`.
 
-> **Terminal equivalent:** `echo "$PAT" | chaperone vault-set --store ~/.config/chaperone/vault.bin --path prod/github/token --passphrase-stdin`
+> **Terminal equivalent:** with `--passphrase-stdin`, the first stdin line is
+> the passphrase and the remainder is the secret:
+>
+> ```sh
+> printf '%s\n%s\n' "$PASSPHRASE" "$PAT" | \
+>   chaperone vault-set --store ~/.config/chaperone/vault.bin --path prod/github/token --passphrase-stdin
+> ```
 
 Rotating later = storing the same path again. Credential references never
 change, so neither does anything downstream.
 
-## Step 7 — Enroll an agent
+## Step 8 — Enroll an agent
 
 An agent publishes its Ed25519 *public* key out-of-band (32 bytes,
 base64url — not a JSON blob). Wizard: **Agents**, paste it.
@@ -134,7 +140,7 @@ identity verification before anything else happens.
 
 > **Terminal equivalent:** `chaperone enroll --store ~/.config/chaperone/agents.json --agent-id agent:github-1 --public-key <B64URL>`
 
-## Step 8 — Add your first rule
+## Step 9 — Add your first rule
 
 Wizard: **Rules → Add a rule**. Pick the mechanism (badges come from the
 [connectivity matrix](CONNECTIVITY-MATRIX.md) — read ⚠️ caveats *before*
@@ -166,15 +172,20 @@ watches the file; any change under a live daemon halts brokering loudly
 (signed `policy_drift` audit record + event broadcast) until you restart.
 An edited rule can never take effect silently.
 
-## Step 9 — Watch it work
+## Step 10 — Watch it work
 
 Tail decisions live from a second terminal:
 
 ```console
 $ chaperone serve ... --events-socket ~/.config/chaperone/events.sock   # add this flag
-$ curl --unix-socket ~/.config/chaperone/events.sock http://localhost/feed
+$ cat ~/.config/chaperone/events.sock
 {"audit_id":"aud_3","agent_id":"agent:github-1","effect":"allow","mechanism":"http-bearer","target_uri":"https://api.github.com/user","outcome":{"status":"proceeded"}}
 ```
+
+The events socket is a raw newline-delimited JSON stream — not HTTP — so
+`curl` won't work on it. `nc -U ~/.config/chaperone/events.sock`,
+`socat` on the unix-socket transport, or `cat ~/.config/chaperone/events.sock`
+each read the live feed (a second read ends the connection).
 
 And verify the chain any time:
 

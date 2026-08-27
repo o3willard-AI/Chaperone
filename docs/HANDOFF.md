@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-26 (post-D41 session)
 **Branch:** `main` — Phase 14 + D41 security fix complete, awaiting `v0.1.0-alpha.4` tag
-**Tests:** 199 passed / 0 failed · clippy `-D warnings` clean · fmt clean · cargo audit (CI ignore list) + cargo deny green
+**Tests:** 203 passed / 0 failed · clippy `-D warnings` clean · fmt clean · cargo audit (CI ignore list) + cargo deny green
 
 ---
 
@@ -23,8 +23,7 @@ built-in sealed local vault.
 
 ## Current State: Phase 14 COMPLETE
 
-The OPERATOR-UI-SPEC (`/home/sblanken/workspace/OPERATOR-UI-SPEC.md`, not
-yet in repo) is fully implemented. E1–E5 ratified: E1=(2) loopback web UI,
+The OPERATOR-UI-SPEC (not yet in repo) is fully implemented. E1–E5 ratified: E1=(2) loopback web UI,
 E2=(1) dedicated events socket, E3=(1) notify-default-true, E4 resolved via
 14c-pre (detection + fail-closed halt, not an ownership check), E5=(1)
 in-tree crate.

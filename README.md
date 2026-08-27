@@ -23,7 +23,7 @@ and records tamper-evident evidence.
 
 ## Status
 
-**Individual preview (`v0.1.0-alpha.1`).** All four v1 mechanisms are
+**Individual preview (`v0.1.0-alpha.4`).** All four v1 mechanisms are
 implemented - http, ssh sessions, db-scram against PostgreSQL, and
 local-privilege through the isolated helper - plus identity, default-deny
 policy, tamper-evident audit, the vault abstraction (local sealed +

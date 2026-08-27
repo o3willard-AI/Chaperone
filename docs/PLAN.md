@@ -58,12 +58,12 @@ cannot open the socket; oversized frame rejected cleanly.
 
 Goal: the security spine begins. Ed25519 + JCS + exact verification sequence.
 
-- [ ] Ed25519 verification; JCS (RFC 8785) canonicalization of envelope minus `sig`.
-- [ ] Verification order enforced literally: resolve agent → freshness/replay →
+- [x] Ed25519 verification; JCS (RFC 8785) canonicalization of envelope minus `sig`.
+- [x] Verification order enforced literally: resolve agent → freshness/replay →
       signature → *only then* parse body; stop at first failure.
-- [ ] Replay cache covering ≥ freshness window (±30 s default skew); RFC 3339 UTC parsing.
-- [ ] Enrollment store (public keys; operator action via minimal CLI).
-- [ ] Revocation effective immediately.
+- [x] Replay cache covering ≥ freshness window (±30 s default skew); RFC 3339 UTC parsing.
+- [x] Enrollment store (public keys; operator action via minimal CLI).
+- [x] Revocation effective immediately.
 
 **Spec sections:** PROTO-SPEC §4, §5, §10.1 (E_UNKNOWN_AGENT/E_REPLAY/E_BAD_SIGNATURE); ARCH-SPEC §2.2.
 **Acceptance:** signed fresh intent verifies; forged / stale / replayed /
@@ -75,12 +75,12 @@ wrong-agent intent rejected with correct error **before any body parsing**
 
 Goal: the decision layer that makes this an authority, not a proxy.
 
-- [ ] Total, side-effect-free evaluation: agent × cred_ref × target × operation
+- [x] Total, side-effect-free evaluation: agent × cred_ref × target × operation
       (+ optional constraints later); emits exactly one verdict:
       allow / deny / needs_confirmation.
-- [ ] Explicit rule representation (see DESIGN-DECISIONS D3); default-deny when
+- [x] Explicit rule representation (see DESIGN-DECISIONS D3); default-deny when
       no rule matches; explicit deny supported.
-- [ ] Constraints can only narrow (min of agent-declared and policy-declared limits).
+- [x] Constraints can only narrow (min of agent-declared and policy-declared limits).
 
 **Spec sections:** PROTO-SPEC §5.1 (constraints note), §9.1; ARCH-SPEC §2.3; THREAT-MODEL §2.1 (T1 elevation), §3.
 **Acceptance:** unlisted request → deny; explicitly allowed → allow; evaluation
@@ -91,10 +91,10 @@ provably never touches vault (test with a vault handle that counts calls).
 
 Goal: tamper-evident evidence.
 
-- [ ] Append-only, hash-chained records: full signed intent as evidence, decision,
+- [x] Append-only, hash-chained records: full signed intent as evidence, decision,
       confirmer identity, cred_ref (never secret), mechanism, target, timing, outcome.
-- [ ] Chain: each record carries predecessor hash; gateway-signed records.
-- [ ] Verify/export as operator CLI functions (write-only from inside the gateway).
+- [x] Chain: each record carries predecessor hash; gateway-signed records.
+- [x] Verify/export as operator CLI functions (write-only from inside the gateway).
 
 **Spec sections:** PROTO-SPEC §9.3; ARCH-SPEC §2.8; THREAT-MODEL §6 (detection row).
 **Acceptance:** a run produces a verifiable chain; any edit/deletion breaks
@@ -105,11 +105,11 @@ verification; fuzz/grep-style test asserts no secret material ever appears in re
 
 Goal: provider interface + zero-dependency usable store; ephemerality contract lands here.
 
-- [ ] Provider trait; `cred_ref` scheme dispatch (`local://` in v1; `vault://` etc. shaped but not shipped).
-- [ ] Built-in encrypted local vault: user-only CRUD, sealed to platform key store
+- [x] Provider trait; `cred_ref` scheme dispatch (`local://` in v1; `vault://` etc. shaped but not shipped).
+- [x] Built-in encrypted local vault: user-only CRUD, sealed to platform key store
       (kernel keyring / Keychain / DPAPI); software fallback per D5.
-- [ ] Least-privilege/short-lived minting path where backend supports it.
-- [ ] Ephemerality contract (ARCH §2.9): fetch-late, hold-minimally (zeroize-on-drop),
+- [x] Least-privilege/short-lived minting path where backend supports it.
+- [x] Ephemerality contract (ARCH §2.9): fetch-late, hold-minimally (zeroize-on-drop),
       scrub-always on success AND failure, re-fetch-on-retry; no cache anywhere.
 
 **Spec sections:** ARCH-SPEC §2.4, §2.9; THREAT-MODEL §1.3, §5.2; PROTO-SPEC §6.1 step 5.
@@ -121,11 +121,11 @@ re-fetches (test asserts two vault calls, no cache hit); no cache survives resta
 
 Goal: first full path with all spine components in place — and not before.
 
-- [ ] `http-bearer`/`http-basic`: attach Authorization, re-originate TLS to real
+- [x] `http-bearer`/`http-basic`: attach Authorization, re-originate TLS to real
       target, return status/headers/body honoring `max_response_bytes` + timeouts.
-- [ ] Full path: signed intent → verify → policy → (confirm hook) → fetch → inject
+- [x] Full path: signed intent → verify → policy → (confirm hook) → fetch → inject
       → result → audit.
-- [ ] Hostile-target defenses: output treated as untrusted data; size/time caps.
+- [x] Hostile-target defenses: output treated as untrusted data; size/time caps.
 
 **Spec sections:** PROTO-SPEC §6.1, §7.1; ARCH-SPEC §2.5, §3.1; THREAT-MODEL §2.3 (T3).
 **Acceptance:** real authenticated HTTPS call succeeds with no secret in
@@ -137,9 +137,9 @@ fetches (vault call-count == 0); oversized/malformed responses handled safely.
 
 Goal: one human gate, owned by the gateway, at injection time.
 
-- [ ] On `needs_confirmation`: surface ONE prompt via operator channel with full
+- [x] On `needs_confirmation`: surface ONE prompt via operator channel with full
       context (target label, agent_id, mechanism, operation summary).
-- [ ] Approval proceeds; denial/timeout → `E_CONFIRM_TIMEOUT`; no duplicate prompts;
+- [x] Approval proceeds; denial/timeout → `E_CONFIRM_TIMEOUT`; no duplicate prompts;
       agent-side prompting explicitly not required (skill already teaches this).
 
 **Spec sections:** PROTO-SPEC §9.2; ARCH-SPEC §2.6; THREAT-MODEL §3 (property 4), §4 (fatigue tension).
@@ -151,11 +151,11 @@ proceeds; deny/timeout → correct error; concurrent duplicate intents do not do
 
 Goal: brokered-session lifecycle proving secret-vs-channel distinction.
 
-- [ ] Session establishment → `session_handle` + TTL; credential completes one
+- [x] Session establishment → `session_handle` + TTL; credential completes one
       handshake then scrubbed; channel persists, driven by handle.
-- [ ] Independently-signed owner-bound session frames (`session.command/close`);
+- [x] Independently-signed owner-bound session frames (`session.command/close`);
       full §4 verification on every frame.
-- [ ] Streaming `session.output`, seq-ordered; `session.closed` with final audit_id;
+- [x] Streaming `session.output`, seq-ordered; `session.closed` with final audit_id;
       teardown on close/TTL/drop.
 
 **Spec sections:** PROTO-SPEC §6.2, §7 (db-scram/ssh rows), §8; ARCH-SPEC §2.5, §2.9 (secret vs channel), §3.2.
@@ -168,11 +168,11 @@ count across session lifetime == 0 (wire-capture test).
 
 Goal: separate elevated process; never in the network path.
 
-- [ ] Helper process sharing vault+policy+audit core, NOT network-injection code path
+- [x] Helper process sharing vault+policy+audit core, NOT network-injection code path
       (separate binary/crate boundary; authenticated local channel daemon↔helper).
-- [ ] Always single deliberate confirmation; unattended only vs operator-defined,
+- [x] Always single deliberate confirmation; unattended only vs operator-defined,
       argument-pinned allowlist.
-- [ ] Platform authorization: polkit (Linux), launchd-authorized (macOS), service+UAC (Windows).
+- [x] Platform authorization: polkit (Linux), launchd-authorized (macOS), service+UAC (Windows).
 
 **Spec sections:** PROTO-SPEC §7.2; ARCH-SPEC §2.7; THREAT-MODEL §2.5 (T6), §6 (helper row).
 **Acceptance:** allowlisted command runs with confirmation; non-allowlisted denied;
@@ -184,11 +184,11 @@ no root code in main daemon path.
 
 Goal: make the TCB handoffs real controls.
 
-- [ ] Reproducible builds verified byte-for-byte from source; hash-verified releases (no signing).
-- [ ] Optional hardware-backed mode as install switch (TPM/Secure Enclave/HSM/enclave);
+- [x] Reproducible builds verified byte-for-byte from source; hash-verified releases (no signing).
+- [x] Optional hardware-backed mode as install switch (TPM/Secure Enclave/HSM/enclave);
       software-only default preserved.
-- [ ] Supply-chain checks in CI (cargo audit + cargo-deny style checks, locked deps).
-- [ ] Threat Model §5 controls filled in as testable artifacts.
+- [x] Supply-chain checks in CI (cargo audit + cargo-deny style checks, locked deps).
+- [x] Threat Model §5 controls filled in as testable artifacts.
 
 **Spec sections:** THREAT-MODEL §5 (all), §1.2 handoffs; ARCH-SPEC §4.4; Brief §3 TCB bullet.
 **Acceptance:** third party reproduces release binary; enclave mode (where available)
@@ -199,10 +199,10 @@ keeps secrets out of introspectable memory; CI blocks on advisory matches.
 
 Goal: prove the contract, break it before anyone else does.
 
-- [ ] Protocol conformance suite runnable against any client incl. packaged skill.
-- [ ] Fuzzing: envelope parser, framing codec, injectors (malformed intents; hostile
+- [x] Protocol conformance suite runnable against any client incl. packaged skill.
+- [x] Fuzzing: envelope parser, framing codec, injectors (malformed intents; hostile
       target responses T3). No panics, no secret leaks.
-- [ ] Validate shipped Agent Skill examples run end-to-end against gateway.
+- [x] Validate shipped Agent Skill examples run end-to-end against gateway.
 
 **Spec sections:** PROTO-SPEC (whole, as oracle); AGENT-SKILL validation table; THREAT-MODEL §2.3.
 **Acceptance:** conformance suite passes; fuzzing clean; skill worked examples
@@ -338,7 +338,7 @@ than an ownership check, E5=(1) in-tree crate.
 | 14b | **Events feed socket + notify knob** (D35/D37) | `EventHub`: read-only fan-out UDS broadcasting one JSON line per terminal intent decision. `[rule.notify] on_use` per rule (default true). Emission at the `audit_decision` choke point. | ✅ shipped |
 | 14c-pre | **Policy-file integrity guard** (D39) | Load-time permission gate (refuse group/other-writable or foreign-owned policy.toml); live drift watch while serving: any content change/deletion under a running gateway appends a signed `policy_drift` record, broadcasts on the feed, and HALTS brokering until operator restart. Restart re-runs the gate and re-anchors the chain. | ✅ shipped |
 | 14c | **Config UI web crate** (D36/D40) | `chaperone-ui`: axum, server-rendered HTML/CSS, zero JS build step, loopback-only with Host/Origin guard. Setup wizard (creates vault.bin / audit.key / default-deny policy scaffold), secret CRUD (never re-displays values), rule editor (mechanism picker + service templates + maturity badges from CONNECTIVITY-MATRIX; saves through `Policy::to_toml`, validated via `Policy::from_toml` before disk), raw TOML editor, agent enroll/revoke with client-side key decode. Served from `chaperone serve`; missing artifacts ⇒ setup-only mode. Hard constraint §3.2: no second parser anywhere. | ✅ shipped |
-| 14d | **GETTING-STARTED.md + release** | On-ramp doc (UI-first, CLI equivalents at every step); tag `v0.1.0-alpha.3`. | |
+| 14d | **GETTING-STARTED.md + release** | On-ramp doc (UI-first, CLI equivalents at every step); tag `v0.1.0-alpha.4`. | ✅ shipped |
 
 ### Acceptance tests
 

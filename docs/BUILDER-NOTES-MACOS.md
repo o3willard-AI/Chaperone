@@ -100,7 +100,7 @@ Open — these are exactly your first tasks:
 | **launchd integration** | ARCH-SPEC assigns launchd to the privileged-helper role. We ship the helper binary but elevation mechanics are deployment config. Draft the launchd plist(s) + sudoers/pin allowlist walkthrough for a real Mac. |
 | **Gatekeeper/quarantine validation** | Download the published v0.1.0-alpha.1 asset, document the exact prompts and the verification flow from docs/RELEASE.md on a clean machine. |
 | **Universal2 option** | Evaluate `lipo` of aarch64+x86_64 builds for one fat archive; only if both halves stay reproducible. |
-| **Full test matrix on hardware** | `cargo test --locked --workspace` — 165 green as of the 2026-08-25 hardware pass (QA report: all suites incl. end_to_end, conformance, github_api, db_scram, sessions, privilege, console). Report ANY failure with full log; do not patch around a failing test silently. |
+| **Full test matrix on hardware** | `cargo test --locked --workspace` — 203 green as of the 2026-08-26 workspace pass (QA report: all suites incl. end_to_end, conformance, github_api, db_scram, sessions, privilege, console). Report ANY failure with full log; do not patch around a failing test silently. |
 
 ## 5. Rules you must not break
 
