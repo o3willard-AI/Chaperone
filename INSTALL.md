@@ -24,6 +24,7 @@ post-install checklist including the optional sudoers line.
 Manage the service:
 
 ```sh
+chaperone ui-token rotate --token ~/.config/chaperone/ui.token   # D41: config UI needs this
 systemctl --user enable --now chaperoned   # start + enable at login
 systemctl --user status chaperoned
 journalctl --user -u chaperoned -f
@@ -52,6 +53,7 @@ own list would otherwise become arbitrary-root-exec. Then point the daemon's
 tar xzf chaperone-vX.Y.Z-aarch64-apple-darwin.tar.gz
 cd chaperone-vX.Y.Z-aarch64-apple-darwin
 ./install.sh
+chaperone ui-token rotate --token ~/.config/chaperone/ui.token   # D41: config UI needs this
 launchctl load ~/Library/LaunchAgents/ai.chaperone.gw.plist   # start
 launchctl list | grep chaperone                               # verify
 launchctl unload ~/Library/LaunchAgents/ai.chaperone.gw.plist # stop
@@ -68,6 +70,7 @@ Linux above.
 Expand-Archive chaperone-vX.Y.Z-x86_64-pc-windows-msvc.zip
 cd chaperone-vX.Y.Z-x86_64-pc-windows-msvc
 powershell -ExecutionPolicy Bypass -File install.ps1
+chaperone ui-token rotate --token "~/.config/chaperone/ui.token"   # D41: config UI needs this
 Start-ScheduledTask -TaskName ChaperoneGateway     # start
 Get-ScheduledTask ChaperoneGateway                 # verify
 schtasks /End /TN ChaperoneGateway                 # stop
