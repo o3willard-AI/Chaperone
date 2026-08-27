@@ -7,7 +7,7 @@ ruled otherwise. Each item becomes a GitHub issue when tracking is available.
 
 | ID | Severity | Where | Summary | Status |
 |---|---|---|---|---|
-| SI-1 | Editorial | 04-agent-skill.md, docs/README.md, IMPLEMENTATION_AGENT_BRIEF.md | Broken `../skill/` path references | Open |
+| SI-1 | Editorial | 04-agent-skill.md, docs/README.md, IMPLEMENTATION_AGENT_BRIEF.md | Broken skill-path references (resolved to `skill/…` relative to `docs/`) | Resolved |
 | SI-2 | Clarification | PROTO-SPEC §7 / intent-catalog | `http-basic` operation body never specified | Open |
 | SI-3 | Assumption | PROTO-SPEC §8 | Verification order/replay rules not restated for session frames | Open |
 | SI-4 | Editorial | THREAT-MODEL §2 | Adversary numbering skips T5 in §2.x (covered in §3) | Open |
@@ -18,17 +18,15 @@ ruled otherwise. Each item becomes a GitHub issue when tracking is available.
 
 ---
 
-## SI-1 — Broken `../skill/` path references
+## SI-1 — Broken skill-path references
 
-`docs/04-agent-skill.md` links `[../skill/chaperone.skill](../skill/chaperone.skill)`
-and `[../skill/](../skill/)`; `docs/README.md` says "Source under [`../skill/`](../skill/)";
-the brief likewise references `../skill/chaperone.skill`. From `docs/`, `../skill/`
-resolves to repo-root `skill/`, which does not exist — the sources actually live
-at **`docs/skill/`** (`SKILL.md`, `references/intent-catalog.md`, `chaperone.skill` zip).
+`docs/04-agent-skill.md` linked `[skill/SKILL.md](skill/SKILL.md)` and
+`[skill/references/intent-catalog.md](skill/references/intent-catalog.md)`;
+`docs/README.md` said "Source under [`skill/`](skill/)"; the brief likewise
+referenced `skill/chaperone.skill`. From `docs/`, `skill/` correctly resolves to
+`docs/skill/` (`SKILL.md`, `references/intent-catalog.md`, `chaperone.skill`
+zip). **Fixed:** all references updated to use `skill/…` relative to `docs/`.
 
-**Proposed:** fix links to `skill/…` relative to `docs/`, or move sources to
-repo-root `skill/` to match the docs' intent. We adopt the link fix (moving files
-would churn history for cosmetics).
 **Impact on implementation:** none; documentation hygiene only.
 
 ## SI-2 — `http-basic` has no defined operation body

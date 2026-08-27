@@ -2,7 +2,9 @@
 
 Per-user install from release archives. **No root/admin required for the
 base install**. Binaries are unsigned by design — verify by rebuilding from
-source or checking the hash manifest ([RELEASE.md](RELEASE.md)).
+source or checking the hash manifest ([RELEASE.md](RELEASE.md)). Download the
+latest release archive from the
+[GitHub releases page](https://github.com/o3willard-AI/Chaperone/releases).
 
 Artifacts: `chaperone` (CLI + gateway daemon), `chaperone-helper` (isolated
 privileged-command helper), install scripts, service templates.

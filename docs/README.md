@@ -9,7 +9,7 @@ These four documents define the system. They all derive from one canonical inten
 | 1 | [Protocol Specification](01-protocol-spec.md) | The wire contract between agent and gateway — the canonical schema. |
 | 2 | [Architecture Specification](02-architecture-spec.md) | The gateway's internal structure: layers, vault abstraction, injectors, privileged helper, audit chain, ephemerality rules. |
 | 3 | [Threat Model](03-threat-model.md) | Adversaries, the confused-deputy analysis, the secure-fragility tenet, and hardening. |
-| 4 | [Agent Skill](04-agent-skill.md) | The agent-facing projection of the schema. Source under [`../skill/`](../skill/). |
+| 4 | [Agent Skill](04-agent-skill.md) | The agent-facing projection of the schema. Source under [`skill/`](skill/). |
 
 **For users:** managing secrets with the built-in encrypted vault? Read the [Local Vault Guide](LOCAL-VAULT-GUIDE.md).
 

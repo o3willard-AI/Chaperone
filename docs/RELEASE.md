@@ -30,6 +30,9 @@ Artifacts — the "salsa" framework), specifically **reproducible builds** and
    manifest. If they match, the binary provably came from this source — no
    key, no trust in a maintainer, no company.
 
+Download releases from the
+[GitHub releases page](https://github.com/o3willard-AI/Chaperone/releases).
+
 ## What ships
 
 Tagged releases (`v*`) run the automated pipeline (`.github/workflows/

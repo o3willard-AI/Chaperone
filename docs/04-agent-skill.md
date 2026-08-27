@@ -9,7 +9,7 @@
 | **Status** | Projected from PROTO-SPEC v0.1 |
 | **Date** | 22 August 2026 |
 | **Ships as** | `chaperone.skill` (installable) |
-| **Source files** | [`skill/SKILL.md`](../skill/SKILL.md) · [`skill/references/intent-catalog.md`](../skill/references/intent-catalog.md) |
+| **Source files** | [`skill/SKILL.md`](skill/SKILL.md) · [`skill/references/intent-catalog.md`](skill/references/intent-catalog.md) |
 
 ---
 
@@ -17,7 +17,7 @@
 
 This is the agent-facing deliverable, and it is different in kind from the other three. It is not only a document to read — it is a **functional, installable skill** an agent loads and follows. It ships as `chaperone.skill`, containing a `SKILL.md` and a reference file, `references/intent-catalog.md`.
 
-The skill and the protocol schema are **the same artifact viewed from two sides**. The gateway accepts intents; the skill teaches agents to produce them. The authoritative, runnable form is the packaged `.skill` file and its source under [`skill/`](../skill/); this document is the orientation for reviewers.
+The skill and the protocol schema are **the same artifact viewed from two sides**. The gateway accepts intents; the skill teaches agents to produce them. The authoritative, runnable form is the packaged `.skill` file and its source under [`skill/`](skill/); this document is the orientation for reviewers.
 
 > **How a skill loads.** A skill discloses progressively. Its name and description are always visible to the agent; the moment a task looks like it needs authentication, the agent pulls in the `SKILL.md` body; and when composing a specific intent, it consults the intent-catalog reference. The agent reads only what the task requires — the description is what makes it trigger at the right moment.
 
@@ -53,7 +53,7 @@ Each of these would put the secret back into the agent's context or logs, defeat
 
 ## The four v1 mechanisms
 
-The agent picks by *how* the target authenticates, not by what platform it's on. Full field-by-field schemas are in [`skill/references/intent-catalog.md`](../skill/references/intent-catalog.md).
+The agent picks by *how* the target authenticates, not by what platform it's on. Full field-by-field schemas are in [`skill/references/intent-catalog.md`](skill/references/intent-catalog.md).
 
 | The agent needs to… | mechanism | lifecycle |
 |---|---|---|

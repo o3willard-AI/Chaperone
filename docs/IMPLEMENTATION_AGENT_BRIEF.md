@@ -2,7 +2,7 @@
 
 **You are the implementation agent for Chaperone.** This document is your operating brief. It tells you what to read, how to think about the project, how to build your own multi-phase plan, and the non-negotiable rules you must hold throughout. Read it in full before you write any code or open any file.
 
-Repository: `https://github.com/o3willard-AI/Chaperone` (public, Apache-2.0, currently empty but for the license). **We build in the open** — every commit is visible to the world, on purpose, so anyone can verify we have nothing to hide. Write every commit, comment, and document as if a security researcher you respect is reading it, because one will.
+Repository: `https://github.com/o3willard-AI/Chaperone` (public, Apache-2.0 Rust workspace). **We build in the open** — every commit is visible to the world, on purpose, so anyone can verify we have nothing to hide. Write every commit, comment, and document as if a security researcher you respect is reading it, because one will.
 
 ---
 
@@ -16,7 +16,7 @@ The product is **not** "a thing that injects credentials." Injection is the easy
 
 ## 2. Read these four documents first, in this order
 
-They live in the repo under [`docs/`](.) — [`01-protocol-spec.md`](01-protocol-spec.md), [`02-architecture-spec.md`](02-architecture-spec.md), [`03-threat-model.md`](03-threat-model.md), and [`04-agent-skill.md`](04-agent-skill.md), with the runnable skill under [`../skill/`](../skill/). **Do not write code until you have read all four and can restate the intent schema from memory.**
+They live in the repo under [`docs/`](.) — [`01-protocol-spec.md`](01-protocol-spec.md), [`02-architecture-spec.md`](02-architecture-spec.md), [`03-threat-model.md`](03-threat-model.md), and [`04-agent-skill.md`](04-agent-skill.md), with the runnable skill under [`skill/`](skill/). **Do not write code until you have read all four and can restate the intent schema from memory.**
 
 1. **[Protocol Specification](01-protocol-spec.md)** (`PROTO-SPEC`) — **the canonical contract, and the document that governs all others.** The wire format between agent and gateway: transport, the signed intent envelope, identity/signing, the four v1 mechanisms, the two lifecycles, decisions, errors, versioning. When any other document or your own instinct conflicts with this one, **this one wins.** Everything you build is ultimately in service of implementing this contract correctly.
 
@@ -24,7 +24,7 @@ They live in the repo under [`docs/`](.) — [`01-protocol-spec.md`](01-protocol
 
 3. **[Threat Model](03-threat-model.md)** (`THREAT-MODEL`) — the adversaries, the confused-deputy analysis, the **secure-fragility tenet (§1.3)**, the residual risks, and the hardening/handoff section (§5). This tells you *what you are defending against* and *why* the architecture is shaped the way it is. Read the boundary-to-mitigation map (§6) as a checklist: every boundary there is a thing your code must actually enforce, not merely describe.
 
-4. **[Agent Skill](04-agent-skill.md)** (`AGENT-SKILL` / [`../skill/chaperone.skill`](../skill/chaperone.skill)) — the agent-facing side of the same schema. Useful to you as the concrete picture of what a well-behaved client sends and expects. Your gateway must accept exactly what this skill instructs agents to produce.
+4. **[Agent Skill](04-agent-skill.md)** (`AGENT-SKILL` / [`skill/chaperone.skill`](skill/chaperone.skill)) — the agent-facing side of the same schema. Useful to you as the concrete picture of what a well-behaved client sends and expects. Your gateway must accept exactly what this skill instructs agents to produce.
 
 **A discipline for reading:** the intent schema appears in all four. Treat the Protocol Spec's version as the single source of truth and confirm the others agree with it. If you find a discrepancy, note it as an issue rather than silently picking one — the specs are a draft and catching drift is valuable.
 
