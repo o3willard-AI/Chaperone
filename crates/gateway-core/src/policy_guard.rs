@@ -267,6 +267,7 @@ mod tests {
         assert_eq!(hash_doc_bytes(doc.as_bytes()), policy.source_hash());
     }
 
+    #[cfg(unix)]
     #[test]
     fn permissions_reject_writable_modes() {
         let dir = tempfile::tempdir().unwrap();

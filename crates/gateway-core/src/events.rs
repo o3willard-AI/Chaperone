@@ -8,17 +8,36 @@
 //! Unlike the console socket's 1:1 answer semantics, this supports unlimited
 //! simultaneous readers (fan-out): a `chaperone tail` CLI, a menu-bar app,
 //! and any other local observer can all subscribe without contending.
+//!
+//! On non-unix platforms the events feed is a documented no-op: there is no
+//! Unix-domain-socket type in `std::os::unix` (which does not exist on
+//! Windows). `EventHub` is still a valid, referencable type so the rest of
+//! the gateway (config UI, policy-integrity guard) compiles unchanged;
+//! `broadcast` simply drops lines and `listen` binds nothing.
 
-use std::io::Write as _;
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+#[cfg(unix)]
+use std::io::Write as _;
+#[cfg(unix)]
+use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(unix)]
+use std::sync::Mutex;
 
 /// The event hub: holds active subscriber streams and broadcasts lines.
+#[cfg(unix)]
 pub struct EventHub {
     subscribers: Mutex<Vec<UnixStream>>,
 }
 
+/// Cross-platform stand-in: no subscribers, no socket, no-op broadcasts.
+#[cfg(not(unix))]
+pub struct EventHub {
+    // Intentionally empty: the feed is a Unix-domain-socket feature.
+}
+
+#[cfg(unix)]
 impl EventHub {
     /// An unbound hub: broadcasts are buffered to zero subscribers until
     /// [`EventHub::listen`] attaches a socket (or never - the in-process
@@ -93,5 +112,43 @@ impl EventHub {
         self.subscribers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+#[cfg(not(unix))]
+impl EventHub {
+    /// An unbound hub: broadcasts are dropped; there is no feed on this
+    /// platform.
+    #[must_use]
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {})
+    }
+
+    /// No-op on platforms without Unix-domain sockets.
+    ///
+    /// # Errors
+    /// Never: the feed is intentionally absent here.
+    pub fn listen(self: &Arc<Self>, path: &Path) -> Result<(), String> {
+        let _ = (self, path);
+        Ok(())
+    }
+
+    /// Convenience constructor that binds immediately (D35 shape).
+    ///
+    /// # Errors
+    /// Never: the feed is intentionally absent here.
+    pub fn spawn(path: &Path) -> Result<Arc<EventHub>, String> {
+        let hub = Self::new();
+        hub.listen(path)?;
+        Ok(hub)
+    }
+
+    /// No-op: there is no feed to broadcast to.
+    pub fn broadcast(&self, _line: &str) {}
+
+    /// Never any subscribers on this platform.
+    #[must_use]
+    pub fn subscriber_count(&self) -> usize {
+        0
     }
 }
