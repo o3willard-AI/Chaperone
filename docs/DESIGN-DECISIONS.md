@@ -654,3 +654,44 @@ per-user vault does nothing to stop an unauthenticated local port.
 **Backlog (§8.2):** per-user encrypted config for a future native-app UI.
 Explicitly deferred; explicitly not a substitute for D41. Needs its own
 design pass (one install per OS account vs. shared-daemon multi-tenancy).
+
+---
+
+## D42 — Windows reproducible builds require `/Brepro`
+
+RELEASE.md and BUILDER-NOTES-WINDOWS.md §3 promise SLSA-style verification:
+anyone can rebuild from source and get byte-identical bytes. `scripts/repro-check.sh`
+enforces this by building twice from clean state and diffing. On the first
+Windows hardware pass, two clean `cargo build --release --locked` runs of
+identical source produced binaries that differed in 23 bytes: 2 bytes near
+the PE header start (the COFF `TimeDateStamp` field), three more 2-byte
+pairs 28 bytes apart around a debug directory, and a contiguous ~13-byte
+block immediately after (a PDB GUID/hash derived from the timestamp). This
+is MSVC's `link.exe` embedding wall-clock time by default — a Windows-only
+gap; ELF (Linux) and Mach-O (macOS) outputs from the same source have no
+such field and were already reproducible.
+
+**Fix:** `/Brepro`, MSVC's deterministic-linking switch (available since
+VS2015 Update 3), zeroes the timestamp and its derived fields instead of
+stamping the build clock. Applied via `.cargo/config.toml`:
+
+```toml
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/Brepro"]
+```
+
+Scoped to the target so it's a no-op on Linux/macOS. Cargo reads
+`.cargo/config.toml` automatically — no `release.yml` change needed; CI
+picks this up for free. Verified: two clean builds with this flag produce
+identical SHA-256 for both `chaperone.exe` and `chaperone-helper.exe`.
+
+**Consequence:** every previously-published Windows binary (v0.1.0-alpha.1,
+v0.1.0-alpha.2 — the only two that actually built and shipped) was built
+without this flag and is very likely *not* independently reproducible by a
+verifier rebuilding from the same tag today, since a rebuild will embed a
+different timestamp than whatever CI happened to embed at build time. This
+does not affect the hash-manifest or hash-of-download check (§1's weaker
+guarantee); it affects only the "rebuild and compare" strongest check. Not
+retroactively fixable for already-tagged releases; first release built with
+this flag is the first one for which the strongest verification path
+actually holds on Windows.

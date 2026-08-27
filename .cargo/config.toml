@@ -1,0 +1,10 @@
+# MSVC's link.exe embeds a build TimeDateStamp (and derived PDB GUID/debug
+# directory entries) by default, which breaks byte-for-byte reproducibility
+# on Windows even with --locked and a pinned toolchain (docs/RELEASE.md,
+# docs/BUILDER-NOTES-WINDOWS.md). /Brepro is MSVC's deterministic-linking
+# switch (available since VS2015 Update 3); it zeroes those fields instead
+# of stamping wall-clock time. Verified: two clean `cargo build --release
+# --locked` runs are byte-identical with this flag, and differ (23 bytes,
+# all timestamp-derived) without it.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/Brepro"]
