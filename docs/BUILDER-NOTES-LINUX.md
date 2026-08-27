@@ -176,8 +176,8 @@ paths:
 --console-socket %H/.config/chaperone/console.sock
 ```
 
-The `--console-socket` flag is `#[^cfg(unix)]`-gated (`crates/cli/src/main.rs`
-line 137): on non-Unix platforms it falls back to the stdio gate
+The `--console-socket` flag is `#[cfg(unix)]`-gated (`crates/cli/src/main.rs`
+line 647): on non-Unix platforms it falls back to the stdio gate
 (lines 643–653). On Linux the console socket is the default confirmation
 surface for headless operation.
 
