@@ -23,7 +23,9 @@ use chaperone_gateway_core::{
 use chaperone_identity::{Attestor, EnrollmentStore, IdentityConfig, ReplayCache};
 use chaperone_policy::Policy;
 use chaperone_vault::VaultRouter;
-use serde_json::{Value, json};
+#[cfg(unix)]
+use serde_json::Value;
+use serde_json::json;
 
 const DOC: &str = r#"
     [[rule]]
@@ -40,6 +42,7 @@ const WATCH_TICK: Duration = Duration::from_millis(25);
 struct Spine {
     gateway: Arc<Gateway>,
     audit: Arc<AuditWriter>,
+    #[cfg(unix)]
     audit_path: std::path::PathBuf,
     policy_path: std::path::PathBuf,
     _dir: tempfile::TempDir,
@@ -90,6 +93,7 @@ fn build(doc: &str) -> Spine {
     Spine {
         gateway,
         audit,
+        #[cfg(unix)]
         audit_path,
         policy_path,
         _dir: dir,
@@ -103,6 +107,7 @@ fn spawn_watch(spine: &Spine, hub: Option<Arc<EventHub>>) {
 }
 
 /// Waits until `pred` holds or the deadline passes (timing-safe asserts).
+#[cfg(unix)]
 fn wait_until(deadline_ms: u128, pred: impl Fn() -> bool) -> bool {
     let start = std::time::Instant::now();
     while start.elapsed().as_millis() < deadline_ms {
@@ -253,13 +258,13 @@ async fn untouched_file_never_trips_the_guard() {
     assert_ne!(resp["code"], "E_GATEWAY_HALTED");
 }
 
+#[cfg(unix)]
 #[test]
 fn permission_gate_refuses_loose_modes_and_missing_files() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("policy.toml");
     std::fs::write(&p, DOC).unwrap();
 
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         // Readable-by-others is fine; WRITABLE-by-others is the threat.
