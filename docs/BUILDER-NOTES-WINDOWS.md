@@ -56,8 +56,8 @@ cargo build --release --locked -p chaperone-cli -p chaperone-privileged-helper
   substitute `x86_64-pc-windows-gnu` for release builds. The `windows-latest` CI
   job is the authoritative gate; local builds must match it to stay
   reproducible.
-- CI uses `actions-rust-lang/setup-rust-toolchain@v1` which installs the MSVC
-  toolchain + Windows SDK automatically. For a local build, install **Visual
+- The `windows-latest` runner ships MSVC + the Windows SDK pre-installed;
+  `actions-rust-lang/setup-rust-toolchain@v1` installs the pinned Rust toolchain. For a local build, install **Visual
   Studio 2022 Build Tools** with the "Desktop development with C++" workload
   (includes MSVC v143 and the Windows 10/11 SDK), then build with the
   `x64 Native Tools Command Prompt`.
@@ -126,7 +126,7 @@ signing, adding a release key, or telling users to disable protections.
 - Local sealed vault (argon2id + AES-256-GCM, passphrase fallback) — the
   `keyring` crate's `windows-native` backend is wired behind the `keyring`
   feature but OFF by default and UNTESTED on hardware.
-- `db-scram` against PostgreSQL (tokio-postgres, OneDb — see
+- `db-scram` against PostgreSQL (tokio-postgres — see
   `docs/CONNECTIVITY-MATRIX.md`).
 - SSH sessions (russh), owner-bound session handles.
 - `local-privilege` via the isolated privileged-helper (allowlist-pin
@@ -138,7 +138,7 @@ signing, adding a release key, or telling users to disable protections.
 
 | Task | Notes |
 |---|---|
-| **Named-pipe security hardening** | `crates/transport/src/named_pipe.rs` §7–11 documents that v1 relies on the default DACL (D14) derived from the creating process token. Explicit restrictive ACLs require unsafe Win32 calls (`PSECURITY_DESCRIPTOR`, `SetNamedPipeHandleState`) which the workspace forbids (`unsafe_code = "forbid"` in `Cargo.toml`). Track this; do not bypass the safety gate. |
+| **Named-pipe security hardening** | `crates/transport/src/named_pipe.rs` §7–11 documents that v1 relies on the default DACL (D13) derived from the creating process token. Explicit restrictive ACLs require unsafe Win32 calls (`PSECURITY_DESCRIPTOR`, `SetNamedPipeHandleState`) which the workspace forbids (`unsafe_code = "forbid"` in `Cargo.toml`). Track this; do not bypass the safety gate. |
 | **Keyring-backed vault sealing** | The `keyring` crate's `windows-native` backend is wired behind `feature = "keyring"` but OFF by default and UNTESTED. Enable it locally (`--features chaperone-vault/keyring`), exercise Windows Credential Manager prompts, report behavior. |
 | **Scheduled Task deployment guide** | `install.ps1` registers a logon Scheduled Task (`ChaperoneGateway`), not a Windows service. Draft the deployment walkthrough: when the task starts, how the vault passphrase file (`vault.pass`) is read, and how the operator confirms the daemon bound the pipe. |
 | **SmartScreen / no-Authenticode walkthrough** | Download the published v0.1.0-alpha.4 artifact (once tagged), document the exact SmartScreen prompts and the verification flow from `docs/RELEASE.md` on a clean Windows machine. |
