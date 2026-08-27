@@ -97,10 +97,13 @@ cat <<'EOF'
      umask 077; printf 'YOUR-PASSPHRASE\n' > ~/.config/chaperone/vault.pass
    (or edit the unit/plist to drop --passphrase-file and run interactively)
 2. Create enrollment/policy/vault if you have not yet (see docs/LOCAL-VAULT-GUIDE.md).
-3. Start the service:
+3. Create the per-instance UI access token (D41 requires it; the config UI
+   refuses to start without one):
+     chaperone ui-token rotate --token ~/.config/chaperone/ui.token
+4. Start the service:
      Linux:  systemctl --user enable --now chaperoned
      macOS:  launchctl load ~/Library/LaunchAgents/ai.chaperone.gw.plist
-4. Verify: chaperone version
+5. Verify: chaperone version
 
 Uninstall: ./uninstall.sh  (keeps all data in ~/.config/chaperone)
 EOF
