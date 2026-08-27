@@ -49,10 +49,6 @@ UI ACCESS TOKEN (required before the config UI serves; D41):
     chaperone ui-token show   --token <PATH>
     chaperone ui-token rotate --token <PATH>
 
-RELEASE SIGNING (PLAN Phase 10):
-    chaperone release-sign  --key <SEEDFILE> --file <ARTIFACT>   # writes ARTIFACT.sig
-    chaperone release-verify --file <ARTIFACT> --sig <SIGFILE> --public-key <B64URL>
-
 AUDIT CHAIN:
     chaperone audit-keygen --out <SEEDFILE>
     chaperone audit-verify --journal <FILE> --public-key <B64URL>
@@ -231,36 +227,6 @@ fn cmd_policy_check(flags: &Flags) -> Result<(), String> {
             .map_or("null".to_owned(), |v| v.to_string()),
     );
     Ok(())
-}
-
-fn cmd_release_sign(flags: &Flags) -> Result<(), String> {
-    let key_path = flags.require("key")?;
-    let file = flags.require("file")?;
-    let seed_text =
-        std::fs::read_to_string(&key_path).map_err(|e| format!("cannot read {key_path}: {e}"))?;
-    let key = load_audit_seed_text(&seed_text)?;
-    let artifact = std::fs::read(&file).map_err(|e| format!("cannot read {file}: {e}"))?;
-    let signature = key.sign_message(&artifact);
-    let sig_path = format!("{file}.sig");
-    std::fs::write(&sig_path, &signature).map_err(|e| e.to_string())?;
-    println!("signed {file} -> {sig_path}");
-    println!("public key: {}", key.public_key_b64url());
-    Ok(())
-}
-
-fn cmd_release_verify(flags: &Flags) -> Result<(), String> {
-    let file = flags.require("file")?;
-    let sig = flags.require("sig")?;
-    let pubkey = flags.require("public-key")?;
-    let artifact = std::fs::read(&file).map_err(|e| format!("cannot read {file}: {e}"))?;
-    let signature = std::fs::read_to_string(&sig).map_err(|e| format!("cannot read {sig}: {e}"))?;
-    let vk = chaperone_audit::verifying_key_from_b64url(&pubkey)?;
-    if chaperone_audit::AuditKey::verify_message(&vk, &artifact, signature.trim()) {
-        println!("VERIFIED: {file} matches {sig}");
-        Ok(())
-    } else {
-        Err(format!("signature does NOT match {file}"))
-    }
 }
 
 #[cfg(unix)]
@@ -929,8 +895,6 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "list-agents" => cmd_list_agents(&flags),
         "policy-check" => cmd_policy_check(&flags),
         "audit-keygen" => cmd_audit_keygen(&flags),
-        "release-sign" => cmd_release_sign(&flags),
-        "release-verify" => cmd_release_verify(&flags),
         #[cfg(unix)]
         "console" => cmd_console(&flags),
         "audit-verify" => cmd_audit_verify(&flags),

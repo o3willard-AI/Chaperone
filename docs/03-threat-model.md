@@ -77,7 +77,7 @@ The endpoint the agent is acting against may be hostile or compromised, returnin
 
 ### 2.4 T4 — Vault / supply chain
 
-A compromised dependency, a malicious injector plugin, or a subverted build. **Defenses:** v1 injectors are compiled-in (arch §2.5), not loaded at runtime; the plugin ABI, when it ships, denies plugins access to the signing layer, the policy store, and any `cred_ref` not handed to them. Reproducible builds and signed releases defend the binary. Vault credentials are fetched over authenticated channels the operator configures.
+A compromised dependency, a malicious injector plugin, or a subverted build. **Defenses:** v1 injectors are compiled-in (arch §2.5), not loaded at runtime; the plugin ABI, when it ships, denies plugins access to the signing layer, the policy store, and any `cred_ref` not handed to them. Reproducible builds and hash-verified releases defend the binary. Vault credentials are fetched over authenticated channels the operator configures.
 
 ### 2.5 T6 — Privilege-escalation abuse
 
@@ -110,7 +110,7 @@ No design eliminates all risk. Stated plainly, so operators calibrate:
 
 | Residual risk | Status | Rationale / compensating control |
 |---|---|---|
-| Gateway binary subversion | Handed off (§5) | The gateway is the TCB. Defended by reproducible builds, signed releases, and optional attested boot — see §5, not the protocol. If it falls, nothing holds. |
+| Gateway binary subversion | Handed off (§5) | The gateway is the TCB. Defended by reproducible builds, hash-verified releases, and optional attested boot — see §5, not the protocol. If it falls, nothing holds. |
 | Root-level local attacker | Handed off (§5) | Owns the key store and process memory; no user-space design defends against the platform owner. Blast radius is reduced by least-privilege short-lived minting (a scraped secret expires in minutes) and, optionally, by keeping secrets in an enclave the kernel cannot introspect (§5). |
 | Over-broad policy authored by operator | Accepted | Chaperone enforces policy faithfully; it cannot tell that a human wrote a bad rule. Least-privilege defaults and audit review are the compensations. |
 | A granted-then-misused credential | Bounded | Cannot be prevented once policy allows, but is scoped, short-lived, and fully attributed — blast radius and forensics are strong. |
@@ -127,7 +127,7 @@ The two trusted-computing-base non-goals from §1.2 — binary integrity and roo
 Answering "is this the real, untampered gateway?" requires something outside the code, since a subverted binary will not honestly report itself. The layered controls:
 
 - **Reproducible builds.** The binary is byte-for-byte reproducible from source, so anyone can independently verify that a release corresponds to auditable code.
-- **Signed releases.** Releases are cryptographically signed; the OS package manager and code-signing enforcement (Gatekeeper, signed packages, Authenticode) refuse to run a tampered binary.
+- **Hash-verified releases.** Binaries ship unsigned — there is no entity to own a signing key. Verification is by reconstruction: a published SHA256 manifest plus a byte-for-byte rebuild from source (see `docs/RELEASE.md`) binds the binary to the audited code without trusting any signature.
 - **Measured / attested boot (high-assurance).** Where a TPM is present, the boot chain is measured and the running gateway can be remotely attested — a verifier gets cryptographic proof of exactly which binary is executing before trusting it with vault access.
 
 ### 5.2 Reducing the root-attacker blast radius

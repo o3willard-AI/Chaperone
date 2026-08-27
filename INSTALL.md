@@ -1,8 +1,8 @@
 # Installing Chaperone
 
 Per-user install from release archives. **No root/admin required for the
-base install**; no corporate code signing yet (see
-[RELEASE.md](RELEASE.md) for verification — do that first).
+base install**. Binaries are unsigned by design — verify by rebuilding from
+source or checking the hash manifest ([RELEASE.md](RELEASE.md)).
 
 Artifacts: `chaperone` (CLI + gateway daemon), `chaperone-helper` (isolated
 privileged-command helper), install scripts, service templates.
@@ -55,8 +55,9 @@ launchctl list | grep chaperone                               # verify
 launchctl unload ~/Library/LaunchAgents/ai.chaperone.gw.plist # stop
 ```
 
-Gatekeeper will warn on first download — verify per [RELEASE.md](RELEASE.md)
-instead of bypassing blindly. Privileged commands: same sudoers approach as
+Gatekeeper will warn on first download (binaries are unsigned by design) —
+verify by rebuilding from source per [RELEASE.md](RELEASE.md) instead of
+bypassing blindly. Privileged commands: same sudoers approach as
 Linux above.
 
 ## Windows (preview quality)
@@ -70,7 +71,7 @@ Get-ScheduledTask ChaperoneGateway                 # verify
 schtasks /End /TN ChaperoneGateway                 # stop
 ```
 
-SmartScreen may prompt; verify hash+signature. The daemon runs as a logon
+SmartScreen may prompt (binaries are unsigned by design); verify the hash manifest or rebuild from source. The daemon runs as a logon
 Scheduled Task (no service account without codesigning — preview tradeoff).
 Privilege elevation on Windows is not yet packaged.
 

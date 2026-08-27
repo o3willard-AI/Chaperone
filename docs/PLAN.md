@@ -184,7 +184,7 @@ no root code in main daemon path.
 
 Goal: make the TCB handoffs real controls.
 
-- [ ] Reproducible builds verified byte-for-byte from source; signed releases.
+- [ ] Reproducible builds verified byte-for-byte from source; hash-verified releases (no signing).
 - [ ] Optional hardware-backed mode as install switch (TPM/Secure Enclave/HSM/enclave);
       software-only default preserved.
 - [ ] Supply-chain checks in CI (cargo audit + cargo-deny style checks, locked deps).
@@ -233,8 +233,7 @@ shipped.
 
 ## Phase 12 - Technology-spectrum completion *(milestone: M12)*
 
-Post-v1 backlog items pulled forward while release signing waits on
-external bureaucracy. Status:
+Post-v1 backlog items pulled forward. Status:
 
 - [x] **db-scram wire implementation** (was M8's honest deferral): real
       PostgreSQL SCRAM-SHA-256 via tokio-postgres; one-shot statements +
@@ -281,7 +280,7 @@ external bureaucracy. Status:
 
 Goal: move from "archives you unzip by hand" to a real install experience —
 service definitions, elevation packaging, upgrade/uninstall semantics —
-while staying inside the no-codesigning, no-entity reality. Native package
+while staying inside the no-signing, no-entity reality. Native package
 formats (deb/rpm/msi/pkg) collide with that reality: apt/rpm/dpkg expect
 GPG-signed repos and Apple pkg wants Developer ID. **Proposed middle path:
 reviewed, idempotent install scripts** that do the right things without new

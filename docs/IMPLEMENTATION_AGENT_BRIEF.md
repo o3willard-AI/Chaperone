@@ -50,7 +50,7 @@ These are not style preferences. They are the properties that make Chaperone wor
 
 - **Isolate privilege.** The `local-privilege` mechanism runs in a **separate privileged helper process**, sharing the vault+policy+audit core but *not* the network-injection code path. A compromise of any network injector must not be able to reach root. Do not fold privilege escalation into the main daemon's request path.
 
-- **The gateway is the trusted computing base — defend everything else, and be honest about what you can't.** You cannot defend against a subverted gateway binary or a root-level local attacker from inside the gateway. Do not pretend to. Instead, implement the compensating controls the Threat Model names (reproducible builds, signed releases, least-privilege minting, and the optional enclave mode) and document the boundary plainly.
+- **The gateway is the trusted computing base — defend everything else, and be honest about what you can't.** You cannot defend against a subverted gateway binary or a root-level local attacker from inside the gateway. Do not pretend to. Instead, implement the compensating controls the Threat Model names (reproducible builds, hash-verified releases, least-privilege minting, and the optional enclave mode) and document the boundary plainly.
 
 ---
 
@@ -105,7 +105,7 @@ The brokered-session lifecycle: authenticate once, return a handle, drive the ch
 The separate elevated process, sharing the core but not the network path. Always-single-confirmation; unattended only against an operator-defined, argument-pinned allowlist. Acceptance: an allowlisted command runs with confirmation; a non-allowlisted one is denied; a network-injector fault cannot invoke the helper.
 
 ### Phase 10 — Hardening and high-assurance
-Reproducible builds verified; signed releases; the optional hardware-backed (TPM/Secure Enclave/HSM/enclave) mode wired as an install switch; supply-chain checks in CI. Fill in the Threat Model §5 controls as real, testable things. Acceptance: a third party can reproduce the binary; enclave mode, where available, keeps secrets out of introspectable memory.
+Reproducible builds verified; hash-verified releases; the optional hardware-backed (TPM/Secure Enclave/HSM/enclave) mode wired as an install switch; supply-chain checks in CI. Fill in the Threat Model §5 controls as real, testable things. Acceptance: a third party can reproduce the binary; enclave mode, where available, keeps secrets out of introspectable memory.
 
 ### Phase 11 — Conformance, fuzzing, and the agent-facing loop
 A protocol conformance suite that a client (or the packaged skill) can be tested against. Fuzz the envelope parser and the injectors (malformed intents, hostile target responses — Threat Model T3). Validate that the shipped Agent Skill produces intents your gateway accepts. Acceptance: the conformance suite passes; fuzzing surfaces no panics or secret leaks; the skill's worked examples run end to end.

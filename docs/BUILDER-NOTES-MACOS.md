@@ -57,29 +57,29 @@ Consequences you must respect:
   code, no env-dependent features.
 - arm64 macOS links with an **ad-hoc signature by default**; that signature
   is content-derived and therefore reproduces. Leave linker defaults alone.
-- If you enable a Developer ID certificate later, codesigning MUST happen
-  inside the release pipeline *before* checksums and ed25519 signatures are
-  computed — never after distribution. Changing bytes post-signature breaks
-  every published verification.
+- Never add a signing step: this project ships unsigned, permanently. Any
+  signing belongs to the downstream corporate project, not this repository.
 
 ## 3. Signing reality — read before "fixing" warnings
 
-We ship **without corporate OS code signing** (no Developer ID, no
-notarization): that requires an entity and budget we have deliberately not
-spent before gauging community interest. Instead:
+Chaperone ships **unsigned, by design, permanently**. Code signing — a
+Developer ID, notarization, or any project-held release key — requires an
+entity to own the certificate or key. This project has none: it is open source
+with no company behind it. A downstream corporate project will own
+identity/provenance signing later.
 
-- Artifacts carry sha256 manifests plus **our own ed25519 detached
-  signatures**, produced by `chaperone release-sign`, verifiable per
-  [docs/RELEASE.md](RELEASE.md).
-- Builds are bit-for-bit reproducible from source.
-- Downloaded files get the `com.apple.quarantine` xattr; Gatekeeper will
-  warn. Users are instructed to verify hash+signature rather than click
-  through blindly. Do NOT "fix" this by ad-hoc notarizing or telling users
-  to disable protections.
+Verification is *by reconstruction* instead (SLSA principles):
 
-If/when the organization obtains a Developer ID, the integration order is:
-codesign in-pipeline → notarize → staple → then checksums/signatures → then
-publish. Nothing ships between steps.
+- **Reproducible builds**: bit-for-bit identical from source (see
+  [docs/RELEASE.md](RELEASE.md)).
+- **Hash manifests**: `SHA256SUMS.txt` + per-archive `.sha256`.
+- The strongest check is to rebuild and compare the bytes yourself — no key,
+  no trust in a maintainer.
+
+Downloaded files get the `com.apple.quarantine` xattr; Gatekeeper will warn.
+Users are instructed to verify by rebuilding (or by hash) rather than click
+through blindly. Do NOT "fix" this by ad-hoc notarizing, adding a release key,
+or telling users to disable protections.
 
 ## 4. Platform status on macOS — what works, what is open
 
@@ -130,7 +130,7 @@ the format); when the spec is wrong, file it in `docs/SPEC-ISSUES.md`.
   the house voice.
 - You will need your OWN GitHub account/access; do not ask for ours. Least
   privilege: read + branch access suffices to start.
-- Never commit: signing seeds, tokens, VAULT_TOKEN values, local vault
+- Never commit: audit key seeds, tokens, VAULT_TOKEN values, local vault
   files, audit journals. The `.gitignore` covers common names; treat
   anything credential-shaped as radioactive anyway.
 - Vulnerabilities go through [SECURITY.md](../SECURITY.md) privately — never

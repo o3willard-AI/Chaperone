@@ -1,12 +1,7 @@
-# Release pipeline (PLAN Phase 10): tag-triggered, three platforms,
-# reproducible locked builds, sha256 manifest, ed25519 detached signatures
-# via `chaperone release-sign`.
-#
-# HONEST POSTURE (docs/RELEASE.md): these artifacts carry OUR ed25519
-# signatures, not corporate OS code signing (no Authenticode / Apple
-# notarization yet). Expect Gatekeeper/SmartScreen prompts on macOS and
-# Windows; verify the hash and signature instead. Corporate codesigning is
-# deferred until there is an entity to own it - recorded in the backlog.
+# Release pipeline: tag-triggered, three platforms, reproducible locked
+# builds and a sha256 manifest. No code signing, no release keys (SLSA
+# posture - see docs/RELEASE.md): anyone can rebuild from source and confirm
+# the bytes match the published hashes.
 
 name: release
 
@@ -75,21 +70,6 @@ jobs:
         run: |
           f=$(ls chaperone-${{ github.ref_name }}-${{ matrix.target }}.* | head -1)
           sha256sum "$f" > "$f.sha256"
-
-      - name: Sign (ed25519 via chaperone itself)
-        shell: bash
-        env:
-          RELEASE_KEY_SEED: ${{ secrets.RELEASE_KEY_SEED }}
-        run: |
-          set -euo pipefail
-          if [ -z "${RELEASE_KEY_SEED:-}" ]; then
-            echo "RELEASE_KEY_SEED secret is not set; refusing to ship unsigned artifacts" >&2
-            exit 1
-          fi
-          printf '%s' "$RELEASE_KEY_SEED" > release-seed.tmp
-          f=$(ls chaperone-${{ github.ref_name }}-${{ matrix.target }}.* | grep -v sha256 | head -1)
-          ./target/release/chaperone release-sign --key release-seed.tmp --file "$f"
-          rm -f release-seed.tmp
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

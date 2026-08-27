@@ -103,7 +103,7 @@ at `docs/release-notes/v0.1.0-alpha.3.md`. **Tag v0.1.0-alpha.3 next.**
 | M7 | Confirmation gate: OperatorGate with full-context prompt, fail-closed everywhere | ✅ |
 | M8 | Sessions: SessionTable, owner-bound frames, ssh backend via russh, db-scram deferred honestly | ✅ |
 | M9 | Privileged helper: separate binary, token-gated allowlist, elevated ownership enforcement | ✅ |
-| M10 | Hardening: reproducible builds verified, cargo-deny, russh CVE response, release-sign/verify | ✅ |
+| M10 | Hardening: reproducible builds verified, cargo-deny, russh CVE response, hash-verified releases (no signing) | ✅ |
 | M11 | Conformance suite, fuzz harness, skill examples validated | ✅ |
 | M12a | db-scram wire implementation (PostgreSQL SCRAM-SHA-256) | ✅ |
 | M12b | HashiCorp Vault KV-v2 provider | ✅ |

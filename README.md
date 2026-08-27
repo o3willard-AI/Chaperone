@@ -28,10 +28,12 @@ implemented - http, ssh sessions, db-scram against PostgreSQL, and
 local-privilege through the isolated helper - plus identity, default-deny
 policy, tamper-evident audit, the vault abstraction (local sealed +
 HashiCorp Vault), the confirmation gate, conformance tests, fuzzing, and a
-reproducible-build release pipeline. Corporate OS code signing (Authenticode /
-Apple notarization) is deliberately deferred until there is an entity to own
-it; artifacts carry ed25519 signatures and are reproducibly buildable -
-see [docs/RELEASE.md](docs/RELEASE.md) for verification. Expect breaking
+reproducible-build release pipeline, verified through SLSA-style supply-chain
+principles (reproducible builds + SHA256 hash manifests) rather than code
+signing. Binaries are never signed: signing requires an entity to own a key or
+certificate, and this is deliberately unowned open source. Anyone can rebuild
+from source and confirm the bytes match. See
+[docs/RELEASE.md](docs/RELEASE.md) for verification. Expect breaking
 changes while the specs themselves remain v0.1 drafts open for review.
 
 ## Documentation

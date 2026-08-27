@@ -33,7 +33,7 @@ Out of scope (see the [Threat Model](docs/03-threat-model.md) §1.2 and §5 for
 the reasoning):
 
 - A subverted gateway binary or compromised build pipeline — defended by
-  supply-chain controls (reproducible builds, signed releases), not by the
+  supply-chain controls (reproducible builds, hash-verified releases), not by the
   running code.
 - Root-level local attackers. The gateway is user-space software; root owns
   the machine. We reduce blast radius (short-lived secrets, zeroize-on-drop,
@@ -48,11 +48,12 @@ demonstrate the TCB boundary itself being crossed are exactly what we want.
 Pre-release: only the latest tagged preview and `main` receive security
 fixes.
 
-**Artifact trust boundary, stated plainly:** release binaries carry our
-ed25519 detached signatures and reproduce bit-for-bit from source, but they
-are NOT signed with corporate OS code-signing certificates yet (no entity to
-own those). On macOS/Windows expect Gatekeeper/SmartScreen prompts - verify
-via [docs/RELEASE.md](docs/RELEASE.md) instead of clicking through.
+**Artifact trust boundary, stated plainly:** release binaries are unsigned by
+design — no corporate OS code-signing and no project-held release key (this is
+open source with no entity to own one). Verification is by reconstruction:
+rebuild from source and confirm the bytes match, or check the SHA256 manifest
+([docs/RELEASE.md](docs/RELEASE.md)). On macOS/Windows expect
+Gatekeeper/SmartScreen prompts; do not click through blindly.
 
 ## Hardening commitments
 
