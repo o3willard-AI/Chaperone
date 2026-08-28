@@ -107,18 +107,51 @@ hash_binaries() {
 }
 
 leak_gate() {
-    local dir name where
+    # POSIX pattern catches /home, /root, macOS /Users. Windows paths never
+    # match that pattern (drive letter + backslashes), so a leak specific to
+    # the msvc target -- e.g. repro-env.sh's remap silently not applying --
+    # would pass this gate undetected without the second pattern below.
+    #
+    # `strings` is NOT assumed present -- confirmed absent on a plain Git
+    # for Windows install (no full MinGW/binutils) on 2026-08-28. `grep -a`
+    # searches the binary directly instead; every path this project embeds
+    # is ASCII, so no printable-run extraction step is needed.
+    local dir name where posix_pat win_pat
     dir="$(bindir)"
+    posix_pat='/home/|/root/|/Users/'
+    # One escaped backslash (\\) per separator -- matches one literal `\`
+    # in the binary. A prior draft of this pattern used \\\\ here, which
+    # requires TWO literal backslashes in a row and would never match a
+    # real single-backslash Windows path; caught by actually running this
+    # against a binary rather than trusting the regex by inspection.
+    #
+    # Deliberately does NOT include a C:\a\|D:\a\ alternative for the
+    # GitHub Actions windows-latest runner checkout convention (D:\a\...).
+    # A prior draft did, and it broke streaming output for this entire
+    # pattern on the grep bundled with a plain Git for Windows install
+    # (confirmed: `grep -c` still silently counted real matches while `grep`
+    # in normal/`-o` mode emitted zero bytes for ALL alternatives, not just
+    # the added one -- a real grep bug, not a regex logic error; verified
+    # by isolating each alternative individually). \Users\ alone already
+    # catches the actual leak class that matters (a developer's home
+    # directory); re-add a CI-runner-specific pattern only after confirming
+    # it doesn't retrigger this on the grep build in use.
+    win_pat='[A-Za-z]:\\Users\\|\\Users\\'
     for b in "${bins[@]}"; do
         name="$b$EXE_SUFFIX"
         where="$dir/$name"
-        if strings "$where" | grep -E '/home/|/root/|/Users/' | head -3 | grep -q .; then
-            echo "[repro] LEAK GATE FAILED: $where embeds absolute source paths:" >&2
-            strings "$where" | grep -E '/home/|/root/|/Users/' | head -5 >&2
+        if grep -aE "$posix_pat" "$where" | head -3 | grep -q .; then
+            echo "[repro] LEAK GATE FAILED: $where embeds absolute POSIX source paths:" >&2
+            grep -aE "$posix_pat" "$where" | head -5 >&2
+            return 1
+        fi
+        if grep -aE "$win_pat" "$where" | head -3 | grep -q .; then
+            echo "[repro] LEAK GATE FAILED: $where embeds absolute Windows source paths:" >&2
+            grep -aE "$win_pat" "$where" | head -5 >&2
             return 1
         fi
     done
-    echo "[repro] leak gate OK: no absolute source paths in binaries"
+    echo "[repro] leak gate OK: no absolute source paths (POSIX or Windows) in binaries"
 }
 
 export_second_tree() {
