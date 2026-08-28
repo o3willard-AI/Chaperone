@@ -1,24 +1,76 @@
 #!/usr/bin/env bash
-# Reproducible-build posture check (PLAN Phase 10): two clean locked
-# release builds of the shipped binaries MUST hash identically.
+# Reproducible-build posture check for Chaperone.
+#
+# MODE 1 (default) — two builds from two DIFFERENT checkout paths
+#
+#   ./repro-check.sh [--target <triple>]
+#
+#   Builds the release binaries once in this checkout, then again from a
+#   second copy of the tree exported to a different path (default under
+#   /tmp), with the documented canonical build environment
+#   (scripts/repro-env.sh). The two binaries MUST be byte-identical.
+#
+#   WHY TWO PATHS: a rebuild on the same machine at the same path is
+#   self-consistent by construction and once masked exactly this class of
+#   bug — rustc embeds absolute build-time paths (checkout root + CARGO_HOME
+#   registry sources) into the binary, so two builds in the same $HOME match
+#   while a rebuild by ANYONE ELSE does not (found in the 2026-08-27 macOS QA
+#   pass on v0.1.0-alpha.5). Different checkout paths is the smallest test
+#   that actually exercises path normalization. It runs on a plain host:
+#   needs git, cargo, sha256sum, tar.
+#
+#   The script also asserts the LEAK GATE: neither binary may contain any
+#   absolute /home/, /root/ or /Users/ path. Only the canonical /workspace/
+#   and /cargo/ prefixes may appear.
+#
+# MODE 2 — verify against a PUBLISHED release artifact
+#
+#   ./repro-check.sh --against-release <tag> [--target <triple>]
+#
+#   Downloads the release archive for <tag>/<target>, builds locally with the
+#   canonical environment, and byte-compares the binaries. NOTE: this can
+#   only pass for releases CUT AFTER the remap flags landed (earlier
+#   artifacts embed the CI runner's real paths); a mismatch against an older
+#   tag is EXPECTED and reported as such, not a script failure.
+#
+#   Needs network access (curl) plus a writable temp dir. On Windows targets
+#   the asset is a .zip; extraction tries unzip, then falls back to python3.
+
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Ensure the rustup-shimmed cargo (which honors rust-toolchain.toml) wins
+# over any distro cargo. Prepend explicitly: ~/.cargo/env alone may APPEND
+# on some setups, leaving /usr/bin/cargo shadowing the shim.
+case ":$PATH:" in
+    *":$HOME/.cargo/bin:"*) ;;
+    *) export PATH="$HOME/.cargo/bin:$PATH" ;;
+esac
 source "$HOME/.cargo/env" 2>/dev/null || true
 
-# Usage: repro-check.sh [--target <triple>]
-#   No argument: verify the host target (default).
-#   --target <triple>: verify a cross-target (e.g. x86_64-apple-darwin on an
-#   arm64 Mac). Requires the rustup target to be installed. Added after the
-#   2026-08-25 macOS QA pass verified both darwin targets manually; this
-#   flag makes that procedure scriptable (follow-up of issue #24).
-
 TARGET_ARG=""
-if [ "${1:-}" = "--target" ]; then
-    TARGET_ARG="${2:?--target requires a triple}"
-    shift 2
-fi
+AGAINST_RELEASE=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --target)
+            TARGET_ARG="${2:?--target requires a triple}"
+            shift 2 ;;
+        --against-release)
+            AGAINST_RELEASE="${2:?--against-release requires a tag}"
+            shift 2 ;;
+        *)
+            echo "usage: $0 [--target <triple>] [--against-release <tag>]" >&2
+            exit 2 ;;
+    esac
+done
 
 bins=(chaperone chaperone-helper)
+EXE_SUFFIX=""
+case "${TARGET_ARG:-}" in
+    *windows*) EXE_SUFFIX=".exe" ;;
+esac
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) [ -z "$TARGET_ARG" ] && EXE_SUFFIX=".exe" ;;
+esac
 
 bindir() {
     if [ -n "$TARGET_ARG" ]; then
@@ -26,6 +78,11 @@ bindir() {
     else
         printf 'target/release'
     fi
+}
+
+canonical_env() {
+    # The one source of truth for rebuild flags. Sourced, not executed.
+    . "./scripts/repro-env.sh"
 }
 
 build() {
@@ -38,38 +95,142 @@ build() {
     fi
 }
 
-hash() {
-    local dir bindir_out out=""
-    dir=$(bindir)
+hash_binaries() {
+    # Output "<sha256> <binname>" per binary. Hash-only comparison: the
+    # sha256sum path column differs between the two trees by design.
+    local dir out=""
+    dir="$(bindir)"
     for b in "${bins[@]}"; do
-        out+="$(sha256sum "$dir/$b")"$'\n'
+        out+="$(sha256sum "$dir/$b$EXE_SUFFIX" | cut -d' ' -f1)  $b"$'\n'
     done
     printf '%s' "$out"
 }
 
-clean() {
-    if [ -n "$TARGET_ARG" ]; then
-        rm -rf "target/$TARGET_ARG/release"
-    else
-        rm -rf target/release
-    fi
+leak_gate() {
+    local dir name where
+    dir="$(bindir)"
+    for b in "${bins[@]}"; do
+        name="$b$EXE_SUFFIX"
+        where="$dir/$name"
+        if strings "$where" | grep -E '/home/|/root/|/Users/' | head -3 | grep -q .; then
+            echo "[repro] LEAK GATE FAILED: $where embeds absolute source paths:" >&2
+            strings "$where" | grep -E '/home/|/root/|/Users/' | head -5 >&2
+            return 1
+        fi
+    done
+    echo "[repro] leak gate OK: no absolute source paths in binaries"
 }
 
-echo "[repro] target: ${TARGET_ARG:-host default}"
-echo "[repro] build 1/2"
-build
-A=$(hash)
+export_second_tree() {
+    # Export the CURRENT WORKING TREE (tracked + untracked, minus ignored
+    # files like target/) so the second build tests exactly what a rebuilder
+    # would get, including any uncommitted changes under test.
+    local dest="$1"
+    mkdir -p "$dest"
+    git ls-files -co --exclude-standard -z \
+        | tar --null -T - -cf - \
+        | tar -xf - -C "$dest"
+}
 
-echo "[repro] clean rebuild 2/2"
-clean
+die() { echo "[repro] FAILED: $*" >&2; exit 1; }
+
+if [ -n "$AGAINST_RELEASE" ]; then
+    # ------------------------------------------------------------------
+    # MODE 2: build locally, compare with the published artifact bytes.
+    # ------------------------------------------------------------------
+    TAG="$AGAINST_RELEASE"
+    TRIPLE="${TARGET_ARG:-$(rustc -vV | awk '/^host:/ {print $2}')}"
+    case "$TRIPLE" in
+        *windows*) ARCHIVE="chaperone-$TAG-$TRIPLE.zip" ;;
+        *)         ARCHIVE="chaperone-$TAG-$TRIPLE.tar.gz" ;;
+    esac
+    BASE="https://github.com/o3willard-AI/Chaperone/releases/download/$TAG"
+    TMP="$(mktemp -d)"
+    trap 'rm -rf "$TMP"' EXIT
+
+    echo "[repro] downloading $BASE/$ARCHIVE"
+    curl -fsSL -o "$TMP/$ARCHIVE" "$BASE/$ARCHIVE" \
+        || die "could not download $ARCHIVE (does the release exist?)"
+
+    mkdir -p "$TMP/asset"
+    case "$ARCHIVE" in
+        *.tar.gz) tar -xzf "$TMP/$ARCHIVE" -C "$TMP/asset" ;;
+        *.zip)
+            if command -v unzip >/dev/null 2>&1; then
+                unzip -q "$TMP/$ARCHIVE" -d "$TMP/asset"
+            else
+                python3 - "$TMP/$ARCHIVE" "$TMP/asset" <<'PY'
+import sys, zipfile
+zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])
+PY
+            fi ;;
+    esac
+
+    echo "[repro] building locally with canonical env (target: $TRIPLE)"
+    canonical_env
+    if [ -n "$TARGET_ARG" ]; then
+        build
+    else
+        cargo build --release --locked --target "$TRIPLE" \
+            -p chaperone-cli -p chaperone-privileged-helper
+    fi
+
+    rc=0
+    for b in "${bins[@]}"; do
+        local_bin="$(bindir)/$b$EXE_SUFFIX"
+        pub_bin="$TMP/asset/$b$EXE_SUFFIX"
+        [ -f "$pub_bin" ] || die "published archive is missing $b$EXE_SUFFIX"
+        if cmp -s "$local_bin" "$pub_bin"; then
+            echo "[repro] MATCH: $b == published $TAG artifact"
+        else
+            echo "[repro] DIFFER: $b != published $TAG artifact" >&2
+            echo "        expected for tags cut BEFORE the path-remap flags" >&2
+            echo "        (published binary embeds the CI runner's build paths)." >&2
+            rc=1
+        fi
+    done
+    leak_gate || rc=1
+    exit $rc
+fi
+
+# --------------------------------------------------------------------------
+# MODE 1 (default): two builds from two different checkout paths.
+# --------------------------------------------------------------------------
+if [ -n "$TARGET_ARG" ]; then
+    # Cross-target second path works the same way; no extra handling.
+    :
+fi
+
+echo "[repro] target: ${TARGET_ARG:-host default}"
+echo "[repro] build A: this checkout ($(pwd -P))"
+canonical_env
 build
-B=$(hash)
+A="$(hash_binaries)"
+echo "$A" | sed 's/^/[repro] A /'
+
+SECOND_PARENT="$(mktemp -d /tmp/chaperone-repro.XXXXXX)"
+trap 'rm -rf "$SECOND_PARENT"' EXIT
+SECOND_TREE="$SECOND_PARENT/Chaperone"
+export_second_tree "$SECOND_TREE"
+
+echo "[repro] build B: second checkout ($SECOND_TREE)"
+(
+    cd "$SECOND_TREE"
+    canonical_env
+    build
+)
+B="$(cd "$SECOND_TREE" && hash_binaries)"
+echo "$B" | sed 's/^/[repro] B /'
 
 if [ "$A" = "$B" ]; then
-    echo "[repro] OK: byte-for-byte identical"
-    echo "$A"
+    echo "[repro] OK: byte-for-byte identical across two checkout paths"
 else
-    echo "[repro] FAILED: builds differ" >&2
+    echo "[repro] FAILED: builds from different checkout paths differ" >&2
     diff <(echo "$A") <(echo "$B") >&2 || true
+    echo "[repro] hint: is the checkout/CARGO_HOME prefix actually covered" >&2
+    echo "[repro]       by scripts/repro-env.sh remaps on this machine?" >&2
     exit 1
 fi
+
+leak_gate
+echo "[repro] two-path + leak-gate verification passed"

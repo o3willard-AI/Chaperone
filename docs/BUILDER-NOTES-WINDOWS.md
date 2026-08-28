@@ -40,8 +40,18 @@ commands). Everything is Apache-2.0, built in the open.
 ```powershell
 git clone https://github.com/o3willard-AI/Chaperone
 cd Chaperone
+. ./scripts/repro-env.sh   # REQUIRED: sets the --remap-path-prefix RUSTFLAGS
 cargo build --release --locked -p chaperone-cli -p chaperone-privileged-helper
 ```
+
+- **Source `scripts/repro-env.sh` before building.** rustc embeds absolute
+  build-time paths (the checkout root and `$CARGO_HOME` registry sources)
+  into the binaries; without the remap env your rebuild embeds
+  `C:\Users\<you>\...` and can never match CI's bytes. The script converts
+  both prefixes to the native Windows form (`cygpath -w`) when run under
+  Git Bash/MSYS so the remap actually matches what rustc embeds; under WSL
+  it correctly keeps POSIX paths. This affects Windows too — it is a
+  cargo/rustc behavior, not a macOS one.
 
 - `rust-toolchain.toml` pins **exactly 1.98.0**; rustup provisions it on first
   build. Do not bump it unilaterally — reproducibility depends on it.
@@ -64,13 +74,17 @@ cargo build --release --locked -p chaperone-cli -p chaperone-privileged-helper
 
 ### Reproducibility discipline (non-negotiable)
 
-`scripts/repro-check.sh` builds both release binaries twice from clean state
-and asserts byte-for-byte identity. On Windows this script runs under
+`scripts/repro-check.sh` (default mode) is a **two-path** check: build A in
+this checkout, build B in a second copy of the tree at a different path, both
+with the canonical remap env from `scripts/repro-env.sh` (checkout →
+`/workspace/`, `$CARGO_HOME` → `/cargo/`), then byte-compare and assert no
+absolute source paths remain embedded. On Windows this script runs under
 `bash` (Git Bash or WSL) — but the underlying `cargo build` invokes the
 MSVC toolchain:
 
 ```sh
-./scripts/repro-check.sh   # must print "[repro] OK"
+./scripts/repro-check.sh   # must print "[repro] OK: byte-for-byte identical
+                           #  across two checkout paths" + "leak gate OK"
 ```
 
 Consequences you must respect:
@@ -98,10 +112,13 @@ identity/provenance signing later; for this repository the guarantee is
 Verification follows SLSA principles (`.github/workflows/release.yml` lines
 95–99, `docs/RELEASE.md` §1):
 
-- **Reproducible build.** `scripts/repro-check.sh` builds both release
-  binaries twice from clean state and asserts byte-for-byte identity.
-  Because the toolchain is pinned and the build is locked (`--locked`),
-  anyone can reproduce the exact bytes from the exact source.
+- **Reproducible build.** CI and local rebuilds normalize build-time paths
+  with `--remap-path-prefix` (see `scripts/repro-env.sh` — checkout →
+  `/workspace/`, `CARGO_HOME` → `/cargo/`); `scripts/repro-check.sh` builds
+  from two different checkout paths and asserts byte-for-byte identity plus
+  no leaked absolute paths. With the toolchain pinned
+  (`rust-toolchain.toml`) and the build locked (`--locked`), anyone can
+  reproduce the exact bytes from the exact source.
 - **Hash manifest.** Every release publishes `SHA256SUMS.txt` and per-archive
   `.sha256` (`.github/workflows/release.yml` lines 68–72, 95–99).
   `sha256sum -c` confirms your download arrived intact.

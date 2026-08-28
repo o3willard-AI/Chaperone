@@ -29,8 +29,15 @@ commands). Everything is Apache-2.0, built in the open.
 
 ```sh
 git clone https://github.com/o3willard-AI/Chaperone && cd Chaperone
+. ./scripts/repro-env.sh   # REQUIRED: sets the --remap-path-prefix RUSTFLAGS
 cargo build --release --locked -p chaperone-cli -p chaperone-privileged-helper
 ```
+
+- **Source `scripts/repro-env.sh` before building.** rustc embeds absolute
+  build-time paths (your checkout root and `$CARGO_HOME` registry sources)
+  into the binaries; without the remap env your rebuild embeds `/Users/<you>/...`
+  and can never match CI's bytes (found 2026-08-27: the alpha.5 binary embeds
+  `/Users/runner/.cargo/registry/...`).
 
 - `rust-toolchain.toml` pins **exactly 1.98.0**; rustup provisions it on
   first build. Do not bump it unilaterally — reproducibility depends on it.
@@ -43,11 +50,20 @@ cargo build --release --locked -p chaperone-cli -p chaperone-privileged-helper
 
 ### Reproducibility discipline (non-negotiable)
 
-`scripts/repro-check.sh` builds both release binaries twice from clean state
-and asserts byte-for-byte identity. On your Mac:
+rustc bakes absolute build paths (checkout root + `$CARGO_HOME` registry
+sources) into every binary via `file!()`/panic locations and debuginfo. A
+rebuild on the SAME machine at the SAME path is self-consistent by
+construction and proves nothing about what a third party gets.
+
+`scripts/repro-check.sh` (default mode) is therefore a **two-path** check:
+build A in this checkout, build B in a second copy of the tree at a different
+path, both with the canonical remap env from `scripts/repro-env.sh`
+(checkout → `/workspace/`, `$CARGO_HOME` → `/cargo/`), then byte-compare and
+assert no `/Users/`, `/home/`, or `/root/` paths remain embedded. On your Mac:
 
 ```sh
-./scripts/repro-check.sh   # must print "[repro] OK"
+./scripts/repro-check.sh   # must print "[repro] OK: byte-for-byte identical
+                           #  across two checkout paths" + "leak gate OK"
 ```
 
 Consequences you must respect:
@@ -138,7 +154,10 @@ the format); when the spec is wrong, file it in `docs/SPEC-ISSUES.md`.
 
 ## 6b. Hardware-pass findings (2026-08-25 QA) — already folded in
 
-The first hardware pass verified arm64 AND x86_64 builds (both reproducible;
+The first hardware pass verified arm64 AND x86_64 builds (both reproducible
+under the pre-2026-08-28 same-path check; see the §6c addendum — same-path
+verification could not detect embedded build paths, which the remap flags
+now normalize);
 x86_64 via Rosetta), full workspace tests green on macOS, and a real
 install/smoke run. Items it surfaced, now addressed or tracked:
 
@@ -163,7 +182,11 @@ that fixes the Windows build break:
 - `cargo test --locked --workspace` — **203 passed, 0 failed**, matching the
   count in `docs/HANDOFF.md`.
 - `scripts/repro-check.sh` — **OK: byte-for-byte identical** across two clean
-  builds, both binaries.
+  builds, both binaries. (Addendum 2026-08-28: this check compared two builds
+  at the SAME path and could not see path embedding; the published alpha.5
+  Mac binary embeds `/Users/runner/.cargo/registry/...`. Fixed by the
+  path-remap flags — see `scripts/repro-env.sh` and docs/RELEASE.md; the
+  check now compares two different checkout paths and gates on leaked paths.)
 
 No fixes required — macOS was never blocking this release. The items listed
 in §6b as "still open for the next hardware pass" remain open and don't

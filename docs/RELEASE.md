@@ -18,9 +18,18 @@ Verification follows SLSA principles (Supply-chain Levels for Software
 Artifacts — the "salsa" framework), specifically **reproducible builds** and
 **hash manifests**:
 
-1. **Reproducible build.** `scripts/repro-check.sh` builds both release
-   binaries twice from clean state and asserts byte-for-byte identity. Because
-   the toolchain is pinned and the build is locked (`--locked`), anyone can
+1. **Reproducible build.** rustc embeds absolute build-time paths (the
+   checkout root and `$CARGO_HOME` registry sources) into binaries via
+   `file!()`/panic locations and debuginfo, so a naive `cargo build` produces
+   different bytes on every machine. Both CI and local rebuilds therefore
+   normalize those paths with `--remap-path-prefix` (checkout → `/workspace/`,
+   `CARGO_HOME` → `/cargo/`), via `scripts/repro-env.sh` — the single source
+   of truth for the flags, sourced by CI and by `scripts/repro-check.sh`.
+   The check builds from TWO DIFFERENT checkout paths (a same-path rebuild
+   is self-consistent by construction and once masked exactly this bug) and
+   asserts byte-for-byte identity plus the absence of any embedded `/home/`,
+   `/root/`, or `/Users/` paths. With the pinned toolchain
+   (`rust-toolchain.toml`), `--locked`, and the remap env, anyone can
    reproduce the exact bytes from the exact source.
 2. **Hash manifest.** Every release publishes `SHA256SUMS.txt` (the sha256 of
    each archive) plus a per-archive `.sha256` file. `sha256sum -c` confirms
@@ -51,8 +60,12 @@ Binaries included: `chaperone` (operator CLI + gateway daemon) and
 # 1. Your download matches the published manifest
 sha256sum -c SHA256SUMS.txt
 
-# 2. (Strongest) Rebuild from source and confirm the same bytes
+# 2. (Strongest) Rebuild from source and confirm the same bytes.
+#    The env script sets the REQUIRED --remap-path-prefix RUSTFLAGS
+#    (checkout -> /workspace/, CARGO_HOME -> /cargo/); without them your
+#    rebuild embeds YOUR absolute paths and cannot match anyone else's bytes.
 git clone https://github.com/o3willard-AI/Chaperone && cd Chaperone
+. ./scripts/repro-env.sh
 cargo build --release --locked -p chaperone-cli -p chaperone-privileged-helper
 sha256sum target/release/chaperone target/release/chaperone-helper
 # ...compare against SHA256SUMS.txt / the per-archive .sha256
@@ -61,11 +74,23 @@ sha256sum target/release/chaperone target/release/chaperone-helper
 Or use the scripted reproducibility check:
 
 ```sh
-./scripts/repro-check.sh   # two clean builds, byte-for-byte assertion
+./scripts/repro-check.sh
+#   default: rebuild from two DIFFERENT checkout paths + no-leaked-paths gate
+./scripts/repro-check.sh --against-release <tag>
+#   rebuild locally and byte-compare the published asset for that tag
+#   (only meaningful for releases cut AFTER the remap flags landed —
+#   see "What is NOT covered yet" below)
 ```
 
 ## What is NOT covered yet (honest boundary)
 
+- **Releases tagged before the 2026-08-28 path-remap fix are NOT
+  rebuildable byte-for-byte.** Binaries through v0.1.0-alpha.5 embed the CI
+  runner's absolute build paths (`/Users/runner/.cargo/registry/...` — found
+  in the 2026-08-27 macOS QA pass), so a fresh rebuild produces different
+  bytes for those tags. That is expected, and `repro-check.sh
+  --against-release` will report it as such. The two-path check is the proof
+  of reproducibility for post-remap releases.
 - **No OS-level code signing, ever.** No Authenticode certificate on Windows,
   no Apple Developer ID / notarization on macOS. Expect Gatekeeper and
   SmartScreen prompts. The point is that you *don't* need to trust a
@@ -84,8 +109,30 @@ Or use the scripted reproducibility check:
 
 ## Reproducibility
 
-`scripts/repro-check.sh` builds both release binaries twice from clean state
-and asserts byte-for-byte identity. Anyone can re-run it against a tag and
-confirm their locally built binaries match the published ones bit-for-bit —
-stronger provenance than any signature, because it requires no key and no
+`scripts/repro-check.sh` (default mode) builds both release binaries from
+TWO DIFFERENT checkout paths using the canonical build environment in
+`scripts/repro-env.sh`, asserts byte-for-byte identity, and then gates on a
+strings scan: no `/home/`, `/root/`, or `/Users/` paths may remain embedded —
+only the canonical `/workspace/` and `/cargo/` prefixes. Building twice at the
+same path is self-consistent by construction and proves nothing about what a
+third party gets; the second checkout path is what makes the check honest.
+
+`./scripts/repro-check.sh --against-release <tag>` additionally downloads the
+published archive for a tag, rebuilds it locally, and byte-compares the
+binaries. For post-remap releases, a MATCH is the full SLSA-style proof: the
+published bytes provably correspond to the public source, with no key and no
 trust in whoever holds one.
+
+Rebuilder requirements (all three platforms): the pinned toolchain (rustup
+provisions it), `--locked`, the **default crates.io registry** (a mirror
+changes the embedded registry-index hash, and therefore the bytes), and the
+remap environment from `scripts/repro-env.sh` — the release workflow exports
+the same flags, so CI and local builds agree.
+
+Mechanism note (1.98.0, release profile): the dominant embedding vector is
+`$CARGO_HOME/registry/src/...` (hundreds of paths via dependency panic
+locations); the checkout root itself appears only as workspace-relative
+paths in default release builds, but IS embedded absolutely in
+debuginfo-bearing configs — the `/workspace/` remap exists so those builds
+stay byte-identical too. Both remaps are no-ops for bytes when their prefix
+never appears.

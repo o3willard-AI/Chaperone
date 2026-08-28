@@ -34,8 +34,16 @@ commands). Everything is Apache-2.0, built in the open.
 ```sh
 git clone https://github.com/o3willard-AI/Chaperone
 cd Chaperone
+. ./scripts/repro-env.sh   # REQUIRED: sets the --remap-path-prefix RUSTFLAGS
 cargo build --release --locked -p chaperone-cli -p chaperone-privileged-helper
 ```
+
+- **Source `scripts/repro-env.sh` before building.** rustc embeds absolute
+  build-time paths (your checkout root and `$CARGO_HOME` registry sources)
+  into the binaries via `file!()`/panic locations and debuginfo; without the
+  remap env your rebuild embeds `/home/<you>/...` and can never match CI's
+  bytes. This affects Linux too — it is a cargo/rustc behavior, not a macOS
+  or Windows one.
 
 - `rust-toolchain.toml` pins **exactly 1.98.0**; rustup provisions it on first
   build. Do not bump it unilaterally — reproducibility depends on it.
@@ -54,19 +62,25 @@ cargo build --release --locked -p chaperone-cli -p chaperone-privileged-helper
 
 ### Reproducibility discipline (non-negotiable)
 
-`scripts/repro-check.sh` builds both release binaries twice from clean state
-and asserts byte-for-byte identity. On Linux:
+`scripts/repro-check.sh` (default mode) is a **two-path** check: build A in
+this checkout, build B in a second copy of the tree at a different path, both
+with the canonical remap env from `scripts/repro-env.sh` (checkout →
+`/workspace/`, `$CARGO_HOME` → `/cargo/`), then byte-compare and assert no
+`/home/`, `/root/`, or `/Users/` paths remain embedded:
 
 ```sh
-./scripts/repro-check.sh   # must print "[repro] OK: byte-for-byte identical"
+./scripts/repro-check.sh   # must print "[repro] OK: byte-for-byte identical
+                           #  across two checkout paths" + "leak gate OK"
 ```
 
-This works because ELF does **not** carry a build `TimeDateStamp` field (unlike
-Windows PE, where MSVC's `link.exe` stamps one by default — see D42). Linux and
-macOS were always reproducible; D42's `.cargo/config.toml` `/Brepro` fix is
-scoped to `target.x86_64-pc-windows-msvc` only (a no-op on Linux). Your
-`repro-check.sh` run confirming byte-identity is the verification — you do not
-need to re-derive D42.
+ELF does not carry a build `TimeDateStamp` field (unlike Windows PE, where
+MSVC's `link.exe` stamps one by default — see D42), so a same-machine
+rebuild always matched; that was never the whole story. rustc still embeds
+absolute source paths on Linux, and a rebuild in a different `$HOME`
+produced different bytes (found via the 2026-08-27 macOS QA pass on
+alpha.5). The path-remap env fixes that on every platform; D42's
+`.cargo/config.toml` `/Brepro` link-arg stays scoped to
+`x86_64-pc-windows-msvc` and remains required there.
 
 Consequences you must respect:
 - No post-build mutation of binaries (no `strip`, no re-signing, no
@@ -91,10 +105,13 @@ not *trust in a signature*.
 Verification follows SLSA principles (`docs/RELEASE.md` §1–2,
 `.github/workflows/release.yml` lines 95–99):
 
-- **Reproducible build.** `scripts/repro-check.sh` builds both release
-  binaries twice from clean state and asserts byte-for-byte identity.
-  Because the toolchain is pinned and the build is locked (`--locked`),
-  anyone can reproduce the exact bytes from the exact source.
+- **Reproducible build.** CI and local rebuilds normalize build-time paths
+  with `--remap-path-prefix` (see `scripts/repro-env.sh` — checkout →
+  `/workspace/`, `CARGO_HOME` → `/cargo/`); `scripts/repro-check.sh` builds
+  from two different checkout paths and asserts byte-for-byte identity plus
+  no leaked absolute paths. With the toolchain pinned
+  (`rust-toolchain.toml`) and the build locked (`--locked`), anyone can
+  reproduce the exact bytes from the exact source.
 - **Hash manifest.** Every release publishes `SHA256SUMS.txt` (sha256 of
   each archive) plus a per-archive `.sha256` file
   (`.github/workflows/release.yml` lines 68–72, 95–99).
