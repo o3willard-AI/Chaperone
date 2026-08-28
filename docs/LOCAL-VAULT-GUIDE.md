@@ -148,7 +148,7 @@ at startup:
 
 ```sh
 chaperone serve \
-  --enrollment ~/.config/chaperone/enrollment.json \
+  --enrollment ~/.config/chaperone/agents.json \
   --policy     ~/.config/chaperone/policy.toml \
   --store      ~/.config/chaperone/vault.bin \
   --audit-journal ~/.config/chaperone/audit.jsonl \
