@@ -13,7 +13,7 @@ These four documents define the system. They all derive from one canonical inten
 
 **For users:** managing secrets with the built-in encrypted vault? Read the [Local Vault Guide](LOCAL-VAULT-GUIDE.md).
 
-**For implementers:** start with the [Implementation Agent Brief](IMPLEMENTATION_AGENT_BRIEF.md) — it explains how to read these documents and how to build out a phased implementation plan. Building on Linux? Read [BUILDER-NOTES-LINUX.md](BUILDER-NOTES-LINUX.md). Building on Apple hardware? Read [BUILDER-NOTES-MACOS.md](BUILDER-NOTES-MACOS.md). Building on Windows? Read [BUILDER-NOTES-WINDOWS.md](BUILDER-NOTES-WINDOWS.md) (preview quality).
+**For implementers:** start with the [Implementation Agent Brief](IMPLEMENTATION_AGENT_BRIEF.md) — it explains how to read these documents and how to build out a phased implementation plan. Building on Linux? Read [BUILDER-NOTES-LINUX.md](BUILDER-NOTES-LINUX.md). Building on Apple hardware? Read [BUILDER-NOTES-MACOS.md](BUILDER-NOTES-MACOS.md). Building on Windows? Read [BUILDER-NOTES-WINDOWS.md](BUILDER-NOTES-WINDOWS.md) (preview quality). Working on onboarding for first-time, non-contributor users? Read [END-USER-ONBOARDING.md](END-USER-ONBOARDING.md) — prioritized findings from a live install-and-QA pass.
 
 ## Status
 

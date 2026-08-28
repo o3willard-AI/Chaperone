@@ -165,6 +165,7 @@ Full text for each: see DESIGN-DECISIONS.md §D1–§D38.
 | `docs/RELEASE.md` | Artifact verification instructions + public key |
 | `docs/BUILDER-NOTES-MACOS.md` | Apple hardware build/validation brief |
 | `docs/GETTING-STARTED.md` | The friendly on-ramp (wizard-first, CLI equivalents) |
+| `docs/END-USER-ONBOARDING.md` | Prioritized onboarding gaps from a live install/QA pass — the next milestone's brief |
 | `docs/LOCAL-VAULT-GUIDE.md` | User guide for built-in encrypted vault |
 | `docs/INSTALL.md` | Per-OS installation instructions |
 | `docs/release-notes/` | Per-tag release notes |
