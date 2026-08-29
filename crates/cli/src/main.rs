@@ -646,8 +646,16 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
         match flags.values.get("console-socket") {
             #[cfg(unix)]
             Some(path) => socket_gate(path, confirm_timeout)?,
+            // Issue #44: the flag was silently ignored on non-unix builds.
+            // Don't fail — just make sure the operator doesn't believe it
+            // took effect.
             #[cfg(not(unix))]
-            Some(_) => stdio_gate(confirm_timeout),
+            Some(path) => {
+                eprintln!(
+                    "note: --console-socket {path} is ignored on this platform (no Unix-domain sockets); using stdin/stdout for confirmations"
+                );
+                stdio_gate(confirm_timeout)
+            }
             None => stdio_gate(confirm_timeout),
         }
     };

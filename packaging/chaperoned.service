@@ -4,7 +4,7 @@ After=network-online.target
 
 [Service]
 ExecStart=%H/.local/bin/chaperone serve \
-  --enrollment %H/.config/chaperone/enrollment.json \
+  --enrollment %H/.config/chaperone/agents.json \
   --policy %H/.config/chaperone/policy.toml \
   --store %H/.config/chaperone/vault.bin \
   --audit-journal %H/.config/chaperone/audit.jsonl \

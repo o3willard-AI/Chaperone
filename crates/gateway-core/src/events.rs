@@ -9,11 +9,12 @@
 //! simultaneous readers (fan-out): a `chaperone tail` CLI, a menu-bar app,
 //! and any other local observer can all subscribe without contending.
 //!
-//! On non-unix platforms the events feed is a documented no-op: there is no
-//! Unix-domain-socket type in `std::os::unix` (which does not exist on
-//! Windows). `EventHub` is still a valid, referencable type so the rest of
-//! the gateway (config UI, policy-integrity guard) compiles unchanged;
-//! `broadcast` simply drops lines and `listen` binds nothing.
+//! On non-unix platforms the events feed is not implemented (no Unix-domain
+//! sockets): `listen` returns an error so callers fail loudly instead of
+//! silently running without the feed they asked for (issue #43). `EventHub`
+//! is still a valid, referencable type so the rest of the gateway (config
+//! UI, policy-integrity guard) compiles unchanged; `broadcast` simply drops
+//! lines and `listen` never binds.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -124,19 +125,22 @@ impl EventHub {
         Arc::new(Self {})
     }
 
-    /// No-op on platforms without Unix-domain sockets.
+    /// Fails loudly: the events feed is a Unix-domain-socket feature and is
+    /// not implemented on this platform (issue #43). Returning an error —
+    /// not a silent `Ok(())` — keeps the CLI from printing a false
+    /// "event feed listening" success for a feed that can never carry data.
     ///
     /// # Errors
-    /// Never: the feed is intentionally absent here.
-    pub fn listen(self: &Arc<Self>, path: &Path) -> Result<(), String> {
-        let _ = (self, path);
-        Ok(())
+    /// Always: the feed is intentionally absent on this platform.
+    pub fn listen(self: &Arc<Self>, _path: &Path) -> Result<(), String> {
+        Err("events socket not implemented on this platform".to_owned())
     }
 
     /// Convenience constructor that binds immediately (D35 shape).
     ///
     /// # Errors
-    /// Never: the feed is intentionally absent here.
+    /// Always on this platform: the feed is intentionally absent (see
+    /// [`EventHub::listen`]).
     pub fn spawn(path: &Path) -> Result<Arc<EventHub>, String> {
         let hub = Self::new();
         hub.listen(path)?;

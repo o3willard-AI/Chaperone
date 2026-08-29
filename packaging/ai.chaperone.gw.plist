@@ -9,7 +9,7 @@
         <string>%H/.local/bin/chaperone</string>
         <string>serve</string>
         <string>--enrollment</string>
-        <string>%H/.config/chaperone/enrollment.json</string>
+        <string>%H/.config/chaperone/agents.json</string>
         <string>--policy</string>
         <string>%H/.config/chaperone/policy.toml</string>
         <string>--store</string>
