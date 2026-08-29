@@ -58,8 +58,8 @@ fact is itself the highest-priority finding — see P1-1.
 | P0-4 | Post-install is a 7-command manual CLI sequence | Blocking | `install.ps1` prints instructions; nothing launches the wizard that already exists to do this by pointing and clicking |
 | P1-1 | No install/serve integration test exists | High | Every bug found this pass (enrollment.json, missing ui-token step, elevation crash) would have been caught by a script running `install.ps1` + one signed intent in CI |
 | P1-2 | Vault unlock is a plaintext passphrase file for any headless run | High | `keyring`/Windows Credential Manager backend exists, is OFF by default, UNTESTED |
-| P1-3 | `--events-socket` silently lies about success on Windows | High | Prints "event feed listening on ..." and returns `Ok(())` while doing nothing — confirmed by reading `events.rs`, not a guess |
-| P2-1 | `--console-socket` silently ignored on Windows | Follow-up | No message; falls back to stdio_gate with no explanation |
+| P1-3 | `--events-socket` silently lies about success on Windows — **fixed in PR #52** | High | Prints "event feed listening on ..." and returns `Ok(())` while doing nothing — confirmed by reading `events.rs`, not a guess |
+| P2-1 | `--console-socket` silently ignored on Windows — **fixed in PR #52** | Follow-up | No message; falls back to stdio_gate with no explanation |
 | P2-2 | GETTING-STARTED.md's Windows path isn't actually written | Follow-up | Every example uses `~/.config/chaperone` and Unix tools (`nc -U`, nonexistent on Windows) with no Windows-specific callout |
 
 ---
