@@ -48,6 +48,23 @@ jobs:
       - name: Build (locked, release)
         run: cargo build --release --locked -p chaperone-cli -p chaperone-privileged-helper
 
+      # macOS only: ld64 embeds a non-content-derived Mach-O LC_UUID at
+      # link time (macOS QA pass, 2026-08-28/29) -- two builds of
+      # identical source from different checkout paths, with the remap
+      # above already applied, differ in ONLY the 16-byte LC_UUID plus
+      # the 32 bytes of ad-hoc signature covering it. Neither of those
+      # bytes is a source path, so the leak gate can't catch it and it
+      # is invisible to `strings`. This makes the UUID a function of the
+      # binary's own content instead (mirrors -Brepro for MSVC's
+      # TimeDateStamp on Windows) -- see scripts/macho-deterministic-uuid.py
+      # for the full mechanism and why -Wl,-no_uuid is NOT used (dyld
+      # refuses to launch a binary missing LC_UUID entirely).
+      - name: Deterministic Mach-O UUID (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          python3 scripts/macho-deterministic-uuid.py \
+            target/release/chaperone target/release/chaperone-helper
+
       - name: Package (unix)
         if: runner.os != 'Windows'
         shell: bash

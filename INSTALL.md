@@ -59,10 +59,52 @@ launchctl list | grep chaperone                               # verify
 launchctl unload ~/Library/LaunchAgents/ai.chaperone.gw.plist # stop
 ```
 
-Gatekeeper will warn on first download (binaries are unsigned by design) —
-verify by rebuilding from source per [RELEASE.md](RELEASE.md) instead of
-bypassing blindly. Privileged commands: same sudoers approach as
-Linux above.
+Privileged commands: same sudoers approach as Linux above.
+
+### Gatekeeper (unsigned binaries)
+
+`chaperone` and `chaperone-helper` ship with **no Apple Developer ID
+signature or notarization** (deliberate — see [RELEASE.md](RELEASE.md)).
+If the archive you downloaded carries the `com.apple.quarantine` flag
+(normal after downloading via a browser), macOS's Gatekeeper reacts
+differently depending on *how* you run the binary — confirmed by testing
+each path directly (2026-08-28/29 QA pass):
+
+| How you run it | What happens |
+|---|---|
+| Double-click in Finder, or `open ./chaperone` | **Blocked.** Finder/LaunchServices refuses to launch it and shows "chaperone" cannot be opened because Apple cannot check it for malicious software" (or, on older macOS, "...from an unidentified developer"). |
+| `spctl -a -vv --type execute chaperone` | Reports `rejected` — this is Gatekeeper's own policy check, and it's telling the truth: an unsigned binary fails it by design. |
+| **Running it from Terminal** (`./chaperone --version`, or anything install.sh/the launchd plist does) | **Not blocked.** Gatekeeper's quarantine enforcement is specific to Finder/LaunchServices-mediated launches; a shell directly exec'ing a quarantined command-line binary is not intercepted the same way. |
+
+In practice this means **normal `chaperone` usage — running `./install.sh`,
+invoking `chaperone` from Terminal, or letting `launchctl load` start the
+background service — is not blocked at all.** You will only see a
+Gatekeeper prompt if you double-click the binary in Finder out of
+curiosity. If you do hit it, either of these resolves it permanently for
+that file:
+
+**Option A — System Settings (no Terminal needed):**
+1. Try to open it once (you'll see the blocked dialog above; click OK/Done).
+2. **System Settings → Privacy & Security**, scroll to the Security section.
+   You'll see a line naming `chaperone` was blocked, with an
+   **"Open Anyway"** button — click it, then confirm once more in the
+   dialog that follows (may ask for your password/Touch ID).
+
+**Option B — Terminal, before you ever try to open it:**
+```sh
+xattr -dr com.apple.quarantine chaperone chaperone-helper
+```
+Removes the quarantine flag from both binaries recursively (`-r` matters
+if you point it at the extracted archive directory instead of individual
+files). Safe to run unconditionally as part of your own install process —
+it does not touch, weaken, or bypass any signature verification, because
+there is no signature to bypass; it only clears the "this came from the
+internet" flag that triggers the Finder-path prompt above.
+
+This is **not** the same as trusting the binary — it only lets it run.
+Actual trust, per this project's model, comes from verifying it against
+the hash manifest or rebuilding it yourself; see
+[RELEASE.md](RELEASE.md#the-verification-model-no-signing-prove-it-yourself).
 
 ## Windows (preview quality)
 

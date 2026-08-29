@@ -167,6 +167,23 @@ non-developer downloader needs:
   documenting it for people who already trust the project enough to read
   RELEASE.md.
 
+**macOS analogue (issue #51) — closed.** Gatekeeper is macOS's version of
+this same first-moment-of-trust problem, and it had the identical gap:
+`INSTALL.md` used to say only "Gatekeeper will warn... verify by
+rebuilding from source instead of bypassing blindly," which is the same
+developer-audience answer called out above, and doubly unhelpful on
+macOS specifically because rebuilding from source didn't even reproduce
+the published bytes until the `LC_UUID` fix (see the reproducible-build
+finding). `INSTALL.md`'s [macOS section](../INSTALL.md#gatekeeper-unsigned-binaries)
+now documents, verified directly rather than assumed: the exact
+difference in behavior between double-clicking in Finder (blocked),
+`spctl` (reports `rejected`), and running from Terminal (not blocked —
+relevant because that's how `install.sh` and the launchd service actually
+invoke it), plus both a no-Terminal fix (System Settings → Privacy &
+Security → "Open Anyway") and a Terminal one (`xattr -dr
+com.apple.quarantine`), distinct from "rebuild from source." The
+Windows/SmartScreen walkthrough above is still open.
+
 ## P0-4 — Post-install is a 7-command manual CLI sequence
 
 Even after [PR #35](https://github.com/o3willard-AI/Chaperone/pull/35)'s
