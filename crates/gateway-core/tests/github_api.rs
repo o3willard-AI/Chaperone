@@ -143,7 +143,7 @@ async fn build(policy_doc: &str, vault_token: &str) -> Spine {
     );
 
     let mut store =
-        LocalVault::create(&dir.path().join("v.bin"), Zeroizing::new("gh-pass".into())).unwrap();
+        LocalVault::create(&dir.path().join("v.bin"), "passphrase", Zeroizing::new("gh-pass".into())).unwrap();
     store
         .set(
             "prod/github/token",

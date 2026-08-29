@@ -155,6 +155,7 @@ async fn build() -> Spine {
 
     let mut store = LocalVault::create(
         &dir.path().join("v.bin"),
+        "passphrase",
         Zeroizing::new(PASSPHRASE.to_owned()),
     )
     .unwrap();

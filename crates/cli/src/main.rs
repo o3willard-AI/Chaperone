@@ -39,7 +39,7 @@ GATEWAY DAEMON:
                     [--ui-port N] [--no-ui] [--ui-token PATH]
 
 LOCAL VAULT (operator CRUD):
-    chaperone vault-init  --store <FILE> [--sealer passphrase] [--passphrase-stdin]
+    chaperone vault-init  --store <FILE> [--sealer passphrase|keyring] [--passphrase-stdin]
     chaperone vault-set   --store <FILE> --path <P> [--passphrase-stdin]   (secret on stdin)
     chaperone vault-get   --store <FILE> --path <P> [--passphrase-stdin] [--show]
     chaperone vault-list  --store <FILE> [--passphrase-stdin]
@@ -372,7 +372,24 @@ fn read_passphrase(flags: &Flags, confirm: bool) -> Result<Zeroizing<String>, St
 
 fn open_vault(flags: &Flags) -> Result<chaperone_vault::LocalVault, String> {
     let store = flags.require("store")?;
-    let pass = read_passphrase(flags, false)?;
+    // A keyring-sealed vault opens without any passphrase (the DEK lives in
+    // the platform credential store); don't prompt for one. Peek the header
+    // sealer so this works for every vault subcommand.
+    let is_keyring = chaperone_vault::LocalVault::sealer_of(std::path::Path::new(&store))
+        .map(|s| s == "keyring")
+        .unwrap_or(false);
+    if is_keyring
+        && (flags.values.contains_key("passphrase-file") || flags.has("passphrase-stdin"))
+    {
+        eprintln!(
+            "note: {store} is keyring-sealed; the provided passphrase source is NOT used (the vault key lives in the platform credential store)"
+        );
+    }
+    let pass = if is_keyring {
+        zeroize::Zeroizing::new(String::new())
+    } else {
+        read_passphrase(flags, false)?
+    };
     chaperone_vault::LocalVault::open(std::path::Path::new(&store), pass).map_err(|e| e.to_string())
 }
 
@@ -385,14 +402,44 @@ fn cmd_vault_init(flags: &Flags) -> Result<(), String> {
         .unwrap_or_else(|| "passphrase".to_owned());
     match sealer.as_str() {
         "passphrase" => {}
+        // Issue #50: the keyring sealer is wired through when the CLI is
+        // built with the vault's `keyring` feature. The error below fires
+        // in builds without it, so the operator gets a build-level hint
+        // rather than a generic "unknown sealer".
+        #[cfg(feature = "keyring")]
+        "keyring" => {}
+        #[cfg(not(feature = "keyring"))]
+        "keyring" => {
+            return Err(
+                "this build has no keyring support; rebuild the CLI with `cargo build --release --locked --features keyring -p chaperone-cli` (or use --sealer passphrase)".to_owned(),
+            );
+        }
         other => {
             return Err(format!(
-                "unknown --sealer {other:?}; this build supports 'passphrase'"
+                "unknown --sealer {other:?}; this build supports 'passphrase'{}",
+                if cfg!(feature = "keyring") { ", 'keyring'" } else { "" }
             ));
         }
     }
-    let pass = read_passphrase(flags, true)?;
-    chaperone_vault::LocalVault::create(std::path::Path::new(&store), pass)
+    // A keyring-sealed vault has no passphrase at all: reject a provided
+    // one so the operator never believes it is being used.
+    if sealer == "keyring"
+        && (flags.values.contains_key("passphrase-file") || flags.has("passphrase-stdin"))
+    {
+        return Err(
+            "--sealer keyring stores the vault key in the platform credential store; \
+             no --passphrase-file/--passphrase-stdin is used — remove it"
+                .to_owned(),
+        );
+    }
+    // The keyring arm of create() ignores the passphrase; never prompt for
+    // one (a headless run has no tty, and prompting would imply it matters).
+    let pass = if sealer == "keyring" {
+        zeroize::Zeroizing::new(String::new())
+    } else {
+        read_passphrase(flags, true)?
+    };
+    chaperone_vault::LocalVault::create(std::path::Path::new(&store), &sealer, pass)
         .map_err(|e| e.to_string())?;
     println!("created vault at {store} (sealed with: {sealer})");
     Ok(())

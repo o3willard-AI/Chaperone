@@ -32,5 +32,11 @@ time.workspace = true
 
 chaperone-ui = { path = "../ui" }
 
+[features]
+# Forward the vault crate's keyring feature to the CLI binary so
+# `chaperone vault-init --sealer keyring` exists (issue #50). Off by
+# default: it needs a live OS credential service at runtime.
+keyring = ["chaperone-vault/keyring"]
+
 [lints]
 workspace = true

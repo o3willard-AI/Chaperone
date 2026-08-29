@@ -27,6 +27,7 @@ const ENTRY: &str = "prod/stripe/secret_key";
 fn new_store(dir: &Path) -> LocalVault {
     LocalVault::create(
         &dir.join("vault.bin"),
+        "passphrase",
         Zeroizing::new(PASSPHRASE.to_owned()),
     )
     .unwrap()
