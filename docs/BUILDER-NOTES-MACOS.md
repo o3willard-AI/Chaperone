@@ -112,7 +112,7 @@ Open — these are exactly your first tasks:
 
 | Task | Notes |
 |---|---|
-| **Keychain-backed vault sealing** | The `keyring` crate's `apple-native` backend is wired behind the `keyring` feature but OFF by default and UNTESTED on hardware. Enable locally (`--features keyring`), exercise Keychain prompts, report behavior. |
+| **Keychain-backed vault sealing** | The `keyring` crate's `apple-native` backend is wired behind the `keyring` feature but OFF by default. **VERIFIED on hardware (2026-08-29)**: `vault-init --sealer keyring` round-trips with no passphrase prompt and survives restart. Caveat — the Keychain item's default ACL allows silent read by the exact binary (cdhash) and by Apple-signed tools; the cdhash is unstable across rebuilds, so an upgraded binary triggers a fresh approval prompt (see LOCAL-VAULT-GUIDE.md). |
 | **launchd integration** | ARCH-SPEC assigns launchd to the privileged-helper role. We ship the helper binary but elevation mechanics are deployment config. Draft the launchd plist(s) + sudoers/pin allowlist walkthrough for a real Mac. |
 | **Gatekeeper/quarantine validation** | Download the published v0.1.0-alpha.1 asset, document the exact prompts and the verification flow from docs/RELEASE.md on a clean machine. |
 | **Universal2 option** | Evaluate `lipo` of aarch64+x86_64 builds for one fat archive; only if both halves stay reproducible. |
@@ -167,9 +167,10 @@ install/smoke run. Items it surfaced, now addressed or tracked:
   the manual two-clean-builds procedure scriptable for x86_64.
 - Machine provisioning (rustup/Go/Rosetta was missing entirely): formalize a
   setup script if this becomes the standing build host.
-- Still open for the next hardware pass: Keychain-sealed vault validation,
-  launchd guide beyond the installer plist, Gatekeeper walkthrough of a
-  PUBLISHED artifact, Universal2 lipo packaging.
+- Still open for the next hardware pass: launchd guide beyond the installer
+  plist, Gatekeeper walkthrough of a PUBLISHED artifact, Universal2 lipo
+  packaging. (Keychain-sealed vault validation is DONE — verified 2026-08-29;
+  see the caveat above.)
 
 ## 6c. Hardware-pass findings (2026-08-27 QA, v0.1.0-alpha.5 verification)
 
@@ -199,8 +200,11 @@ block v0.1.0-alpha.5; they're future-milestone work, not release gates.
 2. Full workspace tests green on hardware; failures (if any) reported as
    issues with reproduction steps.
 3. Keychain-sealed vault validated end-to-end (create/set/get across daemon
-   restarts) with a written recommendation: promote out of feature flag or
-   document why not.
+   restarts) — DONE 2026-08-29 through the shipped CLI (`vault-init --sealer
+   keyring`, zero prompts, survives restart). Recommendation: keep it behind
+   the feature flag; document the Apple-native ACL caveat (silent read by
+   Apple-signed tools; cdhash instability on rebuild → approval prompt on
+   upgrade) rather than promoting blindly.
 4. launchd deployment guide drafted: plist for the daemon, authorization path
    for the helper, pin-allowlist bootstrap commands.
 5. Gatekeeper/quarantine walkthrough of the published alpha artifact written

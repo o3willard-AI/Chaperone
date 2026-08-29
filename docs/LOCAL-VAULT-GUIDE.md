@@ -198,5 +198,12 @@ messages never contain secret material.
 - Optional stronger sealing: building with `--features keyring` stores the
   data key in the OS credential store (Keychain / Credential Manager /
   kernel keyring) instead of passphrase-wrapping it.
+  - **macOS Keychain** is verified on hardware (2026-08-29): the
+    `vault-init --sealer keyring` round-trip needs no passphrase and survives
+    restart. Two caveats: (1) the Keychain item's default ACL allows silent
+    read by the exact binary (cdhash) *and* by Apple-signed system tools, so
+    any Apple-signed tool on the Mac can read the data key without approval;
+    (2) the cdhash is unstable across rebuilds, so an upgraded binary
+    triggers a fresh approval prompt on first use.
 
 Details and rationale: [DESIGN-DECISIONS.md](DESIGN-DECISIONS.md) D5, D19.
