@@ -164,6 +164,7 @@ async fn build_spine_with_gate(
 
     let mut store = LocalVault::create(
         &dir.path().join("vault.bin"),
+        "passphrase",
         Zeroizing::new(PASSPHRASE.to_owned()),
     )
     .unwrap();

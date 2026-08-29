@@ -148,16 +148,56 @@ impl std::fmt::Debug for LocalVault {
 }
 
 impl LocalVault {
-    /// Creates a fresh empty store. Fails if one already exists at `path`.
-    pub fn create(path: &Path, passphrase: zeroize::Zeroizing<String>) -> Result<Self, VaultError> {
+    /// Creates a fresh empty store sealed with `sealer`. Fails if one
+    /// already exists at `path`.
+    ///
+    /// The default `passphrase` sealer works everywhere; the `keyring`
+    /// sealer (feature `keyring`) backs the DEK with the platform
+    /// credential store so no passphrase is needed to open the store
+    /// (issue #50). See [`crate::sealer`] for the security trade-offs.
+    ///
+    /// # Errors
+    /// A store already exists at `path`, the sealer is unknown to this
+    /// build, or the sealing layer failed (e.g. the OS credential store
+    /// is unreachable).
+    pub fn create(path: &Path, sealer_choice: &str, passphrase: zeroize::Zeroizing<String>) -> Result<Self, VaultError> {
         if path.exists() {
             return Err(VaultError::AlreadyExists(path.display().to_string()));
         }
-        let sealer = PassphraseSealer::new(passphrase);
-        let mut dek = zeroize::Zeroizing::new([0u8; 32]);
-        OsRng.fill_bytes(dek.as_mut());
+        let (sealer_name, header_kdf, sealed, sealed_dek_for_handle): (String, KdfParams, Vec<u8>, Option<zeroize::Zeroizing<[u8; 32]>>) = match sealer_choice {
+            "passphrase" => {
+                let sealer = PassphraseSealer::new(passphrase);
+                let mut dek = zeroize::Zeroizing::new([0u8; 32]);
+                OsRng.fill_bytes(dek.as_mut());
+                let sealed = sealer.seal(&dek).map_err(VaultError::Seal)?;
+                (sealer.name().to_owned(), sealer.params().clone(), sealed, Some(dek))
+            }
+            #[cfg(feature = "keyring")]
+            "keyring" => {
+                let sealer = crate::sealer::KeyringSealer::new("chaperone-vault", "dek");
+                let mut dek = zeroize::Zeroizing::new([0u8; 32]);
+                OsRng.fill_bytes(dek.as_mut());
+                let sealed = sealer.seal(&dek).map_err(VaultError::Seal)?;
+                (sealer.name().to_owned(), KdfParams {
+                    salt_b64: String::new(),
+                    m_cost_kib: 0,
+                    t_cost: 0,
+                    p_cost: 0,
+                }, sealed, Some(dek))
+            }
+            other => {
+                return Err(VaultError::Corrupt(format!(
+                    "unknown sealer {other:?}{}",
+                    if cfg!(feature = "keyring") {
+                        " (this build supports: passphrase, keyring)"
+                    } else {
+                        " (this build supports: passphrase; rebuild with --features keyring for keyring support)"
+                    }
+                )));
+            }
+        };
+        let dek = sealed_dek_for_handle.expect("sealer match arms always produce a DEK");
 
-        let sealed = sealer.seal(&dek).map_err(VaultError::Seal)?;
         let mut body_nonce = [0u8; BODY_NONCE_LEN];
         OsRng.fill_bytes(&mut body_nonce);
         let body_ct = encrypt_body(
@@ -170,8 +210,8 @@ impl LocalVault {
 
         let header = Header {
             version: 1,
-            sealer_name: sealer.name().to_owned(),
-            kdf: sealer.params().clone(),
+            sealer_name: sealer_name.clone(),
+            kdf: header_kdf.clone(),
             sealed_dek_b64: b64(&sealed),
             body_nonce_b64: b64(&body_nonce),
             body_b64: b64(&body_ct),
@@ -179,9 +219,9 @@ impl LocalVault {
         persist(path, &header)?;
         Ok(Self {
             path: path.to_path_buf(),
-            sealer_name: header.sealer_name.clone(),
+            sealer_name,
             sealed_dek: sealed,
-            kdf: header.kdf.clone(),
+            kdf: header_kdf,
             dek,
             body_nonce,
             body_ciphertext: body_ct,
@@ -267,6 +307,22 @@ impl LocalVault {
     #[must_use]
     pub fn sealer_name(&self) -> &str {
         &self.sealer_name
+    }
+
+    /// Reads only the header of the store at `path` and returns its sealer
+    /// name ("passphrase" | "keyring"). Lets callers (e.g. the CLI) know
+    /// whether opening will need a passphrase WITHOUT any secret material.
+    ///
+    /// # Errors
+    /// The file is missing, unreadable, or not a chaperone vault.
+    pub fn sealer_of(path: &Path) -> Result<String, VaultError> {
+        let raw = std::fs::read(path).map_err(VaultError::Io)?;
+        if !raw.starts_with(MAGIC) {
+            return Err(VaultError::Corrupt("not a chaperone vault file".to_owned()));
+        }
+        let header: Header = serde_json::from_slice(&raw[MAGIC.len()..])
+            .map_err(|e| VaultError::Corrupt(format!("header: {e}")))?;
+        Ok(header.sealer_name)
     }
 
     /// Stores (or overwrites) the secret at `path`.

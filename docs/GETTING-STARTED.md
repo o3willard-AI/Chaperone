@@ -27,6 +27,14 @@ validator in this project, not two.
 Everything below assumes `~/.config/chaperone`; any directory works if you
 pass explicit paths.
 
+> **On Windows (PowerShell 5.1):** `~` does **not** expand inside quoted
+> strings or command arguments — it only expands as a bare path token at the
+> start, and never in `--flag ~\...` positions. Use `$HOME` or `"$env:USERPROFILE"`
+> instead: `--store "$env:USERPROFILE\.config\chaperone\vault.bin"` (forward
+> slashes also work: `--store "$env:USERPROFILE/.config/chaperone/vault.bin"`).
+> PowerShell 7+ expands `~` more broadly, but `$env:USERPROFILE` is the
+> form that works everywhere.
+
 ## Step 0 — Install
 
 See [INSTALL.md](../INSTALL.md). Verify:
@@ -186,6 +194,14 @@ The events socket is a raw newline-delimited JSON stream — not HTTP — so
 `curl` won't work on it. `nc -U ~/.config/chaperone/events.sock`,
 `socat` on the unix-socket transport, or `cat ~/.config/chaperone/events.sock`
 each read the live feed (a second read ends the connection).
+
+> **On Windows:** `nc -U`, `socat`, and `cat`-on-a-socket are **Unix-only**
+> tools — none of them speak a Windows named pipe, and the events feed is a
+> Unix-domain-socket feature today. A Windows events/named-pipe transport is
+> still open work (see `docs/BUILDER-NOTES-WINDOWS.md` §4 and HANDOFF.md);
+> since the fail-loud fix, `--events-socket` on Windows returns an error
+> instead of pretending to listen, so a silent no-op is no longer possible.
+> Verify the feed on a Unix host.
 
 And verify the chain any time:
 
