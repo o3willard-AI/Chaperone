@@ -93,6 +93,27 @@ build() {
         cargo build --release --locked \
             -p chaperone-cli -p chaperone-privileged-helper
     fi
+    postprocess_macos_uuid
+}
+
+postprocess_macos_uuid() {
+    # macOS only: ld64 embeds a non-content-derived Mach-O LC_UUID at link
+    # time (confirmed: two builds of identical source from different
+    # checkout paths, with repro-env.sh's remap already applied, differ in
+    # ONLY the 16-byte LC_UUID plus the 32 bytes of ad-hoc signature that
+    # cover it -- nothing else). scripts/macho-deterministic-uuid.py makes
+    # the UUID a function of the binary's own content instead, then
+    # re-signs. See that script's module docstring for the full mechanism
+    # and why order of operations matters (signature must be stripped
+    # before hashing, and reapplied only after the UUID rewrite).
+    case "$(uname -s)" in
+        Darwin)
+            local dir
+            dir="$(bindir)"
+            python3 "$(dirname "$0")/macho-deterministic-uuid.py" \
+                "$dir/chaperone" "$dir/chaperone-helper"
+            ;;
+    esac
 }
 
 hash_binaries() {

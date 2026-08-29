@@ -67,6 +67,10 @@ sha256sum -c SHA256SUMS.txt
 git clone https://github.com/o3willard-AI/Chaperone && cd Chaperone
 . ./scripts/repro-env.sh
 cargo build --release --locked -p chaperone-cli -p chaperone-privileged-helper
+# macOS ONLY: also run the deterministic-UUID post-link step, or your
+# hashes will never match (see "Reproducibility" below for why).
+python3 scripts/macho-deterministic-uuid.py \
+    target/release/chaperone target/release/chaperone-helper
 sha256sum target/release/chaperone target/release/chaperone-helper
 # ...compare against SHA256SUMS.txt / the per-archive .sha256
 ```
@@ -136,3 +140,20 @@ paths in default release builds, but IS embedded absolutely in
 debuginfo-bearing configs — the `/workspace/` remap exists so those builds
 stay byte-identical too. Both remaps are no-ops for bytes when their prefix
 never appears.
+
+**macOS-specific: Mach-O `LC_UUID`.** Even with both remaps applied, two
+macOS builds from different checkout paths still differed — found in the
+2026-08-28/29 QA pass. `cmp` isolated the entire divergence to 48 bytes in a
+multi-megabyte binary: the 16-byte `LC_UUID` load command ld64 embeds at
+link time (not derived from the linked content) plus the 32 bytes of
+ad-hoc code-signature hash that cover it. Neither is a source path, so the
+leak gate can't see it and `strings` won't show it. `scripts/build()` (in
+`repro-check.sh`) now runs `scripts/macho-deterministic-uuid.py` on macOS
+after every build: it strips the existing signature (its bytes otherwise
+still carry the old random UUID into any hash computed before stripping),
+computes a SHA-256 of the binary with the UUID field zeroed, writes the
+first 16 bytes of that digest back as the UUID, and re-signs ad-hoc — see
+that script's docstring for the full mechanism, verified order of
+operations, and why `-Wl,-no_uuid` is not used (dyld refuses to launch a
+binary missing `LC_UUID` entirely). `release.yml` runs the same step before
+packaging, so published macOS binaries and a from-source rebuild agree.
