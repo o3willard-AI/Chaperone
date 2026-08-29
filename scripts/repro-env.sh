@@ -188,46 +188,66 @@ if [ -d "$CARGO_HOME/registry/src" ]; then
     fi
 fi
 
-# KNOWN UNFIXED GAP (Windows, confirmed 2026-08-28 via scripts/repro-check.sh
-# leak_gate on real hardware): `aws-lc-sys`'s C sources are compiled by
-# cl.exe (invoked by the `cc` crate), NOT by rustc. `--remap-path-prefix` is
-# a rustc flag -- it has NO EFFECT on what cl.exe embeds via the C
-# preprocessor's `__FILE__` macro (used throughout aws-lc's assert/debug
-# messages), regardless of slash form. This is a structurally different
-# problem from bugs 1-3 above, not a variant of them:
-#   - Confirmed leaking in the LONG backslash form (e.g.
-#     C:\Users\<you>\.cargo\registry\...\aws-lc-sys-0.44.0\aws-lc\crypto\
-#     fipsmodule\../internal.h) -- the exact form bug-1's fix already
-#     covers for rustc-embedded paths, proving this is NOT a slash-form or
-#     escaping issue; it is cl.exe never seeing our flag at all.
-#   - ALSO confirmed leaking in the Windows 8.3 SHORT name (e.g.
-#     C:\Users\STEPHE~1\CARGO~1\...) for other translation units in the
-#     same crate, when CARGO_HOME or the checkout path contains a space --
-#     the `cc` crate or cl.exe itself appears to fall back to the
-#     space-free short form for some (not all) of its own path
-#     construction. The short form is machine-specific and non-
-#     deterministic (depends on account name; disabled outright by
-#     `fsutil 8dot3name` on some systems), so remapping the exact string
-#     found on one machine would not generalize to any other builder.
-# No fix attempted here -- would need cl.exe's own path-remap mechanism
-# (MSVC's `/pathmap`, unverified whether it covers `__FILE__` expansion,
-# threaded through the `cc` crate's CFLAGS_x86_64_pc_windows_msvc override)
-# or accepting this as a documented boundary of Windows reproducibility.
-# Building from a space-free CARGO_HOME/checkout path removes the
-# short-name variant specifically but NOT the long-form leak above.
+# 4. (Issue #47, fixed 2026-08-29, verified on hardware.) `aws-lc-sys`'s C
+#    sources are compiled by cl.exe (invoked by the `cc` crate), NOT by
+#    rustc -- `--remap-path-prefix` is a rustc flag, so bugs 1-3's fix has
+#    zero effect on what cl.exe embeds via the C preprocessor's `__FILE__`
+#    macro. Confirmed leaking in BOTH the long backslash form
+#    (C:\Users\<you>\.cargo\registry\...\aws-lc-sys-0.44.0\...\internal.h)
+#    AND, separately, the Windows 8.3 short form (C:\Users\STEPHE~1\...)
+#    for other translation units in the same crate.
+#
+#    THE FIX: cl.exe's `/pathmap:FROM=TO` covers `__FILE__` expansion, not
+#    just debug info -- verified directly: compiling a trivial __FILE__
+#    probe with `/experimental:deterministic /pathmap:X=Y` (the two flags
+#    are required together; `/pathmap` alone is silently ignored with
+#    warning D9007) produces an object file with zero occurrences of the
+#    real path and the `/Y` replacement in its place. Getting this INTO
+#    cl.exe's actual invocation needs two things:
+#      a. `CFLAGS_x86_64_pc_windows_msvc` (the `cc` crate's documented
+#         per-target override) carrying `/experimental:deterministic`
+#         plus one `/pathmap` per prefix-form (long backslash AND 8.3
+#         short, since both are independently observed).
+#      b. `CC_SHELL_ESCAPED_FLAGS=1`. The `cc` crate (confirmed by reading
+#         its actual source, not guessing: `cc-1.4.4/src/lib.rs`,
+#         `Build::shell_escaped_flags` / `envflags()`) parses *FLAGS
+#         environment variables with a NAIVE `split_ascii_whitespace()` by
+#         default -- the exact same class of bug as bugs 1 and (in
+#         install.ps1) the Start-Process/ScheduledTaskAction argument
+#         joining, all found this same session. A space inside a
+#         `/pathmap:FROM=TO` value (from a Windows account whose display
+#         name contains one) silently corrupts the flag into two garbage
+#         tokens and cl.exe fails outright:
+#           cl : Command line error D8053 : argument to /pathmap must be
+#           of the form STR1=STR2 where STR1 is not empty
+#         `CC_SHELL_ESCAPED_FLAGS=1` switches `cc` to `shlex`-based
+#         parsing (quote-aware, like `make`/`cmake`), which the doc
+#         comment at the top of `cc`'s own source confirms is exactly the
+#         intended escape hatch for this: `CFLAGS='a "b c"'` -> 2 args.
+#         Without it, quoting the path in CFLAGS does nothing -- the quote
+#         characters land in argv literally instead of being stripped.
+#
+#    The 8.3 short form is inherently machine-specific (depends on account
+#    name; can be disabled via `fsutil 8dot3name`), so it's computed fresh
+#    per machine via `cygpath -d`, not hardcoded.
 if [ "$_IS_WINDOWS" = true ]; then
-    echo "[repro-env] WARNING: aws-lc-sys's C sources (compiled by cl.exe, not rustc)" >&2
-    echo "[repro-env] WARNING: embed raw __FILE__ paths that --remap-path-prefix cannot" >&2
-    echo "[repro-env] WARNING: touch. Byte-for-byte reproducibility against a different" >&2
-    echo "[repro-env] WARNING: builder's CARGO_HOME is NOT guaranteed until this is" >&2
-    echo "[repro-env] WARNING: addressed separately (see comment above this warning)." >&2
-    case "$CARGO_HOME$_WS_ROOT" in
-        *' '*)
-            echo "[repro-env] WARNING: additionally, CARGO_HOME or the checkout path" >&2
-            echo "[repro-env] WARNING: contains a space, which triggers a SECOND, 8.3" >&2
-            echo "[repro-env] WARNING: short-name variant of the same class of leak." >&2
-            ;;
-    esac
+    _CARGO_PREFIX_SHORT="$(cygpath -d "$CARGO_HOME")"
+    _WS_PREFIX_SHORT="$(cygpath -d "$_WS_ROOT")"
+
+    _CFLAGS_PATHMAP="/experimental:deterministic"
+    _CFLAGS_PATHMAP="$_CFLAGS_PATHMAP /pathmap:\"${_CARGO_PREFIX_BS%\\}\"=\"/cargo\""
+    _CFLAGS_PATHMAP="$_CFLAGS_PATHMAP /pathmap:\"${_CARGO_PREFIX_SHORT}\"=\"/cargo\""
+    _CFLAGS_PATHMAP="$_CFLAGS_PATHMAP /pathmap:\"${_WS_PREFIX_BS%\\}\"=\"/workspace\""
+    _CFLAGS_PATHMAP="$_CFLAGS_PATHMAP /pathmap:\"${_WS_PREFIX_SHORT}\"=\"/workspace\""
+
+    if [ -n "${CFLAGS_x86_64_pc_windows_msvc:-}" ]; then
+        export CFLAGS_x86_64_pc_windows_msvc="${CFLAGS_x86_64_pc_windows_msvc} ${_CFLAGS_PATHMAP}"
+    else
+        export CFLAGS_x86_64_pc_windows_msvc="$_CFLAGS_PATHMAP"
+    fi
+    export CC_SHELL_ESCAPED_FLAGS=1
+
+    unset _CARGO_PREFIX_SHORT _WS_PREFIX_SHORT _CFLAGS_PATHMAP
 fi
 
 unset _CARGO_PREFIX_BS _WS_PREFIX_BS _CARGO_PREFIX_MIXED _WS_PREFIX_MIXED _WS_ROOT _reg_dirs
