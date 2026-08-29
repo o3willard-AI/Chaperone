@@ -66,19 +66,102 @@ Linux above.
 
 ## Windows (preview quality)
 
+### Before you run anything: what the warnings mean
+
+If you downloaded the release archive rather than building from source,
+Windows will warn you twice before you can run it. Both warnings are
+**expected** — they're not a sign anything is wrong, and clicking through
+them without checking anything isn't the recommended path either. Here's
+what each one says and the one command that actually verifies the file,
+no Rust toolchain required.
+
+**1. Your browser, right after the download finishes.** Edge shows:
+
+> **chaperone-vX.Y.Z-x86_64-pc-windows-msvc.zip isn't commonly downloaded.**
+> Make sure you trust [site] before you open it.
+> `Keep` · `Delete` · `...`
+
+Chrome's wording is similar ("This file isn't commonly downloaded and
+could be dangerous"). This is Microsoft SmartScreen / Google Safe Browsing
+judging the file by download *popularity*, not by inspecting it — a
+brand-new open-source project's first releases will always trigger this,
+signed or not.
+
+**2. Windows Defender SmartScreen, the first time `chaperone.exe` or
+`chaperone-helper.exe` actually runs** (via `install.ps1`, the Scheduled
+Task, or you running one directly):
+
+> **Windows protected your PC**
+> Microsoft Defender SmartScreen prevented an unrecognized app from
+> starting. Running this app might put your PC at risk.
+>
+> App: chaperone.exe
+> Publisher: Unknown publisher
+>
+> `Don't run` (default) · `More info` → reveals `Run anyway`
+
+This is the *exact* prompt Chaperone triggers, because it's the exact
+prompt every unsigned Windows binary triggers — see [§3 below](#why-unsigned-permanently)
+for why that's permanent, not a bug to fix.
+
+### Verify before you click through — no Rust toolchain needed
+
+Every release publishes `SHA256SUMS.txt` next to the archives. This
+confirms your specific download matches what the project's CI actually
+built, using only PowerShell's built-in `Get-FileHash` — copy-paste this
+after downloading both the archive and `SHA256SUMS.txt` into the same
+folder:
+
+```powershell
+$file = "chaperone-vX.Y.Z-x86_64-pc-windows-msvc.zip"   # match your actual filename
+$expected = (Select-String -Path SHA256SUMS.txt -Pattern ([regex]::Escape($file))).Line -replace '\s.*$',''
+$actual = (Get-FileHash $file -Algorithm SHA256).Hash
+if ($actual -ieq $expected) { "MATCH -- verified, safe to proceed" } else { "MISMATCH -- do not run this file" }
+```
+
+If it says `MATCH`, the bytes you have are exactly the bytes CI produced
+from this repository's source — the SmartScreen prompts above are about
+*popularity*, not integrity, and you've just checked integrity yourself.
+If it says `MISMATCH`, stop: re-download, and if it mismatches again,
+report it (`SECURITY.md`) rather than running it anyway.
+
+Want the strongest possible check instead of trusting CI? Rebuild from
+source and compare — see [RELEASE.md](docs/RELEASE.md). That needs a Rust
+toolchain; the hash check above doesn't, which is why it's the path
+documented here first.
+
+<a name="why-unsigned-permanently"></a>
+### Why unsigned, permanently
+
+Code-signing a Windows binary means buying and holding a Microsoft
+Authenticode certificate, which means an entity — a company, a legal
+person — owns it. Chaperone is open source maintained by no company; there
+is nobody to hold that certificate, and there won't be for this
+repository (a downstream corporate fork could add one, but that's a
+different trust story than this one). "Unsigned" here means "verifiable
+by reconstruction instead of by a signature you have to trust" — see
+[RELEASE.md](docs/RELEASE.md) for the full reasoning.
+
+### Install
+
 ```powershell
 Expand-Archive chaperone-vX.Y.Z-x86_64-pc-windows-msvc.zip
 cd chaperone-vX.Y.Z-x86_64-pc-windows-msvc
 powershell -ExecutionPolicy Bypass -File install.ps1
-chaperone ui-token rotate --token "~/.config/chaperone/ui.token"   # D41: config UI needs this
-Start-ScheduledTask -TaskName ChaperoneGateway     # start
-Get-ScheduledTask ChaperoneGateway                 # verify
-schtasks /End /TN ChaperoneGateway                 # stop
 ```
 
-SmartScreen may prompt (binaries are unsigned by design); verify the hash manifest or rebuild from source. The daemon runs as a logon
-Scheduled Task (no service account without codesigning — preview tradeoff).
-Privilege elevation on Windows is not yet packaged.
+On a fresh install this generates the D41 config UI token itself, starts
+the daemon in setup-only mode, and opens the setup wizard in your browser
+— no manual steps needed to reach it. It also registers the gateway to
+start at logon: a Scheduled Task if it can (needs one brief, scoped
+elevation prompt — nothing else runs elevated, and declining it is fine),
+otherwise a Startup-folder shortcut that needs no elevation at all. The
+installer's own final output tells you exactly which one it used and how
+to start/stop/uninstall it.
+
+Skip the automatic wizard with `$env:CHAPERONE_NO_WIZARD = "1"` before
+running the installer if you'd rather walk through
+[GETTING-STARTED.md](docs/GETTING-STARTED.md)'s manual CLI path.
 
 ## Vault passphrase for services
 

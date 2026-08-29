@@ -54,7 +54,7 @@ fact is itself the highest-priority finding — see P1-1.
 |---|---|---|---|
 | P0-1 | No self-verification path | Blocking | A first-time user has no way to confirm "it's actually working" short of writing a signed-intent client by hand (which is what this QA pass had to do) |
 | P0-2 | Scheduled Task requires elevation the installer doesn't ask for | Blocking | The only persistence mechanism silently doesn't work for the common case (personal machine, Administrators-group account, non-elevated shell) |
-| P0-3 | SmartScreen walkthrough still doesn't exist | Blocking | First thing a real downloader sees is "Windows protected your PC"; current plan (BUILDER-NOTES-WINDOWS.md §4) is a doc a developer would write for developers |
+| P0-3 | SmartScreen walkthrough still doesn't exist — **fixed, issue #39** | Blocking | First thing a real downloader sees is "Windows protected your PC"; current plan (BUILDER-NOTES-WINDOWS.md §4) is a doc a developer would write for developers |
 | P0-4 | Post-install is a 7-command manual CLI sequence | Blocking | `install.ps1` prints instructions; nothing launches the wizard that already exists to do this by pointing and clicking |
 | P1-1 | No install/serve integration test exists | High | Every bug found this pass (enrollment.json, missing ui-token step, elevation crash) would have been caught by a script running `install.ps1` + one signed intent in CI |
 | P1-2 | Vault unlock is a plaintext passphrase file for any headless run | High | `keyring`/Windows Credential Manager backend exists, is OFF by default, UNTESTED |
@@ -105,7 +105,16 @@ Both together close the loop the wizard's "Setup complete" screen
 currently can't: right now the wizard can tell you the *files* exist, not
 that the *daemon* will actually broker anything for them.
 
-## P0-2 — Scheduled Task requires elevation the installer doesn't ask for
+## P0-2 — Scheduled Task requires elevation the installer doesn't ask for [FIXED — issue #38, PR #59]
+
+**Fixed:** `install.ps1` now tries the direct (non-elevated) registration
+first, offers one scoped elevation prompt with clear consent text if that
+fails (a short-lived hidden helper process that does nothing but the
+`Register-ScheduledTask` call — the daemon and wizard never run elevated),
+and falls back to a Startup-folder shortcut (no elevation at all) if
+elevation is declined or unavailable. Verified on hardware in both
+outcomes. `uninstall.ps1` updated to match (deleting hit the identical UAC
+wall). Original finding preserved below for context.
 
 **What happened:** `Register-ScheduledTask` (and legacy `schtasks.exe`)
 return Access Denied when the invoking shell isn't elevated — including
@@ -140,7 +149,16 @@ Whichever is chosen, update the "Idempotent. Per-user only." claim at the
 top of `install.ps1` — it currently reads as a promise that no elevation
 is ever needed, which this pass proved false.
 
-## P0-3 — SmartScreen walkthrough still doesn't exist
+## P0-3 — SmartScreen walkthrough still doesn't exist [FIXED — issue #39]
+
+**Fixed:** [INSTALL.md](../INSTALL.md)'s Windows section now opens with the
+exact browser and SmartScreen prompt text, a hash-only `Get-FileHash`
+verification path requiring no Rust toolchain (tested against a real
+multi-platform `SHA256SUMS.txt` shape — both the match and mismatch cases
+before trusting it), and plain-language reasoning for why unsigned is
+permanent — positioned as the primary first-time path, ahead of the
+rebuild-from-source instructions. Original finding preserved below for
+context.
 
 `BUILDER-NOTES-WINDOWS.md` §4 already lists this as an open item
 ("Download the published artifact... document the exact SmartScreen
@@ -167,7 +185,14 @@ non-developer downloader needs:
   documenting it for people who already trust the project enough to read
   RELEASE.md.
 
-## P0-4 — Post-install is a 7-command manual CLI sequence
+## P0-4 — Post-install is a 7-command manual CLI sequence [FIXED — issue #40, PR #59]
+
+**Fixed:** `install.ps1` now mirrors `install.sh` (from PR #56's Unix
+half): generates the D41 ui-token itself, starts `serve` in setup-only
+mode, and opens the wizard URL in the default browser — verified on
+hardware, including the token → `303` redirect and cookie set exactly per
+D41. Skips cleanly with `CHAPERONE_NO_WIZARD=1` or when broker artifacts
+already exist. Original finding preserved below for context.
 
 Even after [PR #35](https://github.com/o3willard-AI/Chaperone/pull/35)'s
 fix, `install.ps1` finishes by printing text: set a passphrase file,
@@ -300,11 +325,12 @@ close this.
    verified without writing code (P0-1).
 2. Installer either self-elevates with clear consent or uses a
    no-elevation persistence mechanism; `install.ps1`'s "no elevation
-   needed" claim is true or removed (P0-2).
-3. SmartScreen walkthrough exists with actual prompt text/screenshots and
+   needed" claim is true or removed (P0-2). **Done — issue #38, PR #59.**
+3. SmartScreen walkthrough exists with actual prompt text and
    a hash-only (no-toolchain-required) verification path (P0-3).
+   **Done — issue #39.**
 4. Running the installer gets a first-time user to the setup wizard
-   without them typing CLI commands first (P0-4).
+   without them typing CLI commands first (P0-4). **Done — issue #40, PR #59.**
 5. An install → serve → one signed intent smoke test runs in CI on every
    platform (P1-1) — this one item would have caught three of the four
    bugs this pass found, before a human ever saw them.
