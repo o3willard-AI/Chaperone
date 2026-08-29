@@ -57,6 +57,11 @@ AUDIT CHAIN:
                            --target-uri <URI> --mechanism <M>
                            [--max-response-bytes N] [--session-ttl-s S]
 
+HEALTH CHECK (diagnostic only; exit 1 if anything fails):
+    chaperone doctor --policy <TOML> --enrollment <FILE> --store <VAULT>
+                     --audit-key <SEEDFILE> --audit-journal <FILE>
+                     [--socket <PATH>] [--passphrase-file P|--passphrase-stdin]
+
 Enrollment binds an agent_id to an Ed25519 public key (base64url of 32
 bytes) that the agent's key store publishes out-of-band. Revocation is
 effective immediately. Rotation requires revoking first (or --force).
@@ -448,6 +453,205 @@ fn cmd_vault_del(flags: &Flags) -> Result<(), String> {
         false => println!("{entry} was not present"),
     }
     Ok(())
+}
+
+fn cmd_doctor(flags: &Flags) -> Result<(), String> {
+    // Doctor answers "is my install healthy?" with per-check, actionable
+    // output. STRICTLY diagnostic: it never mutates state, never resolves a
+    // credential, never signs anything, and holds no passphrase longer than
+    // one unlock check (zeroized by LocalVault's own buffers).
+    let mut failures: Vec<String> = Vec::new();
+    let check = |name: &str, result: Result<String, String>, failures: &mut Vec<String>| {
+        match result {
+            Ok(detail) => println!("  ok    {name}: {detail}"),
+            Err(actionable) => {
+                println!("  FAIL  {name}: {actionable}");
+                failures.push(name.to_owned());
+            }
+        }
+    };
+
+    // 1. Binary/version (always passes if you got this far; proves the
+    //    binary runs and reports its protocol).
+    check(
+        "binary version",
+        Ok(format!(
+            "chaperone {} (protocol {})",
+            env!("CARGO_PKG_VERSION"),
+            chaperone_protocol::PROTOCOL_VERSION
+        )),
+        &mut failures,
+    );
+
+    // 2. Policy file parses (same parser the gateway loads at startup).
+    let policy_path = flags.values.get("policy").cloned().unwrap_or_default();
+    let policy_result: Result<String, String> = if policy_path.is_empty() {
+        Err("pass --policy <TOML> (the same file serve uses)".to_owned())
+    } else {
+        (|| -> Result<String, String> {
+            let doc = std::fs::read_to_string(&policy_path).map_err(|e| {
+                format!(
+                    "cannot read {policy_path}: {e}; run `chaperone serve` once to create it via the setup wizard"
+                )
+            })?;
+            let rules =
+                chaperone_policy::Policy::from_toml(&doc).map_err(|e| e.to_string())?;
+            Ok(format!(
+                "{policy_path} ({} rule(s); default-deny when 0)",
+                rules.len()
+            ))
+        })()
+    };
+    check("policy parses", policy_result, &mut failures);
+
+    // 3. Enrollment store readable (same loader serve uses).
+    let enrollment_path = flags
+        .values
+        .get("enrollment")
+        .cloned()
+        .unwrap_or_default();
+    check(
+        "enrollment store",
+        if enrollment_path.is_empty() {
+            Err("pass --enrollment <FILE> (agents.json)".to_owned())
+            as Result<String, String>
+        } else if !std::path::Path::new(&enrollment_path).exists() {
+            // EnrollmentStore::load treats a missing file as an empty store
+            // (first-run convenience); for a health check that is a misspelled
+            // path, not a healthy empty store.
+            Err(format!(
+                "{enrollment_path} does not exist; enroll with `chaperone enroll --store {enrollment_path} --agent-id <ID> --public-key <B64URL>`"
+            ))
+        } else {
+            match chaperone_identity::EnrollmentStore::load(std::path::Path::new(
+                &enrollment_path,
+            )) {
+                Err(e) => Err(format!(
+                    "cannot load {enrollment_path}: {e}; create it with `chaperone enroll --store {enrollment_path} --agent-id <ID> --public-key <B64URL>`"
+                )),
+                Ok(store) => {
+                    let total = store.list().len();
+                    let live = store.list().iter().filter(|r| r.revoked_at.is_none()).count();
+                    Ok(format!(
+                        "{enrollment_path} ({live} live / {total} enrolled)"
+                    ))
+                }
+            }
+        },
+        &mut failures,
+    );
+
+    // 4. Vault unlocks with the configured passphrase source (open only;
+    //    nothing is read, written, or resolved).
+    let store_path = flags.values.get("store").cloned().unwrap_or_default();
+    let vault_result: Result<String, String> = if store_path.is_empty() {
+        Err("pass --store <VAULT> (vault.bin)".to_owned())
+    } else if !std::path::Path::new(&store_path).exists() {
+        Err(format!(
+            "{store_path} does not exist; run `chaperone serve` once (setup wizard) or `chaperone vault-init --store {store_path}`"
+        ))
+    } else {
+        (|| -> Result<String, String> {
+            let pass = read_passphrase(flags, false).map_err(|e| {
+                format!("no passphrase available: {e}; pass --passphrase-file or pipe --passphrase-stdin")
+            })?;
+            match chaperone_vault::LocalVault::open(std::path::Path::new(&store_path), pass) {
+                Err(e) => Err(format!(
+                    "unlock failed: {e} (wrong passphrase or corrupt store; the passphrase has no recovery)"
+                )),
+                Ok(vault) => {
+                    let entries = vault.list().map_err(|e| e.to_string())?.len();
+                    Ok(format!("{store_path} ({entries} entr(y|ies))"))
+                }
+            }
+        })()
+    };
+    check("vault unlocks", vault_result, &mut failures);
+
+    // 5. Audit key loads and the chain tail verifies (exact serve +
+    //    audit-verify machinery; empty journals pass as "no records yet").
+    let key_path = flags.values.get("audit-key").cloned().unwrap_or_default();
+    let journal_path = flags
+        .values
+        .get("audit-journal")
+        .cloned()
+        .unwrap_or_default();
+    let audit_result: Result<String, String> = if key_path.is_empty() || journal_path.is_empty()
+    {
+        Err("pass --audit-key <SEEDFILE> and --audit-journal <FILE>".to_owned())
+    } else if !std::path::Path::new(&key_path).exists() {
+        Err(format!(
+            "{key_path} does not exist; generate with `chaperone audit-keygen --out {key_path}`"
+        ))
+    } else {
+        (|| -> Result<String, String> {
+            let seed_text = std::fs::read_to_string(&key_path)
+                .map_err(|e| format!("cannot read {key_path}: {e}"))?;
+            let key = load_audit_seed_text(&seed_text)?;
+            let vk = key.verifying_key();
+            if !std::path::Path::new(&journal_path).exists() {
+                // Fresh install: serve creates the journal on first start.
+                return Ok("no journal yet (created on first `serve`)".to_owned());
+            }
+            match chaperone_audit::verify_file(std::path::Path::new(&journal_path), &vk) {
+                Err(e) => Err(format!("journal unreadable: {e}")),
+                Ok(report) => match (&report.tail, &report.error) {
+                    (Some(tail), None) => Ok(format!(
+                        "{} records verified; head seq={} hash={}",
+                        report.records_ok, tail.seq, tail.hash_hex
+                    )),
+                    (_, Some(brk)) => Err(format!(
+                        "TAMPERED at line {}: {} — investigate before trusting this journal",
+                        brk.line + 1,
+                        brk.reason
+                    )),
+                    (None, None) => {
+                        Ok("no records yet (chain will start on first decision)".to_owned())
+                    }
+                },
+            }
+        })()
+    };
+    check("audit chain tail", audit_result, &mut failures);
+
+    // 6. Transport endpoint reachable (connect/disconnect only — NO intent
+    //    is sent, so this cannot touch the signing or policy trust path).
+    //    Skipped when no --socket is given so doctor also works against a
+    //    not-yet-running gateway for the other checks.
+    if let Some(path) = flags.values.get("socket") {
+        #[cfg(unix)]
+        {
+            let result: Result<String, String> = if !std::path::Path::new(path).exists() {
+                Err(format!(
+                    "{path} does not exist; is `chaperone serve --socket {path}` running?"
+                ))
+            } else {
+                use std::os::unix::net::UnixStream;
+                UnixStream::connect(std::path::Path::new(path))
+                    .map(|s| drop(s))
+                    .map(|_| format!("{path} accepting connections"))
+                    .map_err(|e| {
+                        format!("connect failed: {e}; is serve running with --socket {path}?")
+                    })
+            };
+            check("transport endpoint", result, &mut failures);
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+        }
+    }
+
+    println!();
+    if failures.is_empty() {
+        println!("doctor: all checks passed");
+        Ok(())
+    } else {
+        Err(format!(
+            "doctor: {} check(s) failed — fix the FAIL lines above and re-run",
+            failures.len()
+        ))
+    }
 }
 
 fn cmd_ui_token(args: &[String]) -> Result<(), String> {
@@ -907,6 +1111,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "console" => cmd_console(&flags),
         "audit-verify" => cmd_audit_verify(&flags),
         "audit-export" => cmd_audit_export(&flags),
+        "doctor" => cmd_doctor(&flags),
         "vault-init" => cmd_vault_init(&flags),
         "vault-set" => cmd_vault_set(&flags),
         "vault-get" => cmd_vault_get(&flags),
