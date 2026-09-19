@@ -129,6 +129,13 @@ impl Attestor {
         }
     }
 
+    /// Resolves a live agent's sponsor id (RAE L0) for audit attribution;
+    /// unknown and revoked agents resolve to `None`.
+    #[must_use]
+    pub fn sponsor_id(&self, agent_id: &str) -> Option<String> {
+        self.enrollment.sponsor_id_of(agent_id)
+    }
+
     /// Verifies one inbound JSON-object message per the §4 sequence.
     ///
     /// `now` comes from the caller so tests are deterministic and a future

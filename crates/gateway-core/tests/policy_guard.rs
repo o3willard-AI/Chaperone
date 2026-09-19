@@ -11,6 +11,9 @@
 //! - The permission gate refuses group/other-writable policy files.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+// RAE L0: named human sponsor for test enrollments.
+const SPONSOR_ID: &str = "human@example.org";
+const SPONSOR_NAME: &str = "Pat Human";
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -63,6 +66,8 @@ fn build(doc: &str) -> Spine {
         .enroll(
             "agent:p",
             &chaperone_protocol::encode_signature(&signer.verifying_key().to_bytes()),
+            SPONSOR_ID,
+            SPONSOR_NAME,
             &rfc(),
             false,
         )

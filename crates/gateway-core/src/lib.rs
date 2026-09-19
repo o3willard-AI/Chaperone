@@ -283,6 +283,7 @@ impl Gateway {
         let load_event = AuditEvent {
             record_kind: chaperone_audit::RecordKind::PolicyLoad,
             agent_id: "",
+            sponsor_id: String::new(),
             msg_id: "",
             mechanism: "policy",
             target_uri: "",
@@ -518,6 +519,7 @@ impl Gateway {
                 record_kind: chaperone_audit::RecordKind::IntentDecision,
                 ruleset_hash: self.ruleset_hash.clone(),
                 agent_id: &agent_id,
+                sponsor_id: self.attestor.sponsor_id(&agent_id).unwrap_or_default(),
                 msg_id: message.get("msg_id").and_then(Value::as_str).unwrap_or(""),
                 mechanism: "session.close",
                 target_uri: "",
@@ -586,6 +588,7 @@ impl Gateway {
                     record_kind: chaperone_audit::RecordKind::IntentDecision,
                     ruleset_hash: self.ruleset_hash.clone(),
                     agent_id: &agent_id,
+                    sponsor_id: self.attestor.sponsor_id(&agent_id).unwrap_or_default(),
                     msg_id: message.get("msg_id").and_then(Value::as_str).unwrap_or(""),
                     mechanism: "session.command",
                     target_uri: "",
@@ -991,13 +994,17 @@ impl Gateway {
 
     /// Records an identity-stage rejection as evidence.
     async fn audit_identity_failure(&self, message: &Value, code: &chaperone_protocol::ErrorCode) {
+        let claimed_agent = message
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .unwrap_or("<unnamed>");
         let event = AuditEvent {
             record_kind: chaperone_audit::RecordKind::IntentDecision,
             ruleset_hash: self.ruleset_hash.clone(),
-            agent_id: message
-                .get("agent_id")
-                .and_then(Value::as_str)
-                .unwrap_or("<unnamed>"),
+            agent_id: claimed_agent,
+            // Claimed, not verified: an unknown/forged id has no enrolled
+            // sponsor, so attribution stays empty rather than invented.
+            sponsor_id: self.attestor.sponsor_id(claimed_agent).unwrap_or_default(),
             msg_id: message.get("msg_id").and_then(Value::as_str).unwrap_or(""),
             mechanism: message
                 .get("mechanism")
@@ -1038,6 +1045,11 @@ impl Gateway {
             record_kind: chaperone_audit::RecordKind::IntentDecision,
             ruleset_hash: self.ruleset_hash.clone(),
             agent_id: &envelope.agent_id,
+            // RAE L0: attribution terminates at the enrolled sponsor.
+            sponsor_id: self
+                .attestor
+                .sponsor_id(&envelope.agent_id)
+                .unwrap_or_default(),
             msg_id: &envelope.msg_id,
             mechanism: &envelope.mechanism,
             target_uri: &envelope.target.uri,

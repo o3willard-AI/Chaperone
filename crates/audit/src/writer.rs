@@ -224,6 +224,7 @@ impl AuditWriter {
                 "ts": now_rfc3339,
                 "prev_hash": hex(&st.prev_hash),
                 "agent_id": event.agent_id,
+                "sponsor_id": event.sponsor_id,
                 "msg_id": event.msg_id,
                 "mechanism": event.mechanism,
                 "target_uri": event.target_uri,

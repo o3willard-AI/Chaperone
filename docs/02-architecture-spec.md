@@ -49,7 +49,7 @@ Owns the local channel (§3 of the protocol): UDS by default, named pipe on Wind
 
 Verifies every inbound frame per protocol §4: resolves `agent_id` to an enrolled public key, checks freshness and the replay cache, and verifies the Ed25519 signature over the JCS-canonical form **before the mechanism body is parsed**. Public keys live in an enrollment store; the corresponding private keys live in the agents' platform key stores and are never seen here.
 
-> **Enrollment.** Enrollment — binding an `agent_id` to a public key — is an operator action performed through the console, out of scope for this spec. The architecture requires only that the identity layer treats the enrollment store as read-only at request time and that revocation is effective immediately (a revoked key fails at step 1 of verification).
+> **Enrollment.** Enrollment — binding an `agent_id` to a public key — is an operator action performed through the console, out of scope for this spec. The architecture requires only that the identity layer treats the enrollment store as read-only at request time and that revocation is effective immediately (a revoked key fails at step 1 of verification). Enrollment also names a human **sponsor** (RAE L0, self-declared); every audit record carries the acting agent's `sponsor_id` so attribution terminates at a person, never at the agent alone.
 
 ### 2.3 Policy engine
 

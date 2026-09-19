@@ -18,6 +18,9 @@ use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
 const AGENT: &str = "agent:sess-1";
+// RAE L0: named human sponsor for test enrollments.
+const SPONSOR_ID: &str = "human@example.org";
+const SPONSOR_NAME: &str = "Pat Human";
 const PEER: &str = "agent:peer-9";
 const SECRET_KEY_PEM: &str = "SIMULATED-SSH-PRIVATE-KEY-BODY-NOT-A-REAL-CREDENTIAL";
 const PASSPHRASE: &str = "sess-vault-pass";
@@ -142,6 +145,8 @@ async fn build() -> Spine {
             .enroll(
                 id,
                 &chaperone_protocol::encode_signature(&key.verifying_key().to_bytes()),
+                SPONSOR_ID,
+                SPONSOR_NAME,
                 &rfc(),
                 false,
             )

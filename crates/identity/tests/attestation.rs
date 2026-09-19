@@ -19,6 +19,9 @@ use time::format_description::well_known::Rfc3339;
 
 const AGENT: &str = "agent:planner-7";
 const SKEW: i64 = 30;
+// RAE L0: a named human sponsor on every enrollment in these tests.
+const SPONSOR_ID: &str = "human@example.org";
+const SPONSOR_NAME: &str = "Pat Human";
 
 fn key_from_seed(byte: u8) -> SigningKey {
     SigningKey::from_bytes(&[byte; 32])
@@ -89,6 +92,8 @@ fn correctly_signed_fresh_intent_verifies() {
         .enroll(
             AGENT,
             &encode_signature(&key.verifying_key().to_bytes()),
+            SPONSOR_ID,
+            SPONSOR_NAME,
             &rfc3339(now),
             false,
         )
@@ -135,6 +140,8 @@ fn precedence_replay_beats_bad_signature() {
         .enroll(
             AGENT,
             &encode_signature(&key.verifying_key().to_bytes()),
+            SPONSOR_ID,
+            SPONSOR_NAME,
             &rfc3339(now),
             false,
         )
@@ -169,6 +176,8 @@ fn bad_signature_is_the_last_identity_gate() {
         .enroll(
             AGENT,
             &encode_signature(&key.verifying_key().to_bytes()),
+            SPONSOR_ID,
+            SPONSOR_NAME,
             &rfc3339(now),
             false,
         )
@@ -197,6 +206,8 @@ fn tampering_any_signed_field_invalidates() {
         .enroll(
             AGENT,
             &encode_signature(&key.verifying_key().to_bytes()),
+            SPONSOR_ID,
+            SPONSOR_NAME,
             &rfc3339(now),
             false,
         )
@@ -230,6 +241,8 @@ fn signature_must_match_claimed_agent_not_merely_some_agent() {
         .enroll(
             AGENT,
             &encode_signature(&victim_key.verifying_key().to_bytes()),
+            SPONSOR_ID,
+            SPONSOR_NAME,
             &rfc3339(now),
             false,
         )
@@ -238,6 +251,8 @@ fn signature_must_match_claimed_agent_not_merely_some_agent() {
         .enroll(
             "agent:attacker",
             &encode_signature(&attacker_key.verifying_key().to_bytes()),
+            SPONSOR_ID,
+            SPONSOR_NAME,
             &rfc3339(now),
             false,
         )
@@ -266,6 +281,8 @@ fn replays_are_rejected_and_never_reserved_twice() {
         .enroll(
             AGENT,
             &encode_signature(&key.verifying_key().to_bytes()),
+            SPONSOR_ID,
+            SPONSOR_NAME,
             &rfc3339(now),
             false,
         )
@@ -287,6 +304,8 @@ fn staleness_beyond_skew_is_replay_boundary_exact_passes() {
         .enroll(
             AGENT,
             &encode_signature(&key.verifying_key().to_bytes()),
+            SPONSOR_ID,
+            SPONSOR_NAME,
             &rfc3339(now),
             false,
         )
@@ -339,6 +358,8 @@ fn revocation_is_immediate_and_fails_at_step_one() {
         .enroll(
             AGENT,
             &encode_signature(&key.verifying_key().to_bytes()),
+            SPONSOR_ID,
+            SPONSOR_NAME,
             &rfc3339(now),
             false,
         )
@@ -369,6 +390,8 @@ fn unknown_signed_fields_stay_covered_by_the_signature() {
         .enroll(
             AGENT,
             &encode_signature(&key.verifying_key().to_bytes()),
+            SPONSOR_ID,
+            SPONSOR_NAME,
             &rfc3339(now),
             false,
         )
@@ -398,6 +421,8 @@ fn version_gate_precedes_resolution_si7() {
         .enroll(
             AGENT,
             &encode_signature(&key.verifying_key().to_bytes()),
+            SPONSOR_ID,
+            SPONSOR_NAME,
             &rfc3339(now),
             false,
         )
@@ -437,6 +462,8 @@ fn replay_cache_survives_restart() {
         .enroll(
             AGENT,
             &encode_signature(&key.verifying_key().to_bytes()),
+            SPONSOR_ID,
+            SPONSOR_NAME,
             &rfc3339(now),
             false,
         )
@@ -505,21 +532,98 @@ fn enrollment_rotation_requires_revocation_or_force() {
     let pk1 = encode_signature(&k1.verifying_key().to_bytes());
     let pk2 = encode_signature(&k2.verifying_key().to_bytes());
 
-    store.enroll(AGENT, &pk1, &rfc3339(now), false).unwrap();
+    store
+        .enroll(AGENT, &pk1, SPONSOR_ID, SPONSOR_NAME, &rfc3339(now), false)
+        .unwrap();
     assert!(matches!(
-        store.enroll(AGENT, &pk2, &rfc3339(now), false),
+        store.enroll(AGENT, &pk2, SPONSOR_ID, SPONSOR_NAME, &rfc3339(now), false),
         Err(chaperone_identity::EnrollmentError::Duplicate(_))
     ));
 
     store.revoke(AGENT, &rfc3339(now)).unwrap();
-    store.enroll(AGENT, &pk2, &rfc3339(now), false).unwrap(); // rotation ok now
+    store
+        .enroll(AGENT, &pk2, SPONSOR_ID, SPONSOR_NAME, &rfc3339(now), false)
+        .unwrap(); // rotation ok now
 
     // Only the new key resolves.
     let vk = store.lookup(AGENT).unwrap();
     assert_eq!(vk.as_bytes(), k2.verifying_key().as_bytes());
 
     // Force-rotate over a live entry also works when explicitly asked.
-    store.enroll(AGENT, &pk1, &rfc3339(now), true).unwrap();
+    store
+        .enroll(AGENT, &pk1, SPONSOR_ID, SPONSOR_NAME, &rfc3339(now), true)
+        .unwrap();
     let vk = store.lookup(AGENT).unwrap();
     assert_eq!(vk.as_bytes(), k1.verifying_key().as_bytes());
+}
+
+// ---------- RAE L0: named-sponsor enrollment ----------
+
+#[test]
+fn enroll_without_a_named_sponsor_fails() {
+    // RAE L0: attribution of every brokered action terminates at a NAMED
+    // human, so enrollment must refuse to record an agent with no sponsor.
+    // Mutation check: remove the sponsor requirement in
+    // EnrollmentStore::enroll and this test goes green - it is the guard.
+    let now = OffsetDateTime::now_utc();
+    let (_attestor, store, _dir) = make_attestor(now);
+    let pk = encode_signature(&key_from_seed(42).verifying_key().to_bytes());
+
+    // Both sponsor fields empty -> refused.
+    assert!(matches!(
+        store.enroll(AGENT, &pk, "", "", &rfc3339(now), false),
+        Err(chaperone_identity::EnrollmentError::MissingSponsor(_))
+    ));
+    // Sponsor id present but no name -> refused (both halves of the human
+    // identity are required).
+    assert!(matches!(
+        store.enroll(AGENT, &pk, SPONSOR_ID, "", &rfc3339(now), false),
+        Err(chaperone_identity::EnrollmentError::MissingSponsor(_))
+    ));
+    // Whitespace-only is still anonymous.
+    assert!(matches!(
+        store.enroll(AGENT, &pk, "   ", SPONSOR_NAME, &rfc3339(now), false),
+        Err(chaperone_identity::EnrollmentError::MissingSponsor(_))
+    ));
+    // Nothing was recorded by the refused enrollments.
+    assert!(
+        store.list().is_empty(),
+        "refused enrollments must not persist"
+    );
+
+    // With a named sponsor the same enrollment succeeds.
+    store
+        .enroll(AGENT, &pk, SPONSOR_ID, SPONSOR_NAME, &rfc3339(now), false)
+        .unwrap();
+    let rec = &store.list()[0];
+    assert_eq!(rec.sponsor_id, SPONSOR_ID);
+    assert_eq!(rec.sponsor_name, SPONSOR_NAME);
+
+    // The sponsor resolves for audit attribution while the agent is live...
+    assert_eq!(store.sponsor_id_of(AGENT), Some(SPONSOR_ID.to_owned()));
+    // ...and does not survive revocation (a revoked key resolves to nothing).
+    store.revoke(AGENT, &rfc3339(now)).unwrap();
+    assert_eq!(store.sponsor_id_of(AGENT), None);
+    // Unknown agents never had a sponsor.
+    assert_eq!(store.sponsor_id_of("agent:ghost"), None);
+}
+
+#[test]
+fn sponsor_survives_store_reload() {
+    // The sponsor is part of the persisted record: attribution must
+    // survive a restart, or audit propagation after a reboot would
+    // silently lose the human.
+    let now = OffsetDateTime::now_utc();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("e.json");
+    let store = EnrollmentStore::load(&path).unwrap();
+    let pk = encode_signature(&key_from_seed(7).verifying_key().to_bytes());
+    store
+        .enroll(AGENT, &pk, SPONSOR_ID, SPONSOR_NAME, &rfc3339(now), false)
+        .unwrap();
+
+    let reloaded = EnrollmentStore::load(&path).unwrap();
+    let rec = &reloaded.list()[0];
+    assert_eq!(rec.sponsor_id, SPONSOR_ID);
+    assert_eq!(rec.sponsor_name, SPONSOR_NAME);
 }

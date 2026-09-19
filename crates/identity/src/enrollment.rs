@@ -25,6 +25,20 @@ pub struct EnrollmentRecord {
     pub public_key: String,
     /// RFC 3339 UTC enrollment timestamp.
     pub enrolled_at: String,
+    /// The named HUMAN who sponsors this agent (RAE L0): a stable human
+    /// identifier (email address or GitHub handle), self-declared at
+    /// enrollment and unverified. Attribution of every brokered action
+    /// terminates here, not at the agent. Never carries credential
+    /// material.
+    ///
+    /// `serde(default)` so pre-RAE stores still load; their records read
+    /// as sponsor-less legacy enrollments.
+    #[serde(default)]
+    pub sponsor_id: String,
+    /// The sponsor's display name (RAE L0, self-declared like
+    /// [`Self::sponsor_id`]).
+    #[serde(default)]
+    pub sponsor_name: String,
     /// RFC 3339 UTC revocation timestamp, set when revoked. Absent while live.
     #[serde(default)]
     pub revoked_at: Option<String>,
@@ -58,6 +72,10 @@ pub enum EnrollmentError {
     /// A live (non-revoked) enrollment already exists for this id; revoke
     /// first, or rotate explicitly.
     Duplicate(String),
+    /// RAE L0: enrollment must name a human sponsor; one of the sponsor
+    /// fields was empty. Attribution must terminate at a named human, so
+    /// refusing the enrollment is the only safe outcome.
+    MissingSponsor(String),
 }
 
 impl std::fmt::Display for EnrollmentError {
@@ -74,6 +92,10 @@ impl std::fmt::Display for EnrollmentError {
                     "agent {id} is already enrolled and live; revoke first to rotate"
                 )
             }
+            EnrollmentError::MissingSponsor(what) => write!(
+                f,
+                "enrollment requires a named human sponsor (RAE L0): {what} is empty"
+            ),
         }
     }
 }
@@ -180,20 +202,48 @@ impl EnrollmentStore {
             .map(|stored| stored.key)
     }
 
+    /// Resolves a live (non-revoked) `agent_id` to its sponsor's stable
+    /// human identifier, so audit attribution can terminate at the human
+    /// (RAE L0). Revoked and unknown agents resolve to `None`.
+    #[must_use]
+    pub fn sponsor_id_of(&self, agent_id: &str) -> Option<String> {
+        self.lock()
+            .agents
+            .get(agent_id)
+            .filter(|stored| stored.record.revoked_at.is_none())
+            .map(|stored| stored.record.sponsor_id.clone())
+    }
+
     /// Enrolls an agent's public key; rotates only across a revoked entry or
     /// with explicit force.
+    ///
+    /// The sponsor fields name the human who vouches for this agent
+    /// (RAE L0, self-declared at enrollment — no verification here). An
+    /// empty sponsor id or name is refused: attribution must terminate at
+    /// a named human, and an anonymous enrollment has no one to attribute
+    /// to.
     pub fn enroll(
         &self,
         agent_id: &str,
         public_key_b64url: &str,
+        sponsor_id: &str,
+        sponsor_name: &str,
         now_rfc3339: &str,
         force_rotate: bool,
     ) -> Result<(), EnrollmentError> {
+        if sponsor_id.trim().is_empty() {
+            return Err(EnrollmentError::MissingSponsor("sponsor_id".to_owned()));
+        }
+        if sponsor_name.trim().is_empty() {
+            return Err(EnrollmentError::MissingSponsor("sponsor_name".to_owned()));
+        }
         let key = decode_public_key(public_key_b64url)?;
         let record = EnrollmentRecord {
             agent_id: agent_id.to_owned(),
             public_key: encode_public_key(&key),
             enrolled_at: now_rfc3339.to_owned(),
+            sponsor_id: sponsor_id.trim().to_owned(),
+            sponsor_name: sponsor_name.trim().to_owned(),
             revoked_at: None,
         };
 

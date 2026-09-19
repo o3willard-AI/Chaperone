@@ -217,6 +217,7 @@ fn fire_drift(
         record_kind: RecordKind::PolicyDrift,
         ruleset_hash: baseline.to_owned(),
         agent_id: "",
+        sponsor_id: String::new(),
         msg_id: "",
         mechanism: "policy",
         target_uri: "",

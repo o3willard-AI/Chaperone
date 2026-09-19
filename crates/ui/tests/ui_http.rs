@@ -233,6 +233,24 @@ async fn agents_enroll_validates_and_revoke_works() {
     let t = app().await;
     let c = t.cookie();
 
+    let signer = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+    let b64url = chaperone_protocol::encode_signature(&signer.verifying_key().to_bytes());
+    // RAE L0: no named sponsor -> refused with a specific error.
+    let (_, loc) = http(
+        t.port,
+        "POST",
+        "/agents/enroll",
+        &[],
+        Some(&form(&[("agent_id", "agent:x"), ("public_key", &b64url)])),
+        Some(&c),
+    )
+    .await;
+    assert!(
+        loc.contains("sponsor"),
+        "valid key but no sponsor must be refused"
+    );
+
+    // Bad key WITH a sponsor -> still refused.
     let (_, loc) = http(
         t.port,
         "POST",
@@ -241,14 +259,14 @@ async fn agents_enroll_validates_and_revoke_works() {
         Some(&form(&[
             ("agent_id", "agent:x"),
             ("public_key", "{\"kty\":\"OKP\"}"),
+            ("sponsor_id", "sponsor@example.org"),
+            ("sponsor_name", "Test Sponsor"),
         ])),
         Some(&c),
     )
     .await;
     assert!(loc.contains("err="));
 
-    let signer = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
-    let b64url = chaperone_protocol::encode_signature(&signer.verifying_key().to_bytes());
     let (status, loc) = http(
         t.port,
         "POST",
@@ -257,12 +275,17 @@ async fn agents_enroll_validates_and_revoke_works() {
         Some(&form(&[
             ("agent_id", "agent:test-1"),
             ("public_key", &b64url),
+            ("sponsor_id", "sponsor@example.org"),
+            ("sponsor_name", "Test Sponsor"),
         ])),
         Some(&c),
     )
     .await;
     assert_eq!(status, 303);
     assert!(loc.contains("enrolled"));
+    // The enrolled record names the human sponsor.
+    let (_, page) = http(t.port, "GET", "/agents", &[], None, Some(&c)).await;
+    assert!(page.contains("sponsor@example.org"));
 
     let (_, page) = http(t.port, "GET", "/agents", &[], None, Some(&c)).await;
     assert!(page.contains("agent:test-1"));
@@ -275,6 +298,8 @@ async fn agents_enroll_validates_and_revoke_works() {
         Some(&form(&[
             ("agent_id", "agent:test-1"),
             ("public_key", &b64url),
+            ("sponsor_id", "sponsor@example.org"),
+            ("sponsor_name", "Test Sponsor"),
         ])),
         Some(&c),
     )

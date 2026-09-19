@@ -131,6 +131,12 @@ pub struct AuditEvent<'a> {
     /// e.g. genesis). D38: decisions bind to the ruleset that governed them.
     /// Authenticated agent identity.
     pub agent_id: &'a str,
+    /// RAE L0: the stable human identifier of the agent's enrolled sponsor.
+    /// Attribution of the brokered action terminates here, not at the agent.
+    /// Populated from the enrollment store at append time; empty for
+    /// records not tied to an enrolled agent (genesis, policy events).
+    /// Reference-shaped: a sponsor id, never credential material.
+    pub sponsor_id: String,
     /// Correlation id from the envelope.
     pub msg_id: &'a str,
     /// Mechanism selector from the envelope.

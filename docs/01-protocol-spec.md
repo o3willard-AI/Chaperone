@@ -271,7 +271,7 @@ When a decision is `needs_confirmation`, the gateway — **not the agent** — o
 
 ### 9.3 Audit record
 
-Every terminal outcome writes one **append-only, signed** audit record binding: the full signed intent (as evidence), the decision and who/what confirmed it, the `cred_ref` used (never the secret), the mechanism and target, timing, and outcome. Records are chained (each carries the hash of the prior) so tampering is detectable.
+Every terminal outcome writes one **append-only, signed** audit record binding: the full signed intent (as evidence), the decision and who/what confirmed it, the `cred_ref` used (never the secret), the mechanism and target, timing, and outcome. Each record also carries the acting agent's `sponsor_id` — the named human who sponsored the agent's enrollment (RAE L0) — so attribution terminates at a person. Records are chained (each carries the hash of the prior) so tampering is detectable.
 
 ---
 

@@ -25,6 +25,9 @@ use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
 const AGENT: &str = "agent:priv-1";
+// RAE L0: named human sponsor for test enrollments.
+const SPONSOR_ID: &str = "human@example.org";
+const SPONSOR_NAME: &str = "Pat Human";
 
 fn helper_bin() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("CHAPERONE_HELPER_BIN") {
@@ -62,6 +65,8 @@ async fn build(privilege: bool) -> Spine {
         .enroll(
             AGENT,
             &chaperone_protocol::encode_signature(&signer.verifying_key().to_bytes()),
+            SPONSOR_ID,
+            SPONSOR_NAME,
             &rfc(),
             false,
         )

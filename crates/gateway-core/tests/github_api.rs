@@ -29,6 +29,9 @@ use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
 const AGENT: &str = "agent:github-1";
+// RAE L0: named human sponsor for test enrollments.
+const SPONSOR_ID: &str = "human@example.org";
+const SPONSOR_NAME: &str = "Pat Human";
 const FAKE_TOKEN: &str = "github_pat_simulated-NOT-A-REAL-CREDENTIAL";
 
 // ---------- capture server emulating api.github.com ----------
@@ -132,6 +135,8 @@ async fn build(policy_doc: &str, vault_token: &str) -> Spine {
         .enroll(
             AGENT,
             &chaperone_protocol::encode_signature(&signer.verifying_key().to_bytes()),
+            SPONSOR_ID,
+            SPONSOR_NAME,
             &rfc(),
             false,
         )
@@ -142,8 +147,12 @@ async fn build(policy_doc: &str, vault_token: &str) -> Spine {
         IdentityConfig { max_skew_secs: 30 },
     );
 
-    let mut store =
-        LocalVault::create(&dir.path().join("v.bin"), "passphrase", Zeroizing::new("gh-pass".into())).unwrap();
+    let mut store = LocalVault::create(
+        &dir.path().join("v.bin"),
+        "passphrase",
+        Zeroizing::new("gh-pass".into()),
+    )
+    .unwrap();
     store
         .set(
             "prod/github/token",
