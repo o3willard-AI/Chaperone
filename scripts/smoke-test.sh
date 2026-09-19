@@ -77,6 +77,7 @@ EOF
 PUB="$(python3 "$SCRIPT_DIR" --print-key --seed-file "$D/agent.seed")" \
     || die "test agent key generation failed"
 "$CHAP" enroll --store "$D/agents.json" --agent-id "$AGENT_ID" --public-key "$PUB" \
+    --sponsor-id "smoke-sponsor@example.org" --sponsor-name "Smoke Sponsor" \
     >/dev/null || die "enroll failed"
 
 step "3/6 doctor (must be green before serve)"

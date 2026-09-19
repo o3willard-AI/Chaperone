@@ -24,7 +24,8 @@ const USAGE: &str = "\
 chaperone - Chaperone operator CLI
 
 USAGE:
-    chaperone enroll --store <PATH> --agent-id <ID> --public-key <B64URL> [--force]
+    chaperone enroll --store <PATH> --agent-id <ID> --public-key <B64URL> \
+                     --sponsor-id <HUMAN-ID> --sponsor-name <NAME> [--force]
     chaperone revoke --store <PATH> --agent-id <ID>
     chaperone list-agents --store <PATH>
 
@@ -128,13 +129,25 @@ fn cmd_enroll(flags: &Flags) -> Result<(), String> {
     let store_path = flags.require("store")?;
     let agent_id = flags.require("agent-id")?;
     let public_key = flags.require("public-key")?;
+    // RAE L0: every agent must be bound to a NAMED human sponsor; the
+    // broker's attribution terminates at that person, so enrollment
+    // without one is refused.
+    let sponsor_id = flags.require("sponsor-id")?;
+    let sponsor_name = flags.require("sponsor-name")?;
     let force = flags.has("force");
 
     let store = open_store(&store_path).map_err(|e| e.to_string())?;
     store
-        .enroll(&agent_id, &public_key, &now_rfc3339(), force)
+        .enroll(
+            &agent_id,
+            &public_key,
+            &sponsor_id,
+            &sponsor_name,
+            &now_rfc3339(),
+            force,
+        )
         .map_err(|e| e.to_string())?;
-    println!("enrolled {agent_id} in {store_path}");
+    println!("enrolled {agent_id} (sponsor {sponsor_id}) in {store_path}");
     Ok(())
 }
 
@@ -162,10 +175,15 @@ fn cmd_list_agents(flags: &Flags) -> Result<(), String> {
             "live"
         };
         println!(
-            "{:<28} {:<6} enrolled={} key={}",
+            "{:<28} {:<6} enrolled={} sponsor={} key={}",
             rec.agent_id,
             status,
             rec.enrolled_at,
+            if rec.sponsor_id.is_empty() {
+                "<none: pre-RAE legacy>"
+            } else {
+                &rec.sponsor_id
+            },
             &rec.public_key[..rec.public_key.len().min(12)],
         );
     }
@@ -383,8 +401,7 @@ fn open_vault(flags: &Flags) -> Result<chaperone_vault::LocalVault, String> {
     let is_keyring = chaperone_vault::LocalVault::sealer_of(std::path::Path::new(&store))
         .map(|s| s == "keyring")
         .unwrap_or(false);
-    if is_keyring
-        && (flags.values.contains_key("passphrase-file") || flags.has("passphrase-stdin"))
+    if is_keyring && (flags.values.contains_key("passphrase-file") || flags.has("passphrase-stdin"))
     {
         eprintln!(
             "note: {store} is keyring-sealed; the provided passphrase source is NOT used (the vault key lives in the platform credential store)"
@@ -422,7 +439,11 @@ fn cmd_vault_init(flags: &Flags) -> Result<(), String> {
         other => {
             return Err(format!(
                 "unknown --sealer {other:?}; this build supports 'passphrase'{}",
-                if cfg!(feature = "keyring") { ", 'keyring'" } else { "" }
+                if cfg!(feature = "keyring") {
+                    ", 'keyring'"
+                } else {
+                    ""
+                }
             ));
         }
     }
@@ -508,15 +529,14 @@ fn cmd_doctor(flags: &Flags) -> Result<(), String> {
     // credential, never signs anything, and holds no passphrase longer than
     // one unlock check (zeroized by LocalVault's own buffers).
     let mut failures: Vec<String> = Vec::new();
-    let check = |name: &str, result: Result<String, String>, failures: &mut Vec<String>| {
-        match result {
+    let check =
+        |name: &str, result: Result<String, String>, failures: &mut Vec<String>| match result {
             Ok(detail) => println!("  ok    {name}: {detail}"),
             Err(actionable) => {
                 println!("  FAIL  {name}: {actionable}");
                 failures.push(name.to_owned());
             }
-        }
-    };
+        };
 
     // 1. Binary/version (always passes if you got this far; proves the
     //    binary runs and reports its protocol).
@@ -541,8 +561,7 @@ fn cmd_doctor(flags: &Flags) -> Result<(), String> {
                     "cannot read {policy_path}: {e}; run `chaperone serve` once to create it via the setup wizard"
                 )
             })?;
-            let rules =
-                chaperone_policy::Policy::from_toml(&doc).map_err(|e| e.to_string())?;
+            let rules = chaperone_policy::Policy::from_toml(&doc).map_err(|e| e.to_string())?;
             Ok(format!(
                 "{policy_path} ({} rule(s); default-deny when 0)",
                 rules.len()
@@ -552,33 +571,31 @@ fn cmd_doctor(flags: &Flags) -> Result<(), String> {
     check("policy parses", policy_result, &mut failures);
 
     // 3. Enrollment store readable (same loader serve uses).
-    let enrollment_path = flags
-        .values
-        .get("enrollment")
-        .cloned()
-        .unwrap_or_default();
+    let enrollment_path = flags.values.get("enrollment").cloned().unwrap_or_default();
     check(
         "enrollment store",
         if enrollment_path.is_empty() {
-            Err("pass --enrollment <FILE> (agents.json)".to_owned())
-            as Result<String, String>
+            Err("pass --enrollment <FILE> (agents.json)".to_owned()) as Result<String, String>
         } else if !std::path::Path::new(&enrollment_path).exists() {
             // EnrollmentStore::load treats a missing file as an empty store
             // (first-run convenience); for a health check that is a misspelled
             // path, not a healthy empty store.
             Err(format!(
-                "{enrollment_path} does not exist; enroll with `chaperone enroll --store {enrollment_path} --agent-id <ID> --public-key <B64URL>`"
+                "{enrollment_path} does not exist; enroll with `chaperone enroll --store {enrollment_path} --agent-id <ID> --public-key <B64URL> --sponsor-id <HUMAN-ID> --sponsor-name <NAME>`"
             ))
         } else {
-            match chaperone_identity::EnrollmentStore::load(std::path::Path::new(
-                &enrollment_path,
-            )) {
+            match chaperone_identity::EnrollmentStore::load(std::path::Path::new(&enrollment_path))
+            {
                 Err(e) => Err(format!(
                     "cannot load {enrollment_path}: {e}; create it with `chaperone enroll --store {enrollment_path} --agent-id <ID> --public-key <B64URL>`"
                 )),
                 Ok(store) => {
                     let total = store.list().len();
-                    let live = store.list().iter().filter(|r| r.revoked_at.is_none()).count();
+                    let live = store
+                        .list()
+                        .iter()
+                        .filter(|r| r.revoked_at.is_none())
+                        .count();
                     Ok(format!(
                         "{enrollment_path} ({live} live / {total} enrolled)"
                     ))
@@ -623,8 +640,7 @@ fn cmd_doctor(flags: &Flags) -> Result<(), String> {
         .get("audit-journal")
         .cloned()
         .unwrap_or_default();
-    let audit_result: Result<String, String> = if key_path.is_empty() || journal_path.is_empty()
-    {
+    let audit_result: Result<String, String> = if key_path.is_empty() || journal_path.is_empty() {
         Err("pass --audit-key <SEEDFILE> and --audit-journal <FILE>".to_owned())
     } else if !std::path::Path::new(&key_path).exists() {
         Err(format!(

@@ -143,10 +143,16 @@ change, so neither does anything downstream.
 An agent publishes its Ed25519 *public* key out-of-band (32 bytes,
 base64url — not a JSON blob). Wizard: **Agents**, paste it.
 
+Every enrollment names a **sponsor** — the human who vouches for the agent
+([RAE](https://github.com/o3willard-AI/RAE) L0). Every brokered action's
+audit record attributes to that person, not just to the agent, so
+attribution always terminates at a named human. The sponsor is
+self-declared at enrollment (no identity verification at this level).
+
 Revocation is one click and effective immediately: revoked keys fail at
 identity verification before anything else happens.
 
-> **Terminal equivalent:** `chaperone enroll --store ~/.config/chaperone/agents.json --agent-id agent:github-1 --public-key <B64URL>`
+> **Terminal equivalent:** `chaperone enroll --store ~/.config/chaperone/agents.json --agent-id agent:github-1 --public-key <B64URL> --sponsor-id you@example.com --sponsor-name "Your Name"`
 
 ## Step 9 — Add your first rule
 

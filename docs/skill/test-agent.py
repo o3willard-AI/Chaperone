@@ -189,7 +189,9 @@ def main():
         try:
             subprocess.run(
                 [args.chaperone, "enroll", "--store", args.enroll_store,
-                 "--agent-id", args.agent_id, "--public-key", pub],
+                 "--agent-id", args.agent_id, "--public-key", pub,
+                 "--sponsor-id", "test-sponsor@example.org",
+                 "--sponsor-name", "Test Sponsor"],
                 check=True, stdout=subprocess.DEVNULL,
             )
         except subprocess.CalledProcessError as e:

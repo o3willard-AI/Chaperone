@@ -36,6 +36,7 @@ fn main() {
         record_kind: chaperone_audit::RecordKind::IntentDecision,
         ruleset_hash: String::new(),
         agent_id: "agent:planner-7",
+        sponsor_id: "human@example.org".to_owned(),
         msg_id: "a3f1c9",
         mechanism: "http-bearer",
         target_uri: "https://api.stripe.com/v1/charges",

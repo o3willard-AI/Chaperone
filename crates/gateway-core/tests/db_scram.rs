@@ -26,6 +26,9 @@ use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
 const AGENT: &str = "agent:db-1";
+// RAE L0: named human sponsor for test enrollments.
+const SPONSOR_ID: &str = "human@example.org";
+const SPONSOR_NAME: &str = "Pat Human";
 
 fn pg_uri() -> Option<String> {
     std::env::var("CHAPERONE_TEST_PG")
@@ -87,6 +90,8 @@ async fn build() -> Spine {
         .enroll(
             AGENT,
             &chaperone_protocol::encode_signature(&signer.verifying_key().to_bytes()),
+            SPONSOR_ID,
+            SPONSOR_NAME,
             &rfc(),
             false,
         )

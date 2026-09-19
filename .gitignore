@@ -8,3 +8,4 @@ fuzz/target
 # release signing seed never lives in the repo
 release-seed.key
 *.key.sig
+__pycache__/

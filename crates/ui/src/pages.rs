@@ -300,7 +300,7 @@ pub async fn agents_page(
         body.push_str("<p class=\"muted\">No agents enrolled yet.</p>");
     } else {
         body.push_str(
-            "<table><tr><th>Agent</th><th>Status</th><th>Enrolled</th><th>Key</th><th></th></tr>",
+            "<table><tr><th>Agent</th><th>Status</th><th>Enrolled</th><th>Sponsor</th><th>Key</th><th></th></tr>",
         );
         for rec in &records {
             let (status, class) = if rec.revoked_at.is_some() {
@@ -320,9 +320,14 @@ pub async fn agents_page(
             };
             body.push_str(&format!(
                 "<tr><td><code>{}</code></td><td><span class=\"badge {class}\">{status}</span></td>\
-                 <td class=\"muted\">{}</td><td class=\"muted\">{}...</td><td>{action}</td></tr>",
+                 <td class=\"muted\">{}</td><td class=\"muted\">{}</td><td class=\"muted\">{}...</td><td>{action}</td></tr>",
                 esc(&rec.agent_id),
                 esc(&rec.enrolled_at),
+                esc(if rec.sponsor_id.is_empty() {
+                    "<none: pre-RAE legacy>"
+                } else {
+                    &rec.sponsor_id
+                }),
                 esc(rec.public_key.get(..12).unwrap_or(&rec.public_key)),
             ));
         }
@@ -338,6 +343,8 @@ pub async fn agents_page(
         "<form method=\"post\" action=\"/agents/enroll\">\
          {}\
          {}\
+         {}\
+         {}\
          <button type=\"submit\">Enroll</button></form>",
         field(
             "Agent id",
@@ -346,6 +353,14 @@ pub async fn agents_page(
         field(
             "Public key (base64url, 32 bytes)",
             "<input name=\"public_key\" required spellcheck=\"false\">"
+        ),
+        field(
+            "Sponsor id (RAE: the human vouching for this agent)",
+            "<input name=\"sponsor_id\" required placeholder=\"you@example.com or @gh-handle\">"
+        ),
+        field(
+            "Sponsor name",
+            "<input name=\"sponsor_name\" required placeholder=\"Jane Q. Operator\">"
         ),
     ));
 
@@ -364,6 +379,11 @@ pub async fn agents_page(
 pub struct EnrollForm {
     agent_id: String,
     public_key: String,
+    /// RAE L0: the named human who sponsors this agent (self-declared).
+    /// Option so a missing field reaches the explicit guard below (and
+    /// gets a specific error) instead of a generic form-parse rejection.
+    sponsor_id: Option<String>,
+    sponsor_name: Option<String>,
 }
 
 /// POST /agents/enroll.
@@ -379,6 +399,13 @@ pub async fn agents_enroll(
     if agent_id.is_empty() {
         return Redirect::to("/agents?err=agent+id+required");
     }
+    // RAE L0: attribution terminates at a named human sponsor; refuse
+    // anonymous enrollments.
+    let sponsor_id = form.sponsor_id.unwrap_or_default();
+    let sponsor_name = form.sponsor_name.unwrap_or_default();
+    if sponsor_id.trim().is_empty() || sponsor_name.trim().is_empty() {
+        return Redirect::to("/agents?err=sponsor+id+and+name+required+(RAE)");
+    }
     if let Err(e) = decode_public_key(form.public_key.trim()) {
         return Redirect::to(&format!(
             "/agents?err={}",
@@ -390,10 +417,14 @@ pub async fn agents_enroll(
     let now = time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_default();
-    match state
-        .enrollment
-        .enroll(agent_id, form.public_key.trim(), &now, false)
-    {
+    match state.enrollment.enroll(
+        agent_id,
+        form.public_key.trim(),
+        sponsor_id.trim(),
+        sponsor_name.trim(),
+        &now,
+        false,
+    ) {
         Ok(()) => Redirect::to(&format!(
             "/agents?msg={}",
             urlenc(&format!("enrolled {agent_id}"))

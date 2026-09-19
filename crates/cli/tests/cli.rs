@@ -104,3 +104,72 @@ fn dash_dash_version_flag_equivalent() {
     assert!(out.contains("chaperone"), "{out}");
     assert!(out.contains(env!("CARGO_PKG_VERSION")), "{out}");
 }
+
+#[test]
+fn enroll_requires_a_named_sponsor() {
+    // RAE L0: the enroll command must refuse to record an agent with no
+    // named human sponsor. Mutation check: drop the --sponsor-id/--sponsor-name
+    // requirement in cmd_enroll and this test goes red.
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("agents.json");
+    // base64url (unpadded) of 32 zero bytes: a structurally valid public
+    // key, all the enroll gate needs.
+    let pub_b64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+    let run_raw = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_chaperone"))
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    // No sponsor flags -> exit 2 with the missing-flag error.
+    let out = run_raw(&[
+        "enroll",
+        "--store",
+        store.to_str().unwrap(),
+        "--agent-id",
+        "agent:cli-test",
+        "--public-key",
+        pub_b64,
+    ]);
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("sponsor-id"), "{stderr}");
+
+    // Only one of the two -> still refused.
+    let out = run_raw(&[
+        "enroll",
+        "--store",
+        store.to_str().unwrap(),
+        "--agent-id",
+        "agent:cli-test",
+        "--public-key",
+        pub_b64,
+        "--sponsor-id",
+        "sponsor@example.org",
+    ]);
+    assert_eq!(out.status.code(), Some(2));
+
+    // Both -> succeeds, and list-agents shows the human.
+    let out = run_raw(&[
+        "enroll",
+        "--store",
+        store.to_str().unwrap(),
+        "--agent-id",
+        "agent:cli-test",
+        "--public-key",
+        pub_b64,
+        "--sponsor-id",
+        "sponsor@example.org",
+        "--sponsor-name",
+        "Test Sponsor",
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let listed = run(&["list-agents", "--store", store.to_str().unwrap()]);
+    assert!(listed.contains("sponsor@example.org"), "{listed}");
+}

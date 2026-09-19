@@ -25,6 +25,9 @@ use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
 const AGENT: &str = "agent:e2e-1";
+// RAE L0: named human sponsor for test enrollments.
+const SPONSOR_ID: &str = "human@example.org";
+const SPONSOR_NAME: &str = "Pat Human";
 const SECRET: &str = "simulated-vault-bearer-value-NOT-A-REAL-CREDENTIAL";
 const PASSPHRASE: &str = "e2e-vault-passphrase";
 
@@ -149,6 +152,8 @@ async fn build_spine_with_gate(
         .enroll(
             AGENT,
             &chaperone_protocol::encode_signature(&signer.verifying_key().to_bytes()),
+            SPONSOR_ID,
+            SPONSOR_NAME,
             &now.format(&time::format_description::well_known::Rfc3339)
                 .unwrap(),
             false,

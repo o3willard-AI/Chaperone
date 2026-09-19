@@ -26,6 +26,9 @@ use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
 const AGENT: &str = "agent:conformance";
+// RAE L0: named human sponsor for test enrollments.
+const SPONSOR_ID: &str = "human@example.org";
+const SPONSOR_NAME: &str = "Pat Human";
 const SECRET: &str = "simulated-conformance-secret-NOT-A-REAL-CREDENTIAL";
 
 // ---------- minimal spine (self-contained by design) ----------
@@ -52,6 +55,8 @@ async fn build(policy_doc: &str) -> Spine {
         .enroll(
             AGENT,
             &chaperone_protocol::encode_signature(&signer.verifying_key().to_bytes()),
+            SPONSOR_ID,
+            SPONSOR_NAME,
             &rfc(),
             false,
         )
@@ -247,6 +252,62 @@ async fn audit_chain_verifies_after_conformance_run() {
     let report = verify_file(&empty.audit_path, &empty.audit_key.verifying_key()).unwrap();
     assert!(report.error.is_none());
     drop(spine);
+}
+
+#[tokio::test]
+async fn audit_records_carry_the_enrolled_sponsors_id() {
+    // RAE L0: attribution of a brokered action terminates at the agent's
+    // enrolled human sponsor. The intent-decision record must carry that
+    // sponsor's id, resolved from the enrollment store at append time.
+    // Mutation check: drop the sponsor propagation in audit_decision and
+    // the record's sponsor_id comes back empty - this test is the guard.
+    let spine = build("").await; // empty policy -> default deny, stays offline
+    let _ = spine
+        .gateway
+        .handle_message(&spine.stripe_intent("sponsor-1"))
+        .await;
+
+    let journal = std::fs::read_to_string(&spine.audit_path).unwrap();
+    let decision = journal
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .find(|v| {
+            v.get("kind").and_then(Value::as_str) == Some("intent_decision")
+                && v["agent_id"] == json!(AGENT)
+        })
+        .expect("an intent_decision record for the enrolled agent");
+    assert_eq!(
+        decision["sponsor_id"],
+        json!(SPONSOR_ID),
+        "the audit record must name the enrolled sponsor"
+    );
+
+    // Contrast: a FORGED intent claiming an agent nobody enrolled gets an
+    // identity-failure record, and its sponsor_id must stay empty - the
+    // broker never invents a human for an unverified claim.
+    let mut ghost = spine.stripe_intent("sponsor-2");
+    ghost["agent_id"] = json!("agent:ghost");
+    // Note: sig stays over the ORIGINAL bytes, so verification fails at
+    // the unknown-agent step regardless.
+    let _ = spine.gateway.handle_message(&ghost).await;
+    let journal = std::fs::read_to_string(&spine.audit_path).unwrap();
+    let ghost_rec = journal
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .find(|v| {
+            v.get("kind").and_then(Value::as_str) == Some("intent_decision")
+                && v["agent_id"] == json!("agent:ghost")
+        })
+        .expect("an intent_decision record for the forged agent");
+    assert_eq!(
+        ghost_rec["sponsor_id"],
+        json!(""),
+        "an unverified agent claim has no sponsor; none may be invented"
+    );
+
+    // The chain still verifies end-to-end with the new field present.
+    let report = verify_file(&spine.audit_path, &spine.audit_key.verifying_key()).unwrap();
+    assert!(report.error.is_none(), "{:?}", report.error);
 }
 
 // ---------- fuzz harness (deterministic) ----------
