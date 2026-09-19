@@ -273,6 +273,15 @@ When a decision is `needs_confirmation`, the gateway — **not the agent** — o
 
 Every terminal outcome writes one **append-only, signed** audit record binding: the full signed intent (as evidence), the decision and who/what confirmed it, the `cred_ref` used (never the secret), the mechanism and target, timing, and outcome. Each record also carries the acting agent's `sponsor_id` — the named human who sponsored the agent's enrollment (RAE L0) — so attribution terminates at a person. Records are chained (each carries the hash of the prior) so tampering is detectable.
 
+### 9.4 Accountability model (RAE)
+
+Chaperone's attribution model follows the [Registered Accountable Entity (RAE)](https://github.com/o3willard-AI/RAE) specification: every brokered action is attributable to a named human, not merely to an agent identity.
+
+- **Enrollment binds an agent to a named human sponsor.** The enrollment record carries `sponsor_id` and `sponsor_name` alongside the agent's public key. Enrollment is an operator action; the sponsor binding is established at that moment, before the agent can submit any intent.
+- **The audit attributes every brokered action to that human sponsor.** Each audit record (§9.3) carries the sponsoring human of the issuing agent, so the evidence chain resolves person → authorization → action without consulting any system outside the audit log itself.
+- **Attribution terminates at the human, not the agent.** The agent's signing key proves *which* agent issued an intent (non-repudiation of origin); the sponsor binding answers *who is accountable* for it. An agent is the subject of attribution, never the object (RAE N2).
+- **Assurance level: L0 (declared).** The sponsor is self-declared at enrollment and is not identity-verified by Chaperone or any third party. The claim this supports is: Chaperone **displays an RAE at L0 (declared, unverified)** with a non-repudiable proof leg (signed intents, hash-chained audit). Chaperone does not claim L1: the sponsor's identity is not organization-verified, and per RAE §4 the attribution machinery of the practice begins at L1. See [RAE-CONFORMANCE.md](../RAE-CONFORMANCE.md).
+
 ---
 
 ## 10. Errors and Versioning

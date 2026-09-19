@@ -95,12 +95,14 @@ An attempt to turn the `local-privilege` mechanism into an unattended root shell
 
 Chaperone answers T5 by refusing to be a blind injector. The four properties that turn the broker from a liability into a control:
 
-1. **Attribution before action.** Every intent is verified against the issuing agent's key before anything runs. The deputy always knows exactly who is asking.
+1. **Attribution before action.** Every intent is verified against the issuing agent's key before anything runs. The deputy always knows exactly who is asking — and, via the human sponsor bound at enrollment, *which person is accountable* for the asking (see the accountability note below).
 2. **Default-deny adjudication.** The gateway decides whether *this* agent may invoke *this* cred_ref against *this* target for *this* operation. Absent an explicit allow, it refuses.
 3. **Least-privilege, time-boxed secrets.** Even a granted request yields the narrowest, shortest-lived credential the vault can mint — so a successful misuse is small and expires.
 4. **The single human gate.** High-risk operations block on one deliberate confirmation, surfaced by the gateway with full context, before injection.
 
 > **Why this is the same question as "rigorous vs. skeleton key."** A broker that injects whatever is asked is a skeleton key with good logging. A broker that adjudicates, attributes, scopes, and gates is a security control. The difference is entirely in the four properties above — which is why the policy engine and signed identity are specified as mandatory, not optional. Remove either and Chaperone collapses back into the confused deputy it was designed to replace.
+
+> **Accountability beyond the agent (RAE).** Agent-key attribution answers "which agent asked"; it does not answer "which *person* is accountable." Chaperone therefore binds each enrolled agent to a named human sponsor (`sponsor_id` + `sponsor_name` at enrollment) and propagates that sponsor into every audit record, following the [Registered Accountable Entity (RAE)](https://github.com/o3willard-AI/RAE) model: attribution terminates at a human, never at an agent (RAE N2), and the binding is established before any action (RAE N1). **The sponsor is self-declared at enrollment and not verified** — no identity check binds the declared name to a real person — so the assurance level is **L0 (declared)**. The proof leg is nevertheless non-repudiable at the agent layer: signed intents plus a hash-chained audit mean a *misdeclared* sponsor is still evidence of who enrolled the agent and when. A declared-but-false sponsor binding is an enrollment-trust problem, not an audit-integrity problem; see §4.
 
 ---
 
@@ -113,6 +115,7 @@ No design eliminates all risk. Stated plainly, so operators calibrate:
 | Gateway binary subversion | Handed off (§5) | The gateway is the TCB. Defended by reproducible builds, hash-verified releases, and optional attested boot — see §5, not the protocol. If it falls, nothing holds. |
 | Root-level local attacker | Handed off (§5) | Owns the key store and process memory; no user-space design defends against the platform owner. Blast radius is reduced by least-privilege short-lived minting (a scraped secret expires in minutes) and, optionally, by keeping secrets in an enclave the kernel cannot introspect (§5). |
 | Over-broad policy authored by operator | Accepted | Chaperone enforces policy faithfully; it cannot tell that a human wrote a bad rule. Least-privilege defaults and audit review are the compensations. |
+| Self-declared sponsor is false (L0) | Accepted | Enrollment does not verify the declared human sponsor; a false `sponsor_name` yields attribution to the wrong person. Compensations: enrollment is an operator action (the operator vouches for the binding), and the signed enrollment record makes the misdeclaration itself attributable and tamper-evident. Identity verification would raise this to RAE L1 and is out of scope for v0.1. |
 | A granted-then-misused credential | Bounded | Cannot be prevented once policy allows, but is scoped, short-lived, and fully attributed — blast radius and forensics are strong. |
 | Confirmation fatigue | Design tension | Too many prompts train humans to click through. The single-gate design and needs-confirmation-only-when-warranted posture manage this; it remains a tuning problem. |
 

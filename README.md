@@ -14,7 +14,10 @@ The agent holds a reference, never a secret.
 Chaperone is not "a thing that injects credentials." It is a **policy
 enforcement point with attribution and audit**: it decides which agent may use
 which credential against which target for which operation, proves who asked,
-and records tamper-evident evidence.
+and records tamper-evident evidence. Every enrolled agent is bound to a named
+human sponsor, so Chaperone records a declared **Registered Accountable Entity
+(RAE) at L0 (declared, unverified)** with non-repudiable agent attribution —
+see the [RAE specification](https://github.com/o3willard-AI/RAE).
 
 > The north star: an agent can do real authenticated work, and at no point does
 > a human ever see a secret scroll by, or find one in a log, or have to paste
