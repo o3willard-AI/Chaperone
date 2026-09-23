@@ -41,7 +41,7 @@ changes while the specs themselves remain v0.1 drafts open for review.
 
 ## Architecture at a glance
 
-[Open the interactive architecture diagram](docs/diagrams/chaperone-arch.html)
+[Open the interactive architecture diagram](https://o3willard-ai.github.io/Chaperone/diagrams/chaperone-arch.html)
 — the full system at a glance (agent, proxy, vault, privileged helper, audit
 chain, and the local trust boundary), with guided views for the intent flow,
 secret abstraction, and trust boundary.
