@@ -52,6 +52,15 @@ was written from a live install on real hardware; every claim in it was
 reproduced. **This document was produced by reading source at commit `25d4085`
 and by workspace-wide grep. Nothing here was verified by running the binary.**
 
+**Reviewer re-baseline (hermes-ox-chap, 2026-09-26):** every "X is not wired to
+Y" finding below was re-verified against main at `b9fd4f3` (43 commits after
+`25d4085`, including #64 sponsor-binding and #65 RAE docs) and all still hold.
+Two consequences of the re-baseline are folded in: the sponsor-binding gap in
+P1-1 (added), and P0-0 — main's CI is currently red, which gates two items of
+this document's own definition of done. Line-number citations may drift by a
+line or two from `25d4085`; each finding names a one-command re-verification,
+which is the durable form.
+
 That distinction matters for how you work these items:
 
 - Findings stated as **"X is not wired to Y"** are grep-complete over
@@ -71,6 +80,7 @@ Reproduce first, then fix, then mark.
 
 | # | Issue | Tier | One-liner |
 |---|---|---|---|
+| P0-0 | Main's CI is red on all three platforms | Blocking | `cargo fmt --check` (6 diffs across 3 files), `cargo audit` (RUSTSEC-2026-0285, rustls 0.23.43 → upgrade to ≥0.23.45), `cargo deny`, and `clippy -D warnings` all fail on `b9fd4f3`. P0-2 and P1-1 acceptance require "green in CI on Linux, macOS, Windows" — unreachable until this is fixed first. Tests themselves pass on all three; the failures are hygiene, not the unix-only-events gap. |
 | P0-1 | Response path relays a reflected credential back into agent space | Blocking | The README's central claim is written unconditionally; the HTTP injector returns target headers and body verbatim, so a reflecting target launders the secret straight into agent context |
 | P0-2 | No test proves the no-leak property | Blocking | The guarantee is architectural, not demonstrated. There is no test that would fail if a secret leaked into agent-visible bytes |
 | P0-3 | `notify_on_use` is a control that does nothing | Blocking | Parsed, round-tripped to TOML, rendered as a checkbox — and read by no consumer. The events feed broadcasts every decision regardless |
@@ -84,6 +94,44 @@ Reproduce first, then fix, then mark.
 
 Backlog items (explicitly deferred, recorded so they are roadmap and not
 folklore) are in the final section.
+
+---
+
+## P0-0 — Main's CI is red on all three platforms
+
+**What the state is.** At `b9fd4f3` (main, 2026-09-23), the `build-test-clippy`
+matrix fails on ubuntu, macos, and windows; `fmt`, `audit`, and `deny` also
+fail. The test suites themselves pass on all three platforms — the failures are
+hygiene gates, not behavior:
+
+- `cargo fmt --check`: 6 diffs across `crates/ui/src/setup.rs`,
+  `crates/vault/src/local.rs`, `crates/vault/src/shared.rs`.
+- `cargo clippy --all-targets -- -D warnings`: two unique warnings (an
+  `expect()` on an `Option` and a redundant closure, both auto-fixable).
+- `cargo audit`: RUSTSEC-2026-0285 — rustls 0.23.43, "TLS 1.3 handshake
+  messages incorrectly accepted across encryption level boundaries"
+  (medium, 5.3); fix is `rustls ≥ 0.23.45` — a `cargo update -p rustls` and
+  re-lock.
+- `cargo deny`: `advisories FAILED, bans ok, licenses ok, sources ok` — the
+  same rustls advisory the audit job flags, surfaced through deny's
+  advisories check. One `cargo update -p rustls` should clear both.
+
+Re-verify in one command each: `cargo fmt --check`,
+`cargo clippy --locked --all-targets -- -D warnings`,
+`cargo audit --file Cargo.lock --ignore RUSTSEC-2023-0071`.
+
+**Why it is P0 here.** This document's own definition of done demands
+"green in CI on Linux, macOS, and Windows" for P0-2's `no_secret_leak` test
+and P1-1's three-platform notification acceptance. A red baseline makes those
+criteria unmeasurable — a new failing test hides inside existing noise. Fix
+the baseline first; it is under an hour of mechanical work (`cargo fmt`,
+`clippy --fix`, `cargo update -p rustls`, then re-run deny).
+
+**One nuance worth stating:** the Windows CI failure is *not* the
+unix-only events feed described in P1-1 — tests pass there. P1-1's Windows
+gap is real but silent (the stub fails loudly at `listen()` and no test
+exercises a notification end-to-end on Windows). P0-0 and P1-1 are independent
+work items.
 
 ---
 
@@ -268,6 +316,26 @@ notification channel. P1-3 and P2-1 in END-USER-ONBOARDING made these fail
 loudly rather than lie, which was the correct first move; the capability is
 still absent. Windows is also where our one real end-user QA pass took place.
 
+*The feed doesn't name the accountable person (added at re-baseline — this
+post-dates the original pass).* #64 (RAE L0, `b1d2f17`) bound every enrolled
+agent to a named human sponsor: `AuditEvent` now carries `sponsor_id`
+(`crates/audit/src/event.rs:139`), and the broadcast site has the populated
+value in scope — `event.sponsor_id` is set a dozen lines above the
+`hub.broadcast(...)` call (`crates/gateway-core/src/lib.rs`, ~1044–1064) — but
+the serialized JSON line omits it: the payload carries `audit_id`, `agent_id`,
+`effect`, `mechanism`, `target_uri`, `outcome` and nothing else. So even once a
+notifier ships, the notification can say "planner-7 used local://ssh/fleet/app-01"
+but not "*whose* authority was exercised" — the one fact the accountability
+story is about. Re-verify: `grep -n "sponsor" crates/gateway-core/src/lib.rs |
+grep broadcast` (no hits) vs `grep -n sponsor_id crates/audit/src/event.rs`
+(the field exists). Fix is nearly free at the broadcast site and preserves
+D35's "no new facts — a live tap on data the audit chain already produces":
+`sponsor_id` *is* audit-chain data, the tap just isn't tapping all of it.
+Add it to the broadcast payload (and `sponsor_name` for human-legible toasts,
+or let the consumer join it), and extend P0-2's sentinel test to assert the
+feed's new field carries a reference, never credential material — D35's
+property, unchanged.
+
 **Why it matters.** This is the load-bearing gap for the accountability story.
 Everything else in the system — signed intents, attribution, the audit chain —
 establishes *who is responsible after the fact*. Notification is the only
@@ -295,7 +363,10 @@ Resist the urge to build three.
 
 **Acceptance.** On each of Linux, macOS, and Windows: a brokered action
 produces a visible notification to a person who is not watching a terminal, and
-a `needs_confirmation` decision can be answered.
+a `needs_confirmation` decision can be answered. The notification names the
+responsible human — the events feed carries `sponsor_id` (and a
+human-legible name, or enough for the consumer to resolve one) — not merely
+the agent id.
 
 ---
 
@@ -570,26 +641,64 @@ Recorded so these do not get re-litigated in a review, and so no one
 - **B-3 — `serve --transcript`.** See P0-2 layer 3. Wanted for enterprise
   evaluation; not needed for the first credible demo.
 
+**Decide-during-spec (raised in review of this document, 2026-09-26; each is a
+design decision the fix-shape sections above deliberately leave open, recorded
+here so they are decided explicitly rather than discovered mid-slice):**
+
+- **S-1 — Streaming scrub for session mechanisms (P0-1 fix, part 1).** "Apply
+  identically to the session mechanisms' relayed output" is one sentence, but
+  an SSH pty relay is a byte *stream*: the resolved secret can split across
+  read boundaries, so a naive per-chunk exact-match scan misses it. The spec
+  must choose: hold-back windowing (delay the tail of each chunk by
+  `secret_len - 1` bytes to catch boundary splits), whole-frame-only scrubbing
+  with an honestly documented boundary, or no-relay-of-echo for session
+  mechanisms. Do not leave this to the implementer's discretion — it is the
+  difference between the README claim holding for SSH and holding only for
+  HTTP.
+- **S-2 — Windows assertion surfaces for `no_secret_leak` (P0-2).** The test's
+  surface list includes "the events feed," which does not exist on Windows
+  (P1-1). The spec must state which surfaces each platform variant asserts
+  over, so "green on all three platforms" means something precise — e.g. on
+  Windows the feed surface is skipped *until* named-pipe parity lands, and the
+  skip is recorded in the test output rather than silent.
+- **S-3 — Audit-path assertion in the P0-1 scrub (P0-1/P0-2 boundary).** P0-2's
+  sentinel test already asserts the secret is absent from audit-chain records;
+  P0-1's fix shape only names relay paths. The spec should state explicitly
+  that no audit or error path may incorporate response bytes (headers or body)
+  from which the secret could be reconstructed — `redacted_error` covers URLs;
+  the question is whether any error or record is built from response content at
+  all. One sentence in the spec, one case in the sentinel test.
+
 ---
 
 ## Definition of done for this milestone
 
-1. A reflected credential cannot reach agent space, and the README's
+1. Main's CI is green on Linux, macOS, and Windows — fmt, clippy, audit, deny
+   — before any other item is claimed done, because items 3 and 5 are
+   unmeasurable against a red baseline (P0-0).
+2. A reflected credential cannot reach agent space, and the README's
    unconditional claim is true as written (P0-1).
-2. `cargo test --test no_secret_leak` exists, is named in the README, and is
+3. `cargo test --test no_secret_leak` exists, is named in the README, and is
    green in CI on Linux, macOS, and Windows (P0-2).
-3. `notify_on_use` governs the event feed; denies always broadcast; audit
+4. `notify_on_use` governs the event feed; denies always broadcast; audit
    records are never suppressed (P0-3).
-4. A brokered action produces a visible notification to a person who is not
-   watching a terminal — on all three platforms — and a `needs_confirmation`
-   decision can be answered on all three (P1-1).
-5. One rule can bind each credential to its own endpoint, with a test proving
+5. A brokered action produces a visible notification — naming the responsible
+   human, not only the agent — to a person who is not watching a terminal, on
+   all three platforms, and a `needs_confirmation` decision can be answered on
+   all three (P1-1).
+6. One rule can bind each credential to its own endpoint, with a test proving
    key A cannot reach host B (P1-2).
-6. A long-lived session produces establishment, heartbeat, and summary events
+7. A long-lived session produces establishment, heartbeat, and summary events
    (P1-3).
-7. A first-time operator reaches a brokered, audited action through the UI
+8. A first-time operator reaches a brokered, audited action through the UI
    without reading a spec or typing a CLI command (P2-1).
-8. The rule editor shows what a rule permits before it is saved (P2-2).
+9. The rule editor shows what a rule permits before it is saved (P2-2).
+10. A reader who opens `docs/README.md` cold can resolve `PROTO-SPEC §9.3` to a
+    file and section without searching (P2-4).
+
+Items S-1 through S-3 in the backlog are decisions the spec must record before
+the corresponding slices are worked; they are done when decided and written
+down, not when code lands.
 
 Treat P0 items as blocking any demo to anyone outside the current contributor
 set — not because the system is unsafe without them, but because P0-1 and P0-2
