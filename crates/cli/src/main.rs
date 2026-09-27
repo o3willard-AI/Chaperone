@@ -691,7 +691,7 @@ fn cmd_doctor(flags: &Flags) -> Result<(), String> {
             } else {
                 use std::os::unix::net::UnixStream;
                 UnixStream::connect(std::path::Path::new(path))
-                    .map(|s| drop(s))
+                    .map(drop)
                     .map(|_| format!("{path} accepting connections"))
                     .map_err(|e| {
                         format!("connect failed: {e}; is serve running with --socket {path}?")
