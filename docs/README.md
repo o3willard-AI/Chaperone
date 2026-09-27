@@ -4,12 +4,19 @@ Chaperone is a local-first **authentication broker**: it lets an AI agent perfor
 
 These four documents define the system. They all derive from one canonical intent schema; **the Protocol Specification governs** wherever they differ.
 
-| # | Document | What it defines |
-|---|---|---|
-| 1 | [Protocol Specification](01-protocol-spec.md) | The wire contract between agent and gateway — the canonical schema. |
-| 2 | [Architecture Specification](02-architecture-spec.md) | The gateway's internal structure: layers, vault abstraction, injectors, privileged helper, audit chain, ephemerality rules. |
-| 3 | [Threat Model](03-threat-model.md) | Adversaries, the confused-deputy analysis, the secure-fragility tenet, and hardening. |
-| 4 | [Agent Skill](04-agent-skill.md) | The agent-facing projection of the schema. Source under [`skill/`](skill/). |
+| # | Document | Cited as | What it defines |
+|---|---|---|---|
+| 1 | [Protocol Specification](01-protocol-spec.md) | `PROTO-SPEC` | The wire contract between agent and gateway — the canonical schema. |
+| 2 | [Architecture Specification](02-architecture-spec.md) | `ARCH-SPEC` | The gateway's internal structure: layers, vault abstraction, injectors, privileged helper, audit chain, ephemerality rules. |
+| 3 | [Threat Model](03-threat-model.md) | `THREAT-MODEL` | Adversaries, the confused-deputy analysis, the secure-fragility tenet, and hardening. |
+| 4 | [Agent Skill](04-agent-skill.md) | `AGENT-SKILL` | The agent-facing projection of the schema. Source under [`skill/`](skill/). |
+
+**Citation convention.** The "Cited as" labels are how these documents refer to
+each other, how DESIGN-DECISIONS.md cites them, and how Rust doc-comments across
+`crates/` cite them — for example `PROTO-SPEC §9.3` means section 9.3 of
+[01-protocol-spec.md](01-protocol-spec.md). **These labels are not filenames;
+there is no `PROTO-SPEC.md`.** Each document declares its own label in its
+header table.
 
 **For users:** managing secrets with the built-in encrypted vault? Read the [Local Vault Guide](LOCAL-VAULT-GUIDE.md).
 
