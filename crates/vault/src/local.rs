@@ -160,17 +160,31 @@ impl LocalVault {
     /// A store already exists at `path`, the sealer is unknown to this
     /// build, or the sealing layer failed (e.g. the OS credential store
     /// is unreachable).
-    pub fn create(path: &Path, sealer_choice: &str, passphrase: zeroize::Zeroizing<String>) -> Result<Self, VaultError> {
+    pub fn create(
+        path: &Path,
+        sealer_choice: &str,
+        passphrase: zeroize::Zeroizing<String>,
+    ) -> Result<Self, VaultError> {
         if path.exists() {
             return Err(VaultError::AlreadyExists(path.display().to_string()));
         }
-        let (sealer_name, header_kdf, sealed, sealed_dek_for_handle): (String, KdfParams, Vec<u8>, Option<zeroize::Zeroizing<[u8; 32]>>) = match sealer_choice {
+        let (sealer_name, header_kdf, sealed, sealed_dek_for_handle): (
+            String,
+            KdfParams,
+            Vec<u8>,
+            Option<zeroize::Zeroizing<[u8; 32]>>,
+        ) = match sealer_choice {
             "passphrase" => {
                 let sealer = PassphraseSealer::new(passphrase);
                 let mut dek = zeroize::Zeroizing::new([0u8; 32]);
                 OsRng.fill_bytes(dek.as_mut());
                 let sealed = sealer.seal(&dek).map_err(VaultError::Seal)?;
-                (sealer.name().to_owned(), sealer.params().clone(), sealed, Some(dek))
+                (
+                    sealer.name().to_owned(),
+                    sealer.params().clone(),
+                    sealed,
+                    Some(dek),
+                )
             }
             #[cfg(feature = "keyring")]
             "keyring" => {
@@ -178,12 +192,17 @@ impl LocalVault {
                 let mut dek = zeroize::Zeroizing::new([0u8; 32]);
                 OsRng.fill_bytes(dek.as_mut());
                 let sealed = sealer.seal(&dek).map_err(VaultError::Seal)?;
-                (sealer.name().to_owned(), KdfParams {
-                    salt_b64: String::new(),
-                    m_cost_kib: 0,
-                    t_cost: 0,
-                    p_cost: 0,
-                }, sealed, Some(dek))
+                (
+                    sealer.name().to_owned(),
+                    KdfParams {
+                        salt_b64: String::new(),
+                        m_cost_kib: 0,
+                        t_cost: 0,
+                        p_cost: 0,
+                    },
+                    sealed,
+                    Some(dek),
+                )
             }
             other => {
                 return Err(VaultError::Corrupt(format!(
@@ -196,7 +215,11 @@ impl LocalVault {
                 )));
             }
         };
-        let dek = sealed_dek_for_handle.expect("sealer match arms always produce a DEK");
+        let dek = sealed_dek_for_handle.ok_or_else(|| {
+            VaultError::Corrupt(
+                "sealer match produced no DEK (unreachable by construction)".to_owned(),
+            )
+        })?;
 
         let mut body_nonce = [0u8; BODY_NONCE_LEN];
         OsRng.fill_bytes(&mut body_nonce);

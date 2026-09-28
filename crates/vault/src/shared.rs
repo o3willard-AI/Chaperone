@@ -79,9 +79,12 @@ mod tests {
     #[tokio::test]
     async fn resolves_through_the_shared_handle() {
         let dir = tempfile::tempdir().unwrap();
-        let mut vault =
-            LocalVault::create(&dir.path().join("v.bin"), "passphrase", Zeroizing::new("pass".to_owned()))
-                .unwrap();
+        let mut vault = LocalVault::create(
+            &dir.path().join("v.bin"),
+            "passphrase",
+            Zeroizing::new("pass".to_owned()),
+        )
+        .unwrap();
         vault
             .set("a/b", SecretString::new("s3cret".to_owned()))
             .unwrap();

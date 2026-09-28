@@ -128,7 +128,11 @@ pub async fn create_vault(
     if form.passphrase != form.confirm {
         return Redirect::to("/setup?err=passphrases+do+not+match");
     }
-    match LocalVault::create(&state.vault_path, "passphrase", zeroize::Zeroizing::new(form.passphrase)) {
+    match LocalVault::create(
+        &state.vault_path,
+        "passphrase",
+        zeroize::Zeroizing::new(form.passphrase),
+    ) {
         Ok(vault) => {
             // The freshly-created vault is already unsealed in memory: hand
             // it to the UI immediately instead of demanding a restart just
