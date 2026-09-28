@@ -167,7 +167,10 @@ agent received. If the sentinel appears there, the finding holds.
    marker. Exact-match byte scan against the live `SecretString` buffer, inside
    the injector, before the secret is zeroized — so the comparison happens in
    the one frame that legitimately holds the material, and nothing new is
-   retained. Apply identically to the session mechanisms' relayed output.
+   retained. For session mechanisms, see backlog **S-1 (RESOLVED 2026-09-28)**:
+   the primary defense is structural — non-echoing auth paths, so the secret
+   never enters the relayed stream — with the whole-frame exact-match scrub
+   kept as a cheap backstop where frame boundaries permit it.
 2. **Make the claim honest in the same PR.** Either the claim is unconditional
    because the scrub makes it so, or it is stated with its boundary. After (1),
    the first option is available — take it, and note the mechanism in
@@ -643,18 +646,38 @@ Recorded so these do not get re-litigated in a review, and so no one
 
 **Decide-during-spec (raised in review of this document, 2026-09-26; each is a
 design decision the fix-shape sections above deliberately leave open, recorded
-here so they are decided explicitly rather than discovered mid-slice):**
+here so they are decided explicitly rather than discovered mid-slice. S-1 has
+since been ruled; S-2 and S-3 remain open):**
 
-- **S-1 — Streaming scrub for session mechanisms (P0-1 fix, part 1).** "Apply
-  identically to the session mechanisms' relayed output" is one sentence, but
-  an SSH pty relay is a byte *stream*: the resolved secret can split across
-  read boundaries, so a naive per-chunk exact-match scan misses it. The spec
-  must choose: hold-back windowing (delay the tail of each chunk by
-  `secret_len - 1` bytes to catch boundary splits), whole-frame-only scrubbing
-  with an honestly documented boundary, or no-relay-of-echo for session
-  mechanisms. Do not leave this to the implementer's discretion — it is the
-  difference between the README claim holding for SSH and holding only for
-  HTTP.
+- **S-1 — Streaming scrub for session mechanisms (P0-1 fix, part 1). RESOLVED
+  (Stephen, 2026-09-28): option 3 — no-relay-of-echo.** Session mechanisms do
+  not scrub a byte stream; they are built so the resolved secret cannot appear
+  in relayed output at all — credentials never traverse an echoing pty (SSH
+  key auth from the vault, `SSH_ASKPASS`-style protocol-level handshakes, and
+  equivalent non-echoing paths per mechanism). Consequences:
+  - P0-1's "apply identically to the session mechanisms' relayed output" is
+    replaced: the HTTP scrub (whole-response, exact-match, before zeroize)
+    stands as written; for session mechanisms the requirement is the
+    *non-echo property*, asserted per mechanism, not a stream scrub. No
+    hold-back windowing machinery is built.
+  - P0-2's `no_secret_leak` test gains a session-mechanism case asserting the
+    sentinel never appears in relayed output — which under this decision is a
+    test of the auth path's echo-freedom, including any mechanism-specific
+    edge (e.g. a server that echoes its input banner).
+  - Mechanisms whose protocols cannot guarantee non-echo are **not connected
+    to** until they can. Coverage extends as gaps are found; each addition is
+    release-notes material and strengthens the public story ("we keep adding
+    services under the same unconditional no-leak guarantee") rather than
+    diluting it. The connectivity matrix is the honest surface for what is and
+    isn't supported.
+  - One residual for the spec to state: non-echo covers *our* relay path; a
+    target that independently logs or displays the credential it received
+    (then echoes that display back) is the same reflected-secret class as
+    P0-1's HTTP case. For session mechanisms the P0-1 exact-match scrub is
+    therefore still applied where a whole-frame scan is possible (command
+    output frames), as a cheap backstop — it is not the primary defense and
+    its boundary-split limitation is acceptable *because* the primary defense
+    is structural.
 - **S-2 — Windows assertion surfaces for `no_secret_leak` (P0-2).** The test's
   surface list includes "the events feed," which does not exist on Windows
   (P1-1). The spec must state which surfaces each platform variant asserts
@@ -698,7 +721,8 @@ here so they are decided explicitly rather than discovered mid-slice):**
 
 Items S-1 through S-3 in the backlog are decisions the spec must record before
 the corresponding slices are worked; they are done when decided and written
-down, not when code lands.
+down, not when code lands. S-1 is decided (no-relay-of-echo, 2026-09-28);
+S-2 and S-3 remain open.
 
 Treat P0 items as blocking any demo to anyone outside the current contributor
 set — not because the system is unsafe without them, but because P0-1 and P0-2
