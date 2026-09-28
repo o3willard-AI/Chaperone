@@ -239,7 +239,11 @@ for the effort involved, and it costs a day.
    transcript too, once it exists.
 
 **Acceptance.** (1) exists, is named in the README, is green in CI on Linux,
-macOS, and Windows, and fails if the scrub from P0-1 is reverted.
+macOS, and Windows, and fails if the scrub from P0-1 is reverted. "Green on
+Windows" carries the precise meaning fixed by **S-2 (RESOLVED 2026-09-28)**:
+every existing surface asserted clean, the unix-only events-feed surface
+skipped *with its name recorded in the test output* (not silent), and the
+Windows stub's loud-failure strings asserted secret-free.
 
 ---
 
@@ -659,8 +663,8 @@ Recorded so these do not get re-litigated in a review, and so no one
 
 **Decide-during-spec (raised in review of this document, 2026-09-26; each is a
 design decision the fix-shape sections above deliberately leave open, recorded
-here so they are decided explicitly rather than discovered mid-slice. S-1 and
-S-3 have since been ruled; S-2 remains open):**
+here so they are decided explicitly rather than discovered mid-slice. All
+three have since been ruled by Stephen, 2026-09-28):**
 
 - **S-1 — Streaming scrub for session mechanisms (P0-1 fix, part 1). RESOLVED
   (Stephen, 2026-09-28): option 3 — no-relay-of-echo.** Session mechanisms do
@@ -691,12 +695,34 @@ S-3 have since been ruled; S-2 remains open):**
     output frames), as a cheap backstop — it is not the primary defense and
     its boundary-split limitation is acceptable *because* the primary defense
     is structural.
-- **S-2 — Windows assertion surfaces for `no_secret_leak` (P0-2).** The test's
-  surface list includes "the events feed," which does not exist on Windows
-  (P1-1). The spec must state which surfaces each platform variant asserts
-  over, so "green on all three platforms" means something precise — e.g. on
-  Windows the feed surface is skipped *until* named-pipe parity lands, and the
-  skip is recorded in the test output rather than silent.
+- **S-2 — Windows assertion surfaces for `no_secret_leak` (P0-2). RESOLVED
+  (Stephen, 2026-09-28): option 1 — skip-with-record, plus stub error-string
+  assertions.** The surface list splits into what exists per platform:
+  - **Asserted everywhere (Linux, macOS, Windows):** agent-facing frames,
+    audit chain records, gateway stdout/stderr, the policy file, every error
+    response, and the outbound wire (exactly-one-place check). These surfaces
+    are platform-independent and the test runs them in full on all three.
+  - **Skipped-with-record on Windows (until P1-1 named-pipe parity):** the
+    events feed — the only `#[cfg(unix)]` entry in P0-2's surface list. (The
+    console/confirmation channel is unix-only too, but it is not a
+    `no_secret_leak` surface: it carries confirmation prompts and answers,
+    never the resolved secret. Its Windows parity is a P1-1 concern, tracked
+    there.) The Windows test run **enumerates the skipped surface in its
+    output** ("events feed: SKIPPED — no Windows transport until named-pipe
+    parity, tracked in P1-1") rather than passing silently. CI green on
+    Windows then means precisely "every existing surface is clean, and the
+    gap is named" — not "all surfaces checked."
+  - **Stub error-strings are still asserted (option 4 folded in):** the
+    Windows `EventHub::listen()` fails loudly (`"events socket not implemented
+    on this platform"`, issue #43) and `broadcast` is a documented no-op that
+    drops lines. The test asserts these stub paths cannot carry secret
+    material — i.e. the loud-failure strings contain no sentinel — so even the
+    absent surface's *error text* is proven clean rather than assumed.
+  - **Implementation shape:** the test enumerates surfaces from a small
+    platform-capability map (not scattered `#[cfg]` branches), so when
+    named-pipe parity lands the Windows skip list shrinks and coverage
+    tightens with no test rewrite. This keeps P0-2's "green on all three
+    platforms" honest without waiting on P1-1's larger transport slice.
 - **S-3 — Audit-path assertion in the P0-1 scrub (P0-1/P0-2 boundary).
   RESOLVED (Stephen, 2026-09-28): option 1 now — normative sentence +
   sentinel coverage; option 2 (type-level enforcement) deferred to backlog
@@ -745,9 +771,10 @@ S-3 have since been ruled; S-2 remains open):**
 
 Items S-1 through S-3 in the backlog are decisions the spec must record before
 the corresponding slices are worked; they are done when decided and written
-down, not when code lands. S-1 (no-relay-of-echo) and S-3 (normative
-sentence plus reflecting-target sentinel coverage; structural hardening
-deferred to B-4) are decided; S-2 remains open.
+down, not when code lands. All three are decided (Stephen, 2026-09-28): S-1
+(no-relay-of-echo), S-2 (skip-with-record per-platform surfaces plus stub
+error-string assertions), S-3 (normative sentence plus reflecting-target
+sentinel coverage; structural hardening deferred to B-4).
 
 Treat P0 items as blocking any demo to anyone outside the current contributor
 set — not because the system is unsafe without them, but because P0-1 and P0-2
