@@ -643,11 +643,24 @@ Recorded so these do not get re-litigated in a review, and so no one
   correlation, not before.
 - **B-3 — `serve --transcript`.** See P0-2 layer 3. Wanted for enterprise
   evaluation; not needed for the first credible demo.
+- **B-4 — Type-level secret-free audit/error paths (S-3 option 2, deferred by
+  Stephen 2026-09-28).** Make the S-3 property structural rather than
+  test-enforced: the audit/error constructors accept only a reference-shaped
+  facts type (e.g. an `AuditFacts` struct), so response bytes are unreachable
+  from the recording path — you cannot log what you cannot touch. Same
+  philosophy as the licensing design's structural non-enforcement ("no
+  `disable()` exists to call"). **Gating note: likely required BEFORE SafeKeyPass
+  (Chaperone Enterprise) ships** — the enterprise tier sells defensible
+  evidence to compliance buyers, and "the audit path is secret-free by
+  construction" is a materially stronger claim than "a test asserts it."
+  Moderate cost: an API refactor of the injector→audit boundary. Revisit at
+  SafeKeyPass spec time at the latest; until then S-3 option 1 (normative
+  sentence + reflecting-target sentinel coverage) holds the line.
 
 **Decide-during-spec (raised in review of this document, 2026-09-26; each is a
 design decision the fix-shape sections above deliberately leave open, recorded
-here so they are decided explicitly rather than discovered mid-slice. S-1 has
-since been ruled; S-2 and S-3 remain open):**
+here so they are decided explicitly rather than discovered mid-slice. S-1 and
+S-3 have since been ruled; S-2 remains open):**
 
 - **S-1 — Streaming scrub for session mechanisms (P0-1 fix, part 1). RESOLVED
   (Stephen, 2026-09-28): option 3 — no-relay-of-echo.** Session mechanisms do
@@ -684,13 +697,24 @@ since been ruled; S-2 and S-3 remain open):**
   over, so "green on all three platforms" means something precise — e.g. on
   Windows the feed surface is skipped *until* named-pipe parity lands, and the
   skip is recorded in the test output rather than silent.
-- **S-3 — Audit-path assertion in the P0-1 scrub (P0-1/P0-2 boundary).** P0-2's
-  sentinel test already asserts the secret is absent from audit-chain records;
-  P0-1's fix shape only names relay paths. The spec should state explicitly
-  that no audit or error path may incorporate response bytes (headers or body)
-  from which the secret could be reconstructed — `redacted_error` covers URLs;
-  the question is whether any error or record is built from response content at
-  all. One sentence in the spec, one case in the sentinel test.
+- **S-3 — Audit-path assertion in the P0-1 scrub (P0-1/P0-2 boundary).
+  RESOLVED (Stephen, 2026-09-28): option 1 now — normative sentence +
+  sentinel coverage; option 2 (type-level enforcement) deferred to backlog
+  B-4, likely required before SafeKeyPass ships.** Concretely:
+  - The spec carries one normative sentence: *"No audit record, error string,
+    log line, or event-feed payload may incorporate response bytes (headers or
+    body) from which the resolved secret could be reconstructed; error and
+    audit content is limited to request-side facts, references, and redacted
+    transport diagnostics."* (Verified against current code when ruled: the
+    property already holds — `http.rs` errors are built from transport errors
+    via `redacted_error`, request-side facts, and limits; `AuditEvent` records
+    references and envelope evidence, never response bytes. S-3 exists so the
+    property survives the next contributor's "helpful" debug addition.)
+  - P0-2's sentinel test asserts the audit-record and error-response surfaces
+    against the **reflecting target** (P0-1's hostile endpoint), so any future
+    response-echoing error or record path fails the test immediately.
+  - Structural hardening (constructors that cannot receive response bytes) is
+    B-4, with the SafeKeyPass gating note recorded there.
 
 ---
 
@@ -721,8 +745,9 @@ since been ruled; S-2 and S-3 remain open):**
 
 Items S-1 through S-3 in the backlog are decisions the spec must record before
 the corresponding slices are worked; they are done when decided and written
-down, not when code lands. S-1 is decided (no-relay-of-echo, 2026-09-28);
-S-2 and S-3 remain open.
+down, not when code lands. S-1 (no-relay-of-echo) and S-3 (normative
+sentence plus reflecting-target sentinel coverage; structural hardening
+deferred to B-4) are decided; S-2 remains open.
 
 Treat P0 items as blocking any demo to anyone outside the current contributor
 set — not because the system is unsafe without them, but because P0-1 and P0-2
