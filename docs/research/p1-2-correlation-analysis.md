@@ -1,6 +1,6 @@
 # P1-2 design analysis — policy correlation: capture-substitution vs pairs table
 
-**Status:** decision paper — for Stephen to rule, Hephaestus to review. Not a decision until D43 is recorded.
+**Status:** **RULED — Option B (pairs), Stephen 2026-09-30.** Recorded as D43 in DESIGN-DECISIONS.md. This paper is the supporting analysis; §8's draft became the D43 entry (lightly expanded). Implementation slice may now be tasked.
 **Author:** hermes-ox-chap, 2026-09-30
 **Implements the call demanded by:** `docs/MVP-GAP-REVIEW.md` P1-2 ("Make this call explicitly and record it in DESIGN-DECISIONS.md")
 **Scope:** contained entirely within `chaperone-policy`; no protocol change either way (per P1-2's own note).
@@ -146,14 +146,11 @@ mechanism = "ssh"
 
 CONNECTIVITY-MATRIX.md currently reads as though per-host keys are the intended model for SSH at scale. It should say: per-host keys are the **v1 shape**; the intended model at fleet scale is a **certificate authority with short-lived minted certificates (B-1)**; correlation (this decision) is what makes v1 survivable until B-1 lands. A reader with fleet-operations experience should see the roadmap, not infer we haven't thought about scale.
 
-## 8. Draft D43 text (for DESIGN-DECISIONS.md, on approval)
+## 8. Recorded decision
 
-> ## D43 — Policy correlation: explicit pairs, not capture substitution
->
-> Fleet-scale SSH (P1-2) needs "this credential only against this endpoint" without N hand-maintained rules. Two candidate mechanisms were analyzed (docs/research/p1-2-correlation-analysis.md): capture substitution (`cred_ref = "local://ssh/fleet/{host}"` bound to a `target_uri` capture) and an explicit `[[rule.pair]]` table of (cred_ref, target_uri) rows on a rule.
->
-> **Decision: pairs.** A rule may carry pair rows; the rule matches when its shared axes match AND the request's (cred_ref, target_uri) matches a row (rows parse with the standard `Matcher` tags; bare strings are Exact). Absent pairs, rules behave exactly as before.
->
-> Rationale: keeps matching first-order — no agent-influenced string is ever composed into a pattern that selects credentials (the confused-deputy posture, THREAT-MODEL §3); the permission set is readable rather than simulated (D3/D17 auditability); rows are the natural output of bulk inventory import (B-2) and are cleanly deleted when CA-based minting (B-1) supersedes per-host secrets. Substitution remains possible as a future addition if real fleets demand convention-matching; the reverse migration would not be.
->
-> Denials and decisions report the matched pair index for audit legibility. Limits and notify remain rule-level.
+**Ruled: Option B (pairs), Stephen 2026-09-30.** The canonical record is
+**D43** in `docs/DESIGN-DECISIONS.md` (this paper's draft became that entry,
+lightly expanded with the verified capture-injection example, the empty-`pair`
+semantics, the pairs-with-deny case, and the acceptance gate). DESIGN-DECISIONS.md
+is authoritative; this paper is the supporting analysis. Implementation slice
+may now be tasked against D43.

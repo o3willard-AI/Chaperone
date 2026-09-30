@@ -695,3 +695,57 @@ guarantee); it affects only the "rebuild and compare" strongest check. Not
 retroactively fixable for already-tagged releases; first release built with
 this flag is the first one for which the strongest verification path
 actually holds on Windows.
+
+## D43 — Policy correlation: explicit pairs, not capture substitution
+
+Fleet-scale SSH (MVP-GAP-REVIEW P1-2) needs "this credential only against this
+endpoint" without N hand-maintained rules. Two candidate mechanisms were
+analyzed (`docs/research/p1-2-correlation-analysis.md`): capture substitution
+(`cred_ref = "local://ssh/fleet/{host}"` bound to a `target_uri` capture) and
+an explicit `[[rule.pair]]` table of (cred_ref, target_uri) rows on a rule.
+
+**Decision (Stephen, 2026-09-30): pairs.** A rule may carry pair rows; the
+rule matches when its shared axes match AND the request's (cred_ref,
+target_uri) matches a row. Row fields parse with the standard `Matcher` tags
+(`glob:`/`prefix:`/`exact:`); bare strings are Exact — rows are literals in
+practice, and a deliberate `glob:` in a row is the operator's explicit choice.
+Absent pairs, rules behave exactly as before: strictly additive, no migration,
+no existing rule changes meaning. Empty `pair = []` is equivalent to absent;
+the canonical writer never emits an empty table.
+
+Rationale (full analysis in the decision paper):
+
+1. **Keeps matching first-order.** Substitution composes an agent-controlled
+   string (the captured `target_uri` span) into the pattern that selects
+   credentials — second-order matching in the codebase whose thesis is the
+   confused-deputy problem (THREAT-MODEL §3). The paper's verified example:
+   `ssh://{host}.internal` matching `ssh://app-01.attacker.com/.internal`
+   captures `app-01.attacker.com/`, slash included (the D17 glob looseness
+   compounding with interpolation). Pairs adds correlation with zero new
+   trust assumptions.
+2. **The permission set is readable, not simulated.** P1-2's security
+   complaint was over-permission invisible in rule text; a pairs rule cannot
+   over-grant relative to what it says (D3/D17 auditability).
+3. **Cheaper half of every pairing:** one slice in `chaperone-policy`; rows
+   are B-2 bulk-import's natural output; rows are deleted when B-1 (CA
+   minting) supersedes per-host secrets — no language feature to deprecate.
+4. **Reversible in the safe direction:** substitution can be added later if
+   real fleets demand convention-matching; removing it after shipping would
+   be a config-compatibility trap.
+
+Accepted cost: a perfectly regular 300-host fleet carries 300 rows where
+substitution gives one line — acceptable because B-2 makes rows
+machine-generated and the rows display what a one-liner would hide.
+
+Details pinned by this decision: denials/decisions report the matched pair
+index (`DecisionSource::Rule` carries it) for audit and `policy-check`
+legibility; pairs are an AND-clause within a rule, not separate rules, so
+first-match-wins ordering across rules is unchanged; `effect = "deny"` rules
+may carry pairs (deny key A against host B specifically under a broader
+allow); limits and notify stay rule-level; one pair list per rule — pairing
+other axis combinations is a future decision, not a silent generalization.
+
+Acceptance gate (P1-2's): one rule expresses "each fleet key may be used only
+against its own host," and a test proves key A cannot reach host B under it —
+plus TOML round-trip stability, default-deny untouched, and `policy-check`
+showing the matched pair.
