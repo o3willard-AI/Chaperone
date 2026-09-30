@@ -73,7 +73,7 @@ A non-root local process trying to reach the socket, or read gateway memory. **D
 
 ### 2.3 T3 — Malicious target
 
-The endpoint the agent is acting against may be hostile or compromised, returning oversized, malformed, or injection-laden responses. **Defenses:** the gateway treats all target output as untrusted data, enforces `max_response_bytes` and timeouts, and never interprets a response as an instruction. Response content is relayed to the agent as data, never executed by the gateway.
+The endpoint the agent is acting against may be hostile or compromised, returning oversized, malformed, or injection-laden responses. **Defenses:** the gateway treats all target output as untrusted data, enforces `max_response_bytes` and timeouts, and never interprets a response as an instruction. Response content is relayed to the agent as data, never executed by the gateway. A target that **reflects the injected credential** (echo endpoints, debug surfaces, hostile servers) is answered by a relay-side scrub: before response headers or body leave the injector — the one frame that legitimately holds the material, before zeroization — every occurrence of the credential's wire forms (the assembled `Authorization` value and the raw secret) is replaced with a fixed `[REDACTED-CREDENTIAL]` marker. The scrub holds zero new state past the frame. `cargo test --test no_secret_leak` asserts this against a deliberately reflecting target: the secret reaches the outbound wire and appears in **zero** agent-visible or persisted surfaces.
 
 ### 2.4 T4 — Vault / supply chain
 

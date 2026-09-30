@@ -9,7 +9,12 @@ sends a *signed intent* naming a credential *reference*; the gateway verifies
 who is asking, decides whether policy allows it, fetches the real secret at the
 last possible moment, injects it on the outbound side, and returns the result.
 
-The agent holds a reference, never a secret.
+The agent holds a reference, never a secret. This is not just an architectural
+claim — it is a falsifiable one: `cargo test --test no_secret_leak` runs a
+high-entropy sentinel through a deliberately **reflecting** target (one that
+echoes the injected credential back) and asserts it reaches the outbound wire
+and appears in **zero** agent-visible or persisted surfaces. Run it against
+your own build.
 
 Chaperone is not "a thing that injects credentials." It is a **policy
 enforcement point with attribution and audit**: it decides which agent may use
