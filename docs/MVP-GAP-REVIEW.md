@@ -84,9 +84,9 @@ Reproduce first, then fix, then mark.
 | P0-1 | Response path relays a reflected credential back into agent space | Blocking | The README's central claim is written unconditionally; the HTTP injector returns target headers and body verbatim, so a reflecting target launders the secret straight into agent context |
 | P0-2 | No test proves the no-leak property | Blocking | The guarantee is architectural, not demonstrated. There is no test that would fail if a secret leaked into agent-visible bytes |
 | P0-3 | `notify_on_use` is a control that does nothing | Blocking | Parsed, round-tripped to TOML, rendered as a checkbox — and read by no consumer. The events feed broadcasts every decision regardless |
-| P1-1 | No notification consumer ships, and Windows has no channel at all | High | "The accountable person is notified" currently means "they happened to have a terminal attached to a Unix socket." On Windows even that is unavailable |
-| P1-2 | Policy expresses a cross-product, not a pairing | High | Independent axes mean one fleet rule permits *any* key against *any* host. Binding key→host costs one rule per host — and the over-permission is invisible in the rule text |
-| P1-3 | Session notification granularity is per-establishment, not per-use | High | One SSH session = one event, then silence across every command relayed. This is the exact case D37 says notification exists for |
+| P1-1 | ~~No notification consumer ships~~ PARTIALLY SHIPPED (PR #75): `chaperone tail` + `sponsor_id` in feed; toast + Windows parity open | High | "The accountable person is notified" currently means "they happened to have a terminal attached to a Unix socket." On Windows even that is unavailable |
+| P1-2 | ~~Policy expresses a cross-product, not a pairing~~ SHIPPED (PR #74, D43 pairs) | High | Independent axes mean one fleet rule permits *any* key against *any* host. Binding key→host costs one rule per host — and the over-permission is invisible in the rule text |
+| P1-3 | ~~Session notification granularity is per-establishment, not per-use~~ SHIPPED (PR #75) | High | One SSH session = one event, then silence across every command relayed. This is the exact case D37 says notification exists for |
 | P2-1 | The wizard is artifact-shaped; the user's task is intent-shaped | Medium | Setup walks vault → policy → audit key → enrollment. The user's mental model is one sentence, and it isn't that one |
 | P2-2 | The rule editor has no decision preview | Medium | Four glob matchers with no "what would this allow?" feedback, against a matcher whose `*` spans `/` and `:`. `policy-check` already exists and is CLI-only |
 | P2-3 | Vault-passphrase irreversibility is surfaced too late | Medium | No recovery path is a legitimate design choice; learning it at rotation time is how a user is lost permanently |
@@ -299,6 +299,26 @@ produces both regardless of the flag.
 
 ## P1-1 — No notification consumer ships, and Windows has no channel at all
 
+**PARTIALLY SHIPPED (PR #75, 2026-09-30).** Items 1 and the sponsor gap are
+done; items 2–3 remain open:
+
+- **SHIPPED — `chaperone tail`** (item 1): subscribes to the feed and renders
+  one human-legible line per event (`[decision] allow human@example.org via
+  agent:x ssh/ssh://host`, `[session summary|heartbeat] … N cmd(s), NB in,
+  NB out, Ns elapsed`, `[POLICY DRIFT] …`); unknown types pass through as
+  compact JSON rather than being dropped. Serve's socket-binding message now
+  names the command. Unix-only by construction until item 3 lands (Windows
+  has no feed transport yet — same S-2 skip-with-record posture).
+- **SHIPPED — feed names the accountable human:** `sponsor_id` is in the
+  `decision` payload and in every session event; `tail` renders it as
+  `sponsor via agent`. Consumer-side join was chosen over adding
+  `sponsor_name` to the payload (D35 "no new facts" stays trivially true;
+  the enrollment store remains the one source for display names). P0-2's
+  sentinel already asserts the feed line secret-free and passes unchanged.
+- **OPEN — OS-native toast** (item 2) and **Windows transport parity**
+  (item 3: named-pipe feed + console parity). Item 3 also unshrinks the
+  S-2 skip list without a test rewrite.
+
 **What exists.** A read-only fan-out socket
 (`crates/gateway-core/src/events.rs`, D35) broadcasting one JSON line per
 terminal decision to unlimited subscribers. The design is right and the
@@ -453,6 +473,20 @@ against its own host," and a test proves key A cannot reach host B under it.
 ---
 
 ## P1-3 — Session notification granularity is per-establishment, not per-use
+
+**SHIPPED (PR #75, 2026-09-30).** The fix shape below is implemented as
+specified: in-memory per-session counters (`record_relay` at the relay site,
+never at the audit site), `session.summary` on both teardown paths (client
+close *and* TTL reap — lazy expiry alone would never surface an abandoned
+session), `session.heartbeat` from a liveness scan at
+`--session-heartbeat-secs` (default 300; 0 disables beats but reaping
+continues), idempotent per window. Per-command detail stays in the audit
+chain; the audit chain itself is unchanged by this slice (feed-only events).
+Acceptance is pinned by `tests/session_events.rs`: counters accurate
+(commands/bytes_in/bytes_out), summary carries sponsor + mechanism + target
+references and **no relayed content** (asserted against the command text and
+the simulated key PEM), heartbeat fires once per window, TTL reap emits the
+summary.
 
 **What the code does.** The broadcast fires once per terminal intent decision.
 For a brokered SSH or DB session, that is one event at establishment. The next

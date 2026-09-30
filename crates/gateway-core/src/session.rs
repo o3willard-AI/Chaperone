@@ -85,13 +85,42 @@ impl Default for SessionTable {
     }
 }
 
-/// One live session: owner binding, TTL, output sequencing, channel.
+/// One live session: owner binding, TTL, output sequencing, channel, and the
+/// P1-3 usage counters that feed the live event summary/heartbeat (in-memory
+/// only — the audit chain is unchanged by these; see MVP-GAP-REVIEW P1-3).
 pub struct Entry {
     pub(crate) agent_id: String,
+    /// Mechanism this session brokers ("ssh" | "db-scram"); for feed context.
+    pub(crate) mechanism: String,
+    /// Target URI/label at open time; for feed context (never a secret).
+    pub(crate) target_uri: String,
+    pub(crate) target_label: String,
     pub(crate) expires_at: Instant,
+    pub(crate) opened_at: Instant,
     pub(crate) out_seq: AtomicU64,
+    /// Relay counters for the session-summary / heartbeat feed events.
+    pub(crate) commands: AtomicU64,
+    pub(crate) bytes_in: AtomicU64,
+    pub(crate) bytes_out: AtomicU64,
+    /// When the last heartbeat was emitted (None = none yet). A Mutex rather
+    /// than an atomic because the heartbeat scan reads-modifies-writes it under
+    /// the same table lock it already holds.
+    pub(crate) last_beat: Mutex<Option<Instant>>,
     #[allow(dead_code)] // retained for future multi-channel sessions
     pub(crate) channel: Arc<tokio::sync::Mutex<Box<dyn SessionChannel>>>,
+}
+
+/// A point-in-time usage snapshot of a live session (P1-3 feed events).
+#[derive(Debug, Clone, Copy)]
+pub struct SessionStats {
+    /// Command frames relayed into the session since open.
+    pub commands: u64,
+    /// Bytes written to the channel since open.
+    pub bytes_in: u64,
+    /// Bytes read back from the channel since open.
+    pub bytes_out: u64,
+    /// Wall-clock duration since the session opened.
+    pub elapsed: Duration,
 }
 
 /// Handle -> live-session table.
@@ -115,29 +144,42 @@ impl SessionTable {
     }
 
     /// Issues a fresh unguessable handle bound to `agent_id`.
+    ///
+    /// Returns the handle AND the live [`Entry`] so the caller can attach a
+    /// heartbeat scan (P1-3) without a second lookup.
+    #[allow(clippy::too_many_arguments)]
     pub fn insert(
         &self,
         agent_id: &str,
+        mechanism: &str,
+        target_uri: &str,
+        target_label: &str,
         channel: Box<dyn SessionChannel>,
         ttl: Duration,
-    ) -> String {
+    ) -> (String, Arc<Entry>) {
         let mut raw = [0u8; 32];
         OsRng.fill_bytes(&mut raw);
         let handle = format!(
             "{SESSION_PREFIX}{}",
             chaperone_protocol::encode_signature(&raw)
         );
+        let entry = Arc::new(Entry {
+            agent_id: agent_id.to_owned(),
+            mechanism: mechanism.to_owned(),
+            target_uri: target_uri.to_owned(),
+            target_label: target_label.to_owned(),
+            expires_at: Instant::now() + ttl,
+            opened_at: Instant::now(),
+            out_seq: AtomicU64::new(0),
+            commands: AtomicU64::new(0),
+            bytes_in: AtomicU64::new(0),
+            bytes_out: AtomicU64::new(0),
+            last_beat: Mutex::new(None),
+            channel: Arc::new(tokio::sync::Mutex::new(channel)),
+        });
         let mut guard = self.lock();
-        guard.insert(
-            handle.clone(),
-            Arc::new(Entry {
-                agent_id: agent_id.to_owned(),
-                expires_at: Instant::now() + ttl,
-                out_seq: AtomicU64::new(0),
-                channel: Arc::new(tokio::sync::Mutex::new(channel)),
-            }),
-        );
-        handle
+        guard.insert(handle.clone(), Arc::clone(&entry));
+        (handle, entry)
     }
 
     /// Owner-checked lookup; maps every failure to its §10 code pair.
@@ -178,6 +220,33 @@ impl SessionTable {
         }
         guard.remove(handle)
     }
+
+    /// Snapshot of all live sessions as (handle, entry) pairs, for the P1-3
+    /// heartbeat scan. Holds the table lock only while cloning the Arc handles.
+    pub fn snapshot(&self) -> Vec<(String, Arc<Entry>)> {
+        self.lock()
+            .iter()
+            .map(|(h, e)| (h.clone(), Arc::clone(e)))
+            .collect()
+    }
+
+    /// Removes sessions past their TTL and returns them (P1-3). TTL expiry is
+    /// otherwise lazy — an abandoned session lingers until its agent touches
+    /// it again — so the heartbeat scan is the reaping point, and the caller
+    /// emits each reaped session's summary before it is forgotten.
+    pub fn reap_expired(&self) -> Vec<(String, Arc<Entry>)> {
+        let now = Instant::now();
+        let mut guard = self.lock();
+        let expired: Vec<String> = guard
+            .iter()
+            .filter(|(_, e)| now >= e.expires_at)
+            .map(|(h, _)| h.clone())
+            .collect();
+        expired
+            .into_iter()
+            .filter_map(|h| guard.remove(&h).map(|e| (h, e)))
+            .collect()
+    }
 }
 
 impl Entry {
@@ -194,5 +263,69 @@ impl Entry {
     /// Clonable handle for async shutdown without holding the table lock.
     pub fn channel_arc(&self) -> Arc<tokio::sync::Mutex<Box<dyn SessionChannel>>> {
         Arc::clone(&self.channel)
+    }
+
+    /// The opening agent's id (feed context; already public via decisions).
+    #[must_use]
+    pub fn agent_id(&self) -> &str {
+        &self.agent_id
+    }
+
+    /// Mechanism this session brokers (feed context).
+    #[must_use]
+    pub fn mechanism(&self) -> &str {
+        &self.mechanism
+    }
+
+    /// Target URI at open time (feed context; a reference, never a secret).
+    #[must_use]
+    pub fn target_uri(&self) -> &str {
+        &self.target_uri
+    }
+
+    /// Human target label at open time (feed context).
+    #[must_use]
+    pub fn target_label(&self) -> &str {
+        &self.target_label
+    }
+
+    /// Records one relayed command frame with its byte counts (P1-3).
+    pub fn record_relay(&self, bytes_in: u64, bytes_out: u64) {
+        self.commands.fetch_add(1, Ordering::Relaxed);
+        self.bytes_in.fetch_add(bytes_in, Ordering::Relaxed);
+        self.bytes_out.fetch_add(bytes_out, Ordering::Relaxed);
+    }
+
+    /// Point-in-time usage snapshot (P1-3 feed events).
+    #[must_use]
+    pub fn stats(&self) -> SessionStats {
+        SessionStats {
+            commands: self.commands.load(Ordering::Relaxed),
+            bytes_in: self.bytes_in.load(Ordering::Relaxed),
+            bytes_out: self.bytes_out.load(Ordering::Relaxed),
+            elapsed: self.opened_at.elapsed(),
+        }
+    }
+
+    /// Heartbeat bookkeeping: true when a beat is due (session open longer
+    /// than `threshold` and none emitted within the last `threshold`);
+    /// records the beat time when it returns true.
+    pub fn heartbeat_due(&self, threshold: Duration) -> bool {
+        let now = Instant::now();
+        if now.duration_since(self.opened_at) < threshold {
+            return false;
+        }
+        let mut guard = self
+            .last_beat
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let due = match *guard {
+            None => true,
+            Some(last) => now.duration_since(last) >= threshold,
+        };
+        if due {
+            *guard = Some(now);
+        }
+        due
     }
 }
