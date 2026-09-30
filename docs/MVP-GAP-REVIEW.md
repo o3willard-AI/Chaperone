@@ -428,6 +428,13 @@ it sits at P1 rather than in the backlog.
    explicitly and record it in DESIGN-DECISIONS.md.** Either way the change is
    contained entirely within `chaperone-policy`, requires no protocol change,
    and is straightforwardly testable.
+   > **CALLED (Stephen, 2026-09-30): `pairs` table — recorded as D43.** Full
+   > analysis in `docs/research/p1-2-correlation-analysis.md`. Decisive: pairs
+   > keeps matching first-order (substitution composes an agent-controlled
+   > captured string into the pattern that selects credentials — the
+   > confused-deputy posture argues against it, and the paper verifies a
+   > concrete capture-injection case), and a pairs rule's permission set is
+   > readable rather than simulated. Implementation slice may be tasked.
 2. **Then bulk inventory import.** `chaperone vault import` fed by
    `~/.ssh/config`, `known_hosts`, or a CSV, creating entries **and** the
    paired rule in one action. Only worth building after (1) exists — without

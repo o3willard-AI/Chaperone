@@ -233,11 +233,12 @@ fn cmd_policy_check(flags: &Flags) -> Result<(), String> {
         decision.effect.as_str(),
         match &decision.source {
             chaperone_policy::DecisionSource::DefaultDeny => "default_deny".to_owned(),
-            chaperone_policy::DecisionSource::Rule { index, name } => format!(
-                "rule[{index}]{}",
+            chaperone_policy::DecisionSource::Rule { index, name, pair } => format!(
+                "rule[{index}]{}{}",
                 name.as_deref()
                     .map(|n| format!(" ({n})"))
-                    .unwrap_or_default()
+                    .unwrap_or_default(),
+                pair.map(|p| format!(" pair[{p}]")).unwrap_or_default()
             ),
         },
         decision

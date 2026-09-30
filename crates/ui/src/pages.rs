@@ -497,6 +497,25 @@ pub async fn rules_page(
                         axis_text(&rule.target_uri),
                         axis_text(&rule.mechanism),
                     );
+                    // D43: show pair bindings so the over-permission gap
+                    // P1-2 warned about is visible in the rule text, not
+                    // hidden. Each row is `cred -> target`.
+                    let pairs_text = if rule.pairs.is_empty() {
+                        String::new()
+                    } else {
+                        let rows: Vec<String> = rule
+                            .pairs
+                            .iter()
+                            .map(|p| {
+                                format!(
+                                    "{} \u{2192} {}",
+                                    axis_text(&p.cred_ref),
+                                    axis_text(&p.target_uri)
+                                )
+                            })
+                            .collect();
+                        format!(" \u{00B7} {} pair(s): {}", rows.len(), rows.join("; "))
+                    };
                     let limits = format!(
                         "{}{}",
                         rule.limits
@@ -516,7 +535,7 @@ pub async fn rules_page(
                          <button class=\"danger\" type=\"submit\">delete</button></form></td></tr>",
                         esc(rule.name.as_deref().unwrap_or("")),
                         effect_badge(rule.effect.as_str()),
-                        esc(&axes),
+                        esc(&format!("{axes}{pairs_text}")),
                         if rule.notify_on_use {
                             "\u{2705}"
                         } else {
@@ -683,6 +702,16 @@ pub async fn rules_new(
     body.push_str(
         "<p><label><input type=\"checkbox\" name=\"notify_on_use\" checked> notify me when this credential is used (on_use)</label></p>",
     );
+    body.push_str(&field(
+        "Credential-to-endpoint bindings (optional; one per line: cred_ref | target_uri)",
+        "<textarea name=\"pairs\" rows=\"4\" spellcheck=\"false\" \
+         placeholder=\"local://ssh/fleet/app-01 | ssh://app-01.internal:22&#10;\
+         local://ssh/fleet/app-02 | ssh://app-02.internal:22\"></textarea>\
+         <p class=\"muted\">Leave blank for a plain axis rule. When set, the request must match \
+         one binding <em>in addition</em> to the axes above \u{2014} this is how one rule binds each \
+         fleet key to its own host (D43). Each field takes the same <code>glob:</code>/<code>prefix:</code>/\
+         <code>exact:</code> tags as the axes; a bare value is an exact match.</p>",
+    ));
     body.push_str(&format!(
         "<div class=\"grid\">{}{}</div>",
         field(
@@ -718,6 +747,11 @@ pub struct RuleForm {
     cred_ref: String,
     #[serde(default)]
     target_uri: String,
+    /// D43 pair rows, one per line: `cred_ref | target_uri`. Blank means no
+    /// pair clause. Parsed through the same `Matcher::parse` as the axes, so
+    /// the form cannot express anything the file format cannot (D36).
+    #[serde(default)]
+    pairs: String,
     effect: String,
     #[serde(default)]
     notify_on_use: Option<String>,
@@ -754,6 +788,47 @@ pub async fn rules_add(
         max_response_bytes: form.max_response_bytes.trim().parse().ok(),
         session_ttl_s: form.session_ttl_s.trim().parse().ok(),
     };
+    // D43 pair rows: one `cred_ref | target_uri` per line; blank lines
+    // ignored; a malformed line fails the whole submit loudly (never
+    // silently drops a binding — a dropped row would over-permit).
+    let mut pairs = Vec::new();
+    for (li, line) in form.pairs.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((cred_raw, target_raw)) = line.split_once('|') else {
+            return Redirect::to(&format!(
+                "/rules/new?err={}",
+                urlenc(&format!(
+                    "pair line {} must be `cred_ref | target_uri`",
+                    li + 1
+                ))
+            ));
+        };
+        let cred_ref = match Matcher::parse(cred_raw.trim()) {
+            Ok(m) => m,
+            Err(e) => {
+                return Redirect::to(&format!(
+                    "/rules/new?err={}",
+                    urlenc(&format!("pair line {} cred_ref: {e}", li + 1))
+                ));
+            }
+        };
+        let target_uri = match Matcher::parse(target_raw.trim()) {
+            Ok(m) => m,
+            Err(e) => {
+                return Redirect::to(&format!(
+                    "/rules/new?err={}",
+                    urlenc(&format!("pair line {} target_uri: {e}", li + 1))
+                ));
+            }
+        };
+        pairs.push(chaperone_policy::Pair {
+            cred_ref,
+            target_uri,
+        });
+    }
     let rule = Rule {
         name: (!form.name.trim().is_empty()).then(|| form.name.trim().to_owned()),
         notify_on_use: form
@@ -765,6 +840,7 @@ pub async fn rules_add(
         cred_ref: axis(form.cred_ref.trim()),
         target_uri: axis(form.target_uri.trim()),
         mechanism: axis(&form.mechanism),
+        pairs,
         limits,
     };
 

@@ -685,12 +685,13 @@ impl Gateway {
                     DecisionSource::DefaultDeny => {
                         "no policy rule permits this action (default-deny)".to_owned()
                     }
-                    DecisionSource::Rule { index, name } => format!(
-                        "denied by rule[{}]{}",
+                    DecisionSource::Rule { index, name, pair } => format!(
+                        "denied by rule[{}]{}{}",
                         index,
                         name.as_deref()
                             .map(|n| format!(" ({n})"))
-                            .unwrap_or_default()
+                            .unwrap_or_default(),
+                        pair.map(|p| format!(" pair[{p}]")).unwrap_or_default()
                     ),
                 },
             );
