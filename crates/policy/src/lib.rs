@@ -86,6 +86,21 @@ impl Limits {
     }
 }
 
+/// One (credential, endpoint) binding row inside a [`Rule`] (D43).
+///
+/// A rule with pairs matches only when the request's (cred_ref, target_uri)
+/// matches one row — the fleet-scale answer to "this key only against this
+/// host" without N hand-maintained rules. Row fields parse with the standard
+/// [`Matcher`] tags; bare strings are `Exact` (rows are literals in practice).
+/// Empty/absent pairs = no pair clause = prior behavior exactly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pair {
+    /// Which credential reference this row binds.
+    pub cred_ref: Matcher,
+    /// Which target URI this row binds it to.
+    pub target_uri: Matcher,
+}
+
 /// One auditable rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
@@ -103,6 +118,10 @@ pub struct Rule {
     pub target_uri: Matcher,
     /// Which mechanisms (the operation axis in v0 — see D17).
     pub mechanism: Matcher,
+    /// (cred_ref, target_uri) binding rows (D43). Non-empty means the
+    /// request must match one row IN ADDITION to the shared axes above;
+    /// pairs are an AND-clause within this rule, not separate rules.
+    pub pairs: Vec<Pair>,
     /// Ceilings imposed when this rule matches.
     pub limits: Limits,
 }
@@ -133,6 +152,10 @@ pub enum DecisionSource {
         index: usize,
         /// The rule's optional label.
         name: Option<String>,
+        /// When the rule carries D43 pair rows, the zero-based row that
+        /// bound this decision; `None` for rules without pairs. Audit and
+        /// `policy-check` legibility ("allowed by rule[3] pair[17]").
+        pair: Option<usize>,
     },
 }
 
@@ -207,10 +230,22 @@ struct RuleDef {
     target_uri: Option<String>,
     #[serde(default)]
     mechanism: Option<String>,
+    /// D43 pair rows: `[[rule.pair]]`. Strict like everything else — a
+    /// typo'd row field fails the load loudly rather than silently
+    /// widening a binding.
+    #[serde(default)]
+    pair: Vec<PairDef>,
     #[serde(default)]
     limits: Option<LimitsDef>,
     #[serde(default)]
     notify: Option<NotifyDef>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PairDef {
+    cred_ref: String,
+    target_uri: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -293,6 +328,22 @@ impl Policy {
                     session_ttl_s: l.session_ttl_s,
                 })
                 .unwrap_or_default();
+            // D43: parse pair rows. Row fields are mandatory strings (a row
+            // names an exact binding); each parses through the standard
+            // Matcher tags. A row that fails to parse fails the whole load.
+            let mut pairs = Vec::with_capacity(def.pair.len());
+            for (pi, p) in def.pair.into_iter().enumerate() {
+                let cred_ref = Matcher::parse(&p.cred_ref).map_err(|e| {
+                    PolicyError::Schema(format!("rule {i} pair {pi}: cred_ref: {e}"))
+                })?;
+                let target_uri = Matcher::parse(&p.target_uri).map_err(|e| {
+                    PolicyError::Schema(format!("rule {i} pair {pi}: target_uri: {e}"))
+                })?;
+                pairs.push(Pair {
+                    cred_ref,
+                    target_uri,
+                });
+            }
             rules.push(Rule {
                 name: def.name,
                 notify_on_use,
@@ -301,6 +352,7 @@ impl Policy {
                 cred_ref: axis("cred_ref", &def.cred_ref)?,
                 target_uri: axis("target_uri", &def.target_uri)?,
                 mechanism: axis("mechanism", &def.mechanism)?,
+                pairs,
                 limits,
             });
         }
@@ -364,7 +416,28 @@ impl Policy {
                     push_kv(&mut out, key, &source);
                 }
             }
-            // Sub-tables must follow every bare key of this rule.
+            // Sub-tables must follow every bare key of this rule. D43 pair
+            // rows first (they are the binding), then limits, then notify —
+            // and the writer never emits an empty pair table (D43: empty is
+            // equivalent to absent).
+            for pair in &rule.pairs {
+                out.push_str("[[rule.pair]]\n");
+                // Pair fields are mandatory Matchers; source() is None only
+                // for Any, which cannot occur in a parsed pair (row fields
+                // are required strings) — fall back to the wildcard glob so
+                // an Any pair (only constructible programmatically) still
+                // round-trips to equivalent semantics.
+                push_kv(
+                    &mut out,
+                    "cred_ref",
+                    &pair.cred_ref.source().unwrap_or_else(|| "*".to_owned()),
+                );
+                push_kv(
+                    &mut out,
+                    "target_uri",
+                    &pair.target_uri.source().unwrap_or_else(|| "*".to_owned()),
+                );
+            }
             if rule.limits.max_response_bytes.is_some() || rule.limits.session_ttl_s.is_some() {
                 out.push_str("[rule.limits]\n");
                 if let Some(v) = rule.limits.max_response_bytes {
@@ -415,12 +488,32 @@ impl Policy {
                 && rule.target_uri.matches(request.target_uri)
                 && rule.mechanism.matches(request.mechanism)
             {
+                // D43: when the rule carries pair rows, the request's
+                // (cred_ref, target_uri) must additionally match one row —
+                // an AND-clause within the rule, not separate rules, so
+                // first-match-wins across rules is unchanged. A rule with no
+                // rows behaves exactly as before.
+                let pair = if rule.pairs.is_empty() {
+                    None
+                } else {
+                    match rule.pairs.iter().position(|p| {
+                        p.cred_ref.matches(request.cred_ref)
+                            && p.target_uri.matches(request.target_uri)
+                    }) {
+                        Some(pi) => Some(pi),
+                        // Shared axes matched but no binding row does: this
+                        // rule does not cover the request. Keep scanning —
+                        // a later rule may match; otherwise default-deny.
+                        None => continue,
+                    }
+                };
                 return Decision {
                     effect: rule.effect,
                     notify_on_use: rule.notify_on_use,
                     source: DecisionSource::Rule {
                         index,
                         name: rule.name.clone(),
+                        pair,
                     },
                     limits: rule.limits.min_with(declared_limits),
                 };
@@ -503,7 +596,8 @@ mod tests {
             d.source,
             DecisionSource::Rule {
                 index: 0,
-                name: Some("stripe charges".to_owned())
+                name: Some("stripe charges".to_owned()),
+                pair: None,
             }
         );
 
@@ -519,7 +613,8 @@ mod tests {
             d.source,
             DecisionSource::Rule {
                 index: 1,
-                name: Some("no prod ssh for interns".to_owned())
+                name: Some("no prod ssh for interns".to_owned()),
+                pair: None,
             }
         );
     }
@@ -808,5 +903,260 @@ mod tests {
             Policy::from_toml("{{{"),
             Err(PolicyError::Schema(_))
         ));
+    }
+
+    // ---- D43: pair correlation ----
+
+    const FLEET: &str = r#"
+        [[rule]]
+        name = "deployer fleet ssh, each key to its own host"
+        effect = "allow"
+        agent_id = "agent:deployer"
+        mechanism = "ssh"
+        target_uri = "ssh://*.internal"
+
+          [[rule.pair]]
+          cred_ref = "local://ssh/fleet/app-01"
+          target_uri = "ssh://app-01.internal"
+
+          [[rule.pair]]
+          cred_ref = "local://ssh/fleet/app-02"
+          target_uri = "ssh://app-02.internal"
+    "#;
+
+    #[test]
+    fn pairs_bind_each_credential_to_its_own_host() {
+        let p = Policy::from_toml(FLEET).unwrap();
+
+        // Key app-01 against host app-01: allowed, pair[0].
+        let ok = p.evaluate(&req(
+            "agent:deployer",
+            "local://ssh/fleet/app-01",
+            "ssh://app-01.internal",
+            "ssh",
+        ));
+        assert_eq!(ok.effect, Effect::Allow);
+        assert_eq!(
+            ok.source,
+            DecisionSource::Rule {
+                index: 0,
+                name: Some("deployer fleet ssh, each key to its own host".to_owned()),
+                pair: Some(0),
+            }
+        );
+
+        // THE acceptance gate: key A (app-01) CANNOT reach host B (app-02).
+        // Shared axes match (agent, mechanism, target_uri glob ssh://*.internal),
+        // but no pair row binds app-01's key to app-02's host -> keep scanning
+        // -> default-deny.
+        let crossed = p.evaluate(&req(
+            "agent:deployer",
+            "local://ssh/fleet/app-01",
+            "ssh://app-02.internal",
+            "ssh",
+        ));
+        assert_eq!(
+            crossed.effect,
+            Effect::Deny,
+            "credential app-01 must not reach host app-02"
+        );
+        assert_eq!(crossed.source, DecisionSource::DefaultDeny);
+
+        // Key app-02 against host app-02: allowed, pair[1] (index reported).
+        let ok2 = p.evaluate(&req(
+            "agent:deployer",
+            "local://ssh/fleet/app-02",
+            "ssh://app-02.internal",
+            "ssh",
+        ));
+        assert_eq!(ok2.effect, Effect::Allow);
+        assert!(
+            matches!(ok2.source, DecisionSource::Rule { pair: Some(1), .. }),
+            "{:?}",
+            ok2.source
+        );
+    }
+
+    #[test]
+    fn pairs_absent_means_prior_behavior_exactly() {
+        // The SAMPLE rules carry no pairs; they must behave as before and
+        // report pair: None (already asserted in parses_and_applies...).
+        let p = Policy::from_toml(SAMPLE).unwrap();
+        for rule in p.rules() {
+            assert!(rule.pairs.is_empty(), "SAMPLE rules have no pair rows");
+        }
+    }
+
+    #[test]
+    fn empty_pair_table_is_equivalent_to_absent() {
+        // D43: empty pair = [] is the same as no pairs (no AND-clause).
+        let with_empty = Policy::from_toml(
+            "[[rule]]\neffect = \"allow\"\nagent_id = \"agent:x\"\n[[rule.pair]]\n",
+        );
+        // A rule.pair with no fields fails the strict schema (cred_ref/
+        // target_uri are required) — so "empty" means zero pair tables, not
+        // one blank row. Assert zero rows parses and behaves as absent.
+        let zero_rows =
+            Policy::from_toml("[[rule]]\neffect = \"allow\"\nagent_id = \"agent:x\"\n").unwrap();
+        assert!(zero_rows.rules()[0].pairs.is_empty());
+        let d = zero_rows.evaluate(&req("agent:x", "c", "t", "m"));
+        assert_eq!(d.effect, Effect::Allow);
+        // And the writer never emits an empty pair table.
+        assert!(!zero_rows.to_toml().contains("rule.pair"));
+        // A blank [[rule.pair]] (missing required fields) is rejected loudly.
+        assert!(
+            with_empty.is_err(),
+            "a pair row missing fields must fail the load"
+        );
+    }
+
+    #[test]
+    fn pair_row_missing_a_field_fails_loudly() {
+        // Strict schema: a row must name both sides; a typo'd field is loud.
+        let bad = r#"
+            [[rule]]
+            effect = "allow"
+            [[rule.pair]]
+            cred_ref = "local://x"
+        "#;
+        assert!(matches!(
+            Policy::from_toml(bad),
+            Err(PolicyError::Schema(_))
+        ));
+        let typo_field = r#"
+            [[rule]]
+            effect = "allow"
+            [[rule.pair]]
+            cred_ref = "local://x"
+            target_url = "ssh://x"
+        "#;
+        assert!(matches!(
+            Policy::from_toml(typo_field),
+            Err(PolicyError::Schema(_))
+        ));
+    }
+
+    #[test]
+    fn pair_rows_roundtrip_through_the_writer() {
+        let p = Policy::from_toml(FLEET).unwrap();
+        let out = p.to_toml();
+        assert_eq!(out.matches("[[rule.pair]]").count(), 2);
+        // Re-parse what the writer produced and evaluate identically.
+        let p2 = Policy::from_toml(&out).unwrap();
+        assert_eq!(p2.rules()[0].pairs.len(), 2);
+        let crossed = p2.evaluate(&req(
+            "agent:deployer",
+            "local://ssh/fleet/app-01",
+            "ssh://app-02.internal",
+            "ssh",
+        ));
+        assert_eq!(
+            crossed.effect,
+            Effect::Deny,
+            "binding survived the round-trip"
+        );
+        let ok = p2.evaluate(&req(
+            "agent:deployer",
+            "local://ssh/fleet/app-02",
+            "ssh://app-02.internal",
+            "ssh",
+        ));
+        assert_eq!(ok.effect, Effect::Allow);
+    }
+
+    #[test]
+    fn pair_fields_honor_matcher_tags() {
+        // A deliberate glob: row covers a sub-range; bare strings are Exact.
+        let p = Policy::from_toml(
+            r#"
+            [[rule]]
+            effect = "allow"
+            [[rule.pair]]
+            cred_ref = "glob:local://ssh/fleet/app-*"
+            target_uri = "glob:ssh://app-*.internal"
+            "#,
+        )
+        .unwrap();
+        // Both glob-matched consistently.
+        assert_eq!(
+            p.evaluate(&req(
+                "a",
+                "local://ssh/fleet/app-07",
+                "ssh://app-07.internal",
+                "m"
+            ))
+            .effect,
+            Effect::Allow
+        );
+        // NOTE: a glob row does NOT bind key-N to host-N — app-07's key against
+        // app-09's host also matches this single glob row. That is the
+        // operator's explicit choice in writing a glob row; exact rows are the
+        // per-host binding. Pinned here so the distinction is intentional.
+        assert_eq!(
+            p.evaluate(&req(
+                "a",
+                "local://ssh/fleet/app-07",
+                "ssh://app-09.internal",
+                "m"
+            ))
+            .effect,
+            Effect::Allow,
+            "a glob row matches by pattern, not by per-host identity"
+        );
+    }
+
+    #[test]
+    fn deny_rule_may_carry_pairs() {
+        // D43: pairs on a deny rule are meaningful — deny key A against host B
+        // specifically, while a broader allow covers the rest.
+        let p = Policy::from_toml(
+            r#"
+            [[rule]]
+            name = "never app-01 key against the db host"
+            effect = "deny"
+            [[rule.pair]]
+            cred_ref = "local://ssh/fleet/app-01"
+            target_uri = "ssh://db.internal"
+
+            [[rule]]
+            name = "otherwise fleet ssh is fine"
+            effect = "allow"
+            target_uri = "ssh://*.internal"
+            "#,
+        )
+        .unwrap();
+        // The specific denied binding hits rule[0].
+        let denied = p.evaluate(&req(
+            "a",
+            "local://ssh/fleet/app-01",
+            "ssh://db.internal",
+            "ssh",
+        ));
+        assert_eq!(denied.effect, Effect::Deny);
+        assert!(
+            matches!(
+                denied.source,
+                DecisionSource::Rule {
+                    index: 0,
+                    pair: Some(0),
+                    ..
+                }
+            ),
+            "{:?}",
+            denied.source
+        );
+        // A different key against the db host falls through to the allow.
+        let allowed = p.evaluate(&req(
+            "a",
+            "local://ssh/fleet/app-02",
+            "ssh://db.internal",
+            "ssh",
+        ));
+        assert_eq!(allowed.effect, Effect::Allow);
+        assert!(
+            matches!(allowed.source, DecisionSource::Rule { index: 1, .. }),
+            "{:?}",
+            allowed.source
+        );
     }
 }

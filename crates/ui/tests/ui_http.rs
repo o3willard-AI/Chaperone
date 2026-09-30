@@ -413,6 +413,92 @@ async fn rule_editor_round_trips_through_the_one_validator() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn rule_editor_parses_pair_bindings() {
+    let t = app().await;
+    let c = t.cookie();
+    http(t.port, "POST", "/setup/policy", &[], Some(""), Some(&c)).await;
+
+    // A fleet rule with two binding rows in the textarea (newline-separated,
+    // `cred_ref | target_uri`), submitted through the same /rules/add path.
+    let pairs = "local://ssh/fleet/app-01 | ssh://app-01.internal\n\
+                 local://ssh/fleet/app-02 | ssh://app-02.internal\n";
+    let (status, _) = http(
+        t.port,
+        "POST",
+        "/rules/add",
+        &[],
+        Some(&form(&[
+            ("name", "deployer fleet ssh"),
+            ("mechanism", "ssh"),
+            ("target_uri", "ssh://*.internal"),
+            ("agent_id", "agent:deployer"),
+            ("cred_ref", ""),
+            ("pairs", pairs),
+            ("effect", "allow"),
+            ("notify_on_use", "on"),
+            ("max_response_bytes", ""),
+            ("session_ttl_s", ""),
+        ])),
+        Some(&c),
+    )
+    .await;
+    assert_eq!(status, 303);
+
+    let doc = std::fs::read_to_string(t.dir.path().join("policy.toml")).unwrap();
+    let policy = chaperone_policy::Policy::from_toml(&doc).unwrap();
+    assert_eq!(policy.len(), 1);
+    let rule = &policy.rules()[0];
+    assert_eq!(rule.pairs.len(), 2, "both binding rows persisted");
+
+    // The binding actually holds through the one validator: key app-01 cannot
+    // reach host app-02 (P1-2 acceptance, via the UI-authored rule).
+    let crossed = policy.evaluate(&chaperone_policy::Request {
+        agent_id: "agent:deployer",
+        cred_ref: "local://ssh/fleet/app-01",
+        target_uri: "ssh://app-02.internal",
+        mechanism: "ssh",
+        declared: None,
+    });
+    assert_eq!(crossed.effect.as_str(), "deny", "crossed binding must deny");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rule_editor_rejects_malformed_pair_line() {
+    let t = app().await;
+    let c = t.cookie();
+    http(t.port, "POST", "/setup/policy", &[], Some(""), Some(&c)).await;
+
+    // A pair line with no `|` separator must fail loudly, not silently drop.
+    let (_, loc) = http(
+        t.port,
+        "POST",
+        "/rules/add",
+        &[],
+        Some(&form(&[
+            ("mechanism", "ssh"),
+            ("target_uri", "ssh://*.internal"),
+            ("agent_id", ""),
+            ("cred_ref", ""),
+            ("pairs", "local://ssh/fleet/app-01 ssh://app-01.internal"),
+            ("effect", "allow"),
+        ])),
+        Some(&c),
+    )
+    .await;
+    assert!(
+        loc.contains("err=") && loc.contains("pair%20line"),
+        "malformed pair line must redirect with an error: {loc}"
+    );
+    // Nothing was written.
+    let doc = std::fs::read_to_string(t.dir.path().join("policy.toml")).unwrap();
+    assert!(
+        chaperone_policy::Policy::from_toml(&doc)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn raw_editor_refuses_invalid_toml_without_writing() {
     let t = app().await;
     let c = t.cookie();

@@ -62,6 +62,17 @@ The agent never touches a secret.
 | **Local privileged commands** (systemctl, apt, …) | ✅ | `local-privilege` + isolated helper | Always confirmed unless command+args are exactly pinned by the operator allowlist; helper re-checks authoritatively |
 | Windows privileged commands | 🗺️ | same helper over named pipes | Helper protocol is platform-neutral; elevation story = service/UAC, untested |
 
+> **SSH at fleet scale.** The v1 shape is **one key per host in the vault**, with
+> each key bound to its own endpoint by a policy `[[rule.pair]]` row (D43) so a
+> single rule expresses "each fleet key only against its own host" without N
+> hand-maintained rules. That is survivable but not the end state: the intended
+> model at fleet scale is a **certificate authority minting short-lived
+> certificates** (backlog B-1) — one CA credential, no per-host secret in the
+> vault at all. Pair correlation is the v1 bridge until B-1 lands, not a
+> substitute for it; bulk inventory import from `~/.ssh/config`/`known_hosts`
+> (B-2) generates the pair rows mechanically. A reader with fleet-operations
+> experience should read this as a roadmap, not an oversight.
+
 ### Credential backends (where secrets LIVE — the `cred_ref` targets)
 
 | Backend | Scheme | Status | Notes |
