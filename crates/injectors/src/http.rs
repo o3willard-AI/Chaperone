@@ -19,6 +19,12 @@ use chaperone_protocol::ops::HttpOperation;
 use chaperone_vault::SecretString;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use std::time::Duration;
+use zeroize::Zeroizing;
+
+/// Fixed marker substituted for any credential bytes a target reflects back
+/// (P0-1). Stable and credential-free so it is safe to relay to the agent and
+/// to journal.
+const REDACTION_MARKER: &[u8] = b"[REDACTED-CREDENTIAL]";
 
 /// Streams the response body under a hard byte ceiling (THREAT-MODEL §2.3):
 /// a Content-Length lie cannot buy an unbounded buffer, and exceeding the
@@ -107,6 +113,16 @@ impl HttpInjector {
         limits: &HttpLimits,
     ) -> Result<HttpResponse, InjectorError> {
         let auth_value = assemble_authorization(mechanism, operation, secret)?;
+        // P0-1: remember every byte form a reflecting target could echo back —
+        // the assembled header value (e.g. `Basic <b64(user:secret)>`) and the
+        // raw secret. Both are scrubbed from the response before relay so a
+        // hostile endpoint cannot launder the credential into agent space.
+        // Held as Zeroizing buffers; wiped at end of this frame.
+        let mut reflectable: Vec<Zeroizing<Vec<u8>>> = Vec::with_capacity(2);
+        reflectable.push(Zeroizing::new(auth_value.as_bytes().to_vec()));
+        if !secret.is_empty() {
+            reflectable.push(Zeroizing::new(secret.expose().as_bytes().to_vec()));
+        }
 
         if !target_uri.starts_with("http://") && !target_uri.starts_with("https://") {
             return Err(InjectorError::BadOperation(format!(
@@ -166,12 +182,68 @@ impl HttpInjector {
 
         let body = read_body_capped(response, limits.max_response_bytes).await?;
 
+        // P0-1: scrub reflected credential bytes from BOTH the headers and the
+        // body before they leave this frame. The response is untrusted data
+        // (THREAT-MODEL §2.3); untrusted data that happens to contain our own
+        // credential is still our credential, so it is redacted here — in the
+        // one place that legitimately holds the material — and nothing secret
+        // is retained past the wipe at frame end.
+        let resp_headers = scrub_header_pairs(resp_headers, &reflectable);
+        let body = scrub_bytes(body, &reflectable);
+        // reflectable buffers wipe on drop (Zeroizing).
+
         Ok(HttpResponse {
             status,
             headers: resp_headers,
             body,
         })
     }
+}
+
+/// Replaces every occurrence of any reflectable credential form in `data`
+/// with [`REDACTION_MARKER`]. Longest-first ordering prevents a shorter form
+/// that is a substring of a longer one from being redacted first and leaving
+/// a fragment of the longer form behind.
+fn scrub_bytes(mut data: Vec<u8>, secrets: &[Zeroizing<Vec<u8>>]) -> Vec<u8> {
+    let mut forms: Vec<&[u8]> = secrets
+        .iter()
+        .map(|s| s.as_slice())
+        .filter(|s| !s.is_empty())
+        .collect();
+    forms.sort_by_key(|s| std::cmp::Reverse(s.len()));
+
+    for form in forms {
+        let mut out = Vec::with_capacity(data.len());
+        let mut i = 0;
+        while i < data.len() {
+            if data.len() - i >= form.len() && &data[i..i + form.len()] == form {
+                out.extend_from_slice(REDACTION_MARKER);
+                i += form.len();
+            } else {
+                out.push(data[i]);
+                i += 1;
+            }
+        }
+        data = out;
+    }
+    data
+}
+
+/// Applies [`scrub_bytes`] to each header value, leaving names untouched.
+fn scrub_header_pairs(
+    pairs: Vec<(String, String)>,
+    secrets: &[Zeroizing<Vec<u8>>],
+) -> Vec<(String, String)> {
+    pairs
+        .into_iter()
+        .map(|(name, value)| {
+            let scrubbed = scrub_bytes(value.into_bytes(), secrets);
+            // Header values are ASCII by construction (reqwest `to_str()`
+            // succeeded above); lossy conversion is a safety net, not a path
+            // that should alter bytes here.
+            (name, String::from_utf8_lossy(&scrubbed).into_owned())
+        })
+        .collect()
 }
 
 /// Strips anything URL-shaped from transport error text before it reaches
@@ -315,5 +387,76 @@ mod tests {
         let cleaned = redacted_error(raw);
         assert!(!cleaned.contains("https://"));
         assert!(!cleaned.contains("internal-host"));
+    }
+
+    // ---- P0-1: reflected-credential scrub ----
+
+    #[test]
+    fn scrub_removes_raw_secret_from_body_and_headers() {
+        let secret = Zeroizing::new(b"s3cr3t-sentinel-value".to_vec());
+        let forms = vec![secret];
+        let body = br#"{"echo":"s3cr3t-sentinel-value","ok":true}"#.to_vec();
+        let cleaned = scrub_bytes(body, &forms);
+        let text = String::from_utf8(cleaned).unwrap();
+        assert!(!text.contains("s3cr3t-sentinel-value"), "{text}");
+        assert!(text.contains("[REDACTED-CREDENTIAL]"), "{text}");
+        assert!(
+            text.contains("\"ok\":true"),
+            "non-secret bytes kept: {text}"
+        );
+
+        let pairs = vec![(
+            "www-authenticate".to_owned(),
+            "Bearer s3cr3t-sentinel-value".to_owned(),
+        )];
+        let scrubbed = scrub_header_pairs(pairs, &forms);
+        assert!(
+            !scrubbed[0].1.contains("s3cr3t-sentinel-value"),
+            "{:?}",
+            scrubbed[0]
+        );
+        assert_eq!(scrubbed[0].0, "www-authenticate", "header name untouched");
+    }
+
+    #[test]
+    fn scrub_catches_basic_base64_form_via_auth_value() {
+        // A reflecting target echoes the Authorization VALUE, which for
+        // http-basic is `Basic <b64(user:secret)>` — the raw secret bytes are
+        // NOT present. Scrubbing the assembled value catches it.
+        let secret = SecretString::new("pw-sentinel".to_owned());
+        let op = HttpOperation {
+            method: "GET".into(),
+            headers: Default::default(),
+            body_b64: None,
+            username: Some("deploy-bot".into()),
+        };
+        let auth = assemble_authorization("http-basic", &op, &secret).unwrap();
+        let auth_bytes = auth.as_bytes().to_vec();
+        let forms = vec![Zeroizing::new(auth_bytes)];
+
+        // Body reflects exactly what the target received in the header.
+        let reflected = format!("you sent: {}", auth.to_str().unwrap());
+        let cleaned = scrub_bytes(reflected.into_bytes(), &forms);
+        let text = String::from_utf8(cleaned).unwrap();
+        assert!(!text.contains(auth.to_str().unwrap()), "{text}");
+        assert!(text.contains("[REDACTED-CREDENTIAL]"), "{text}");
+    }
+
+    #[test]
+    fn scrub_handles_multiple_and_adjacent_occurrences() {
+        let secret = Zeroizing::new(b"AA".to_vec());
+        let forms = vec![secret];
+        let cleaned = scrub_bytes(b"xAAAAy".to_vec(), &forms); // "AA""AA"
+        let text = String::from_utf8(cleaned).unwrap();
+        assert_eq!(text, "x[REDACTED-CREDENTIAL][REDACTED-CREDENTIAL]y");
+    }
+
+    #[test]
+    fn scrub_is_noop_when_secret_absent() {
+        let secret = Zeroizing::new(b"needle".to_vec());
+        let forms = vec![secret];
+        let body = b"nothing to see here".to_vec();
+        let cleaned = scrub_bytes(body.clone(), &forms);
+        assert_eq!(cleaned, body);
     }
 }
