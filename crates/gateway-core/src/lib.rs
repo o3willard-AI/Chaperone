@@ -414,8 +414,13 @@ impl Gateway {
         decision: chaperone_policy::Decision,
     ) -> Value {
         let Some(backend) = self.session_backend(&envelope.mechanism) else {
-            self.audit_decision(envelope, decision.effect.as_str(), Outcome::MechanismError)
-                .await;
+            self.audit_decision(
+                envelope,
+                decision.effect.as_str(),
+                decision.notify_on_use,
+                Outcome::MechanismError,
+            )
+            .await;
             return Self::error(
                 message,
                 "E_MECHANISM",
@@ -432,6 +437,7 @@ impl Gateway {
                 self.audit_decision(
                     envelope,
                     decision.effect.as_str(),
+                    decision.notify_on_use,
                     Outcome::CredentialUnresolved,
                 )
                 .await;
@@ -446,8 +452,13 @@ impl Gateway {
         let channel = match connect.await {
             Ok(c) => c,
             Err(e) => {
-                self.audit_decision(envelope, decision.effect.as_str(), Outcome::MechanismError)
-                    .await;
+                self.audit_decision(
+                    envelope,
+                    decision.effect.as_str(),
+                    decision.notify_on_use,
+                    Outcome::MechanismError,
+                )
+                .await;
                 return Self::error(
                     message,
                     "E_MECHANISM",
@@ -467,6 +478,7 @@ impl Gateway {
             .audit_decision(
                 envelope,
                 decision.effect.as_str(),
+                decision.notify_on_use,
                 Outcome::SessionOpened {
                     handle: handle.clone(),
                 },
@@ -659,8 +671,13 @@ impl Gateway {
         let decision = self.policy.evaluate(&request);
 
         if decision.effect == Effect::Deny {
-            self.audit_decision(&envelope, decision.effect.as_str(), Outcome::Denied)
-                .await;
+            self.audit_decision(
+                &envelope,
+                decision.effect.as_str(),
+                decision.notify_on_use,
+                Outcome::Denied,
+            )
+            .await;
             return Self::error(
                 message,
                 "E_DENIED",
@@ -690,6 +707,7 @@ impl Gateway {
                     self.audit_decision(
                         &envelope,
                         decision.effect.as_str(),
+                        decision.notify_on_use,
                         Outcome::MechanismError,
                     )
                     .await;
@@ -752,6 +770,7 @@ impl Gateway {
                             self.audit_decision(
                                 &envelope,
                                 decision.effect.as_str(),
+                                decision.notify_on_use,
                                 Outcome::ConfirmationTimeout,
                             )
                             .await;
@@ -767,8 +786,13 @@ impl Gateway {
                     .open_session(message, &verified.agent_id.clone(), &envelope, decision)
                     .await;
             }
-            self.audit_decision(&envelope, decision.effect.as_str(), Outcome::MechanismError)
-                .await;
+            self.audit_decision(
+                &envelope,
+                decision.effect.as_str(),
+                decision.notify_on_use,
+                Outcome::MechanismError,
+            )
+            .await;
             return Self::error(
                 message,
                 "E_MECHANISM",
@@ -802,6 +826,7 @@ impl Gateway {
                     self.audit_decision(
                         &envelope,
                         decision.effect.as_str(),
+                        decision.notify_on_use,
                         Outcome::ConfirmationTimeout,
                     )
                     .await;
@@ -823,6 +848,7 @@ impl Gateway {
                         self.audit_decision(
                             &envelope,
                             decision.effect.as_str(),
+                            decision.notify_on_use,
                             Outcome::MechanismError,
                         )
                         .await;
@@ -840,6 +866,7 @@ impl Gateway {
                         self.audit_decision(
                             &envelope,
                             decision.effect.as_str(),
+                            decision.notify_on_use,
                             Outcome::CredentialUnresolved,
                         )
                         .await;
@@ -868,6 +895,7 @@ impl Gateway {
                                 .audit_decision(
                                     &envelope,
                                     decision.effect.as_str(),
+                                    decision.notify_on_use,
                                     Outcome::Proceeded,
                                 )
                                 .await
@@ -882,6 +910,7 @@ impl Gateway {
                             self.audit_decision(
                                 &envelope,
                                 decision.effect.as_str(),
+                                decision.notify_on_use,
                                 Outcome::MechanismError,
                             )
                             .await;
@@ -895,6 +924,7 @@ impl Gateway {
                     self.audit_decision(
                         &envelope,
                         decision.effect.as_str(),
+                        decision.notify_on_use,
                         Outcome::MechanismError,
                     )
                     .await;
@@ -915,8 +945,13 @@ impl Gateway {
         let operation: HttpOperation = match serde_json::from_value(envelope.operation.clone()) {
             Ok(op) => op,
             Err(e) => {
-                self.audit_decision(&envelope, decision.effect.as_str(), Outcome::MechanismError)
-                    .await;
+                self.audit_decision(
+                    &envelope,
+                    decision.effect.as_str(),
+                    decision.notify_on_use,
+                    Outcome::MechanismError,
+                )
+                .await;
                 return Self::error(
                     message,
                     "E_MECHANISM",
@@ -925,8 +960,13 @@ impl Gateway {
             }
         };
         if operation.has_agent_authorization() {
-            self.audit_decision(&envelope, decision.effect.as_str(), Outcome::MechanismError)
-                .await;
+            self.audit_decision(
+                &envelope,
+                decision.effect.as_str(),
+                decision.notify_on_use,
+                Outcome::MechanismError,
+            )
+            .await;
             return Self::error(
                 message,
                 "E_MECHANISM",
@@ -941,6 +981,7 @@ impl Gateway {
                 self.audit_decision(
                     &envelope,
                     decision.effect.as_str(),
+                    decision.notify_on_use,
                     Outcome::CredentialUnresolved,
                 )
                 .await;
@@ -971,7 +1012,12 @@ impl Gateway {
         match injected {
             Ok(resp) => {
                 let audit_seq = self
-                    .audit_decision(&envelope, decision.effect.as_str(), Outcome::Proceeded)
+                    .audit_decision(
+                        &envelope,
+                        decision.effect.as_str(),
+                        decision.notify_on_use,
+                        Outcome::Proceeded,
+                    )
                     .await
                     .unwrap_or(0);
                 json!({
@@ -985,8 +1031,13 @@ impl Gateway {
                 })
             }
             Err(e) => {
-                self.audit_decision(&envelope, decision.effect.as_str(), Outcome::MechanismError)
-                    .await;
+                self.audit_decision(
+                    &envelope,
+                    decision.effect.as_str(),
+                    decision.notify_on_use,
+                    Outcome::MechanismError,
+                )
+                .await;
                 Self::error(message, "E_MECHANISM", &e.to_string())
             }
         }
@@ -1034,10 +1085,15 @@ impl Gateway {
     }
 
     /// Records a post-policy terminal outcome; returns the new head seq.
+    ///
+    /// `notify_on_use` is the matched rule's flag (D37/D38). It gates the LIVE
+    /// EVENT FEED only — the audit record is written regardless, so a
+    /// notification preference can never become an evidence preference.
     async fn audit_decision(
         &self,
         envelope: &chaperone_protocol::Envelope,
         effect: &str,
+        notify_on_use: bool,
         outcome: Outcome,
     ) -> Option<u64> {
         let evidence = serde_json::to_value(envelope).ok()?;
@@ -1060,7 +1116,16 @@ impl Gateway {
             intent_envelope: &evidence,
         };
         let seq = self.audit.append(&event).ok().map(|h| h.seq);
-        if let Some(hub) = &self.event_hub {
+        // P0-3: consult notify_on_use. Denials ALWAYS broadcast regardless of
+        // the flag — D35 treats repeated quiet refusals as signal in their own
+        // right, and default-deny lands on the structural floor where the flag
+        // is false, so gating on the flag alone would wrongly silence denials.
+        // Suppression therefore applies only to allow / needs_confirmation
+        // outcomes under a rule that opted out. The audit append above is
+        // unconditional; this gate touches the live feed and nothing else.
+        if (effect == Effect::Deny.as_str() || notify_on_use)
+            && let Some(hub) = &self.event_hub
+        {
             hub.broadcast(&format!(
                 "{{\"audit_id\":\"aud_{}\",\"agent_id\":\"{}\",\"effect\":\"{}\",\"mechanism\":\"{}\",\"target_uri\":\"{}\",\"outcome\":{}}}",
                 seq.unwrap_or(0),
