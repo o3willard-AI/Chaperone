@@ -55,7 +55,10 @@ pub use policy_guard::{
     Drift, Observation, PolicyWatch, default_watch_interval, hash_doc_bytes, verify_permissions,
 };
 pub use privilege::{LocalPrivBackend, PrivilegeAllowlist};
-pub use session::{OutputBatch, OutputChunk, SessionBackend, SessionChannel, SessionTable};
+pub use session::{
+    Entry as SessionEntry, OutputBatch, OutputChunk, SessionBackend, SessionChannel, SessionStats,
+    SessionTable,
+};
 #[cfg(feature = "ssh")]
 pub use ssh::{HostKeyPolicy, SshBackend};
 
@@ -68,6 +71,10 @@ pub struct GatewayConfig {
     pub default_session_ttl_secs: u64,
     /// Outbound-call budget when unconfigured.
     pub default_timeout_secs: u64,
+    /// P1-3: how often a live session past this age emits a heartbeat event
+    /// on the feed, so an unattended session cannot run in silence. The
+    /// threshold belongs in config, not in code (MVP-GAP-REVIEW P1-3).
+    pub session_heartbeat_secs: u64,
 }
 
 impl Default for GatewayConfig {
@@ -76,6 +83,7 @@ impl Default for GatewayConfig {
             default_max_response_bytes: 1_048_576,
             default_session_ttl_secs: 300,
             default_timeout_secs: 30,
+            session_heartbeat_secs: 300,
         }
     }
 }
@@ -471,9 +479,14 @@ impl Gateway {
             .constraints
             .and_then(|c| c.session_ttl_s)
             .unwrap_or(self.config.default_session_ttl_secs);
-        let handle = self
-            .sessions
-            .insert(verified_agent_id, channel, Duration::from_secs(ttl));
+        let (handle, _entry) = self.sessions.insert(
+            verified_agent_id,
+            &envelope.mechanism,
+            &envelope.target.uri,
+            &envelope.target.label,
+            channel,
+            Duration::from_secs(ttl),
+        );
         let seq = self
             .audit_decision(
                 envelope,
@@ -527,6 +540,9 @@ impl Gateway {
             };
             let channel = entry.channel_arc();
             (**channel.lock().await).shutdown().await;
+            // P1-3: session summary on the live feed — the high-density signal
+            // that replaces per-command notification (commands/bytes/duration).
+            self.broadcast_session_event("session.summary", &handle, &entry);
             let event = AuditEvent {
                 record_kind: chaperone_audit::RecordKind::IntentDecision,
                 ruleset_hash: self.ruleset_hash.clone(),
@@ -566,6 +582,7 @@ impl Gateway {
         };
         {
             let channel = entry.channel().lock().await;
+            let in_len = input.len() as u64;
             if let Err(e) = channel.write(input).await {
                 drop(channel);
                 return Self::error(
@@ -575,6 +592,12 @@ impl Gateway {
                 );
             }
             let batch = channel.read_batch(Duration::from_millis(400)).await;
+
+            // P1-3: count this relayed command frame (commands, bytes in/out).
+            // In-memory only; feeds the live summary/heartbeat, never the
+            // audit chain (which is unchanged per P1-3).
+            let out_len: u64 = batch.chunks.iter().map(|c| c.data.len() as u64).sum();
+            entry.record_relay(in_len, out_len);
 
             let outputs: Vec<Value> = batch
                 .chunks
@@ -595,6 +618,8 @@ impl Gateway {
                 if let Some(entry) = self.sessions.take(&handle, &agent_id) {
                     let channel = entry.channel_arc();
                     (**channel.lock().await).shutdown().await;
+                    // P1-3: summary on the feed at teardown (channel exited).
+                    self.broadcast_session_event("session.summary", &handle, &entry);
                 }
                 let event = AuditEvent {
                     record_kind: chaperone_audit::RecordKind::IntentDecision,
@@ -1124,20 +1149,88 @@ impl Gateway {
         // Suppression therefore applies only to allow / needs_confirmation
         // outcomes under a rule that opted out. The audit append above is
         // unconditional; this gate touches the live feed and nothing else.
-        if (effect == Effect::Deny.as_str() || notify_on_use)
-            && let Some(hub) = &self.event_hub
-        {
-            hub.broadcast(&format!(
-                "{{\"audit_id\":\"aud_{}\",\"agent_id\":\"{}\",\"effect\":\"{}\",\"mechanism\":\"{}\",\"target_uri\":\"{}\",\"outcome\":{}}}",
-                seq.unwrap_or(0),
-                event.agent_id,
-                event.effect,
-                event.mechanism,
-                event.target_uri,
-                serde_json::to_string(&event.outcome).unwrap_or_default(),
-            ));
+        if effect == Effect::Deny.as_str() || notify_on_use {
+            // P1-1 re-baseline: the feed names the accountable human, not only
+            // the agent. sponsor_id is already audit-chain data (RAE L0); the
+            // tap just carries all of it now (D35 "no new facts").
+            self.broadcast_json(json!({
+                "type": "decision",
+                "audit_id": audit_id(seq.unwrap_or(0)),
+                "agent_id": event.agent_id,
+                "sponsor_id": event.sponsor_id,
+                "effect": event.effect,
+                "mechanism": event.mechanism,
+                "target_uri": event.target_uri,
+                "outcome": event.outcome.to_value(),
+            }));
         }
         seq
+    }
+
+    /// Broadcasts one JSON object as a single line on the events feed (D35).
+    /// A no-op when no hub is attached. The feed is a live tap on facts the
+    /// audit chain already holds — it carries references and identifiers,
+    /// never credential material (asserted by `no_secret_leak`).
+    fn broadcast_json(&self, event: Value) {
+        if let Some(hub) = &self.event_hub {
+            // serde_json::to_string of an object cannot fail; fall back to a
+            // minimal marker rather than dropping the line silently if it ever
+            // did (keeps the feed's one-object-per-line contract).
+            let line = serde_json::to_string(&event).unwrap_or_else(|_| {
+                "{\"type\":\"error\",\"detail\":\"event serialization failed\"}".to_owned()
+            });
+            hub.broadcast(&line);
+        }
+    }
+
+    /// P1-3: a session lifecycle/usage event on the feed. `kind` is
+    /// "session.summary" (at teardown) or "session.heartbeat" (periodic, for a
+    /// session still open). Carries only counters + open-time references the
+    /// audit chain already holds — never relayed content, never a secret.
+    fn broadcast_session_event(&self, kind: &str, handle: &str, entry: &crate::session::Entry) {
+        let stats = entry.stats();
+        let sponsor_id = self
+            .attestor
+            .sponsor_id(entry.agent_id())
+            .unwrap_or_default();
+        self.broadcast_json(json!({
+            "type": kind,
+            "session_handle": handle,
+            "agent_id": entry.agent_id(),
+            "sponsor_id": sponsor_id,
+            "mechanism": entry.mechanism(),
+            "target_uri": entry.target_uri(),
+            "target_label": entry.target_label(),
+            "commands": stats.commands,
+            "bytes_in": stats.bytes_in,
+            "bytes_out": stats.bytes_out,
+            "elapsed_secs": stats.elapsed.as_secs(),
+        }));
+    }
+
+    /// P1-3: one pass of the session liveness scan, called on a timer from the
+    /// serve loop. Emits heartbeat events for live sessions open past the
+    /// configured threshold (an unattended session cannot run in silence), and
+    /// reaps TTL-expired sessions — emitting each one's summary before it is
+    /// forgotten, since lazy expiry alone would never surface an abandoned
+    /// session's teardown. Idempotent per threshold window (each session
+    /// tracks its own last-beat time).
+    pub async fn emit_session_heartbeats(&self) {
+        // Reap expired sessions first: summary + shutdown, then removal.
+        for (handle, entry) in self.sessions.reap_expired() {
+            let channel = entry.channel_arc();
+            (**channel.lock().await).shutdown().await;
+            self.broadcast_session_event("session.summary", &handle, &entry);
+        }
+        let threshold = Duration::from_secs(self.config.session_heartbeat_secs);
+        if threshold.is_zero() {
+            return; // heartbeats disabled (reaping above still runs)
+        }
+        for (handle, entry) in self.sessions.snapshot() {
+            if entry.heartbeat_due(threshold) {
+                self.broadcast_session_event("session.heartbeat", &handle, &entry);
+            }
+        }
     }
 
     /// Error response: echoes `msg_id`, carries a §10.1 code and a

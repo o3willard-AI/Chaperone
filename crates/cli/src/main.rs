@@ -58,6 +58,10 @@ AUDIT CHAIN:
                            --target-uri <URI> --mechanism <M>
                            [--max-response-bytes N] [--session-ttl-s S]
 
+LIVE OBSERVABILITY (unix only; D35/P1-1):
+    chaperone console --socket <PATH>          (answer needs_confirmation prompts)
+    chaperone tail --events-socket <PATH>      (watch decisions + session events)
+
 HEALTH CHECK (diagnostic only; exit 1 if anything fails):
     chaperone doctor --policy <TOML> --enrollment <FILE> --store <VAULT>
                      --audit-key <SEEDFILE> --audit-journal <FILE>
@@ -290,6 +294,104 @@ fn cmd_console(flags: &Flags) -> Result<(), String> {
     drop(sock);
     let _ = reader_thread.join();
     Ok(())
+}
+
+/// P1-1: `chaperone tail` — subscribe to the read-only events feed and print
+/// one human-legible line per event. Read-only by construction (D35): the
+/// socket never accepts writes back, and this command never sends anything.
+/// No secret material is in the feed (asserted by `no_secret_leak`), so the
+/// rendered line is safe terminal output.
+#[cfg(unix)]
+fn cmd_tail(flags: &Flags) -> Result<(), String> {
+    use std::io::{BufRead as _, Write as _};
+
+    let path = flags.require("events-socket")?;
+    let sock = std::os::unix::net::UnixStream::connect(std::path::Path::new(&path))
+        .map_err(|e| format!("cannot reach the events feed at {path}: {e} (is serve running with --events-socket {path}?)"))?;
+    eprintln!("tailing {path} (Ctrl-C to stop)");
+    let reader = std::io::BufReader::new(sock);
+    let mut out = std::io::stdout();
+    for line in reader.lines() {
+        let line = line.map_err(|e| format!("feed read: {e}"))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        // Render JSON events human-legibly; pass anything unparseable through
+        // raw rather than dropping it (a tail that loses lines is worse than
+        // one that shows ugly ones).
+        match serde_json::from_str::<serde_json::Value>(&line) {
+            Ok(v) => writeln!(out, "{}", render_event(&v)).map_err(|e| e.to_string())?,
+            Err(_) => writeln!(out, "{line}").map_err(|e| e.to_string())?,
+        }
+        out.flush().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// One legible line per feed event type. Unknown types degrade to compact
+/// JSON rather than being dropped.
+#[cfg(unix)]
+fn render_event(v: &serde_json::Value) -> String {
+    let s = |k: &str| v.get(k).and_then(serde_json::Value::as_str).unwrap_or("?");
+    let n = |k: &str| v.get(k).and_then(serde_json::Value::as_u64);
+    // Who: the accountable human when the feed carries one, else the agent.
+    let sponsor = v
+        .get("sponsor_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty());
+    let who = match sponsor {
+        Some(sp) => format!("{sp} via {}", s("agent_id")),
+        None => s("agent_id").to_owned(),
+    };
+    match s("type") {
+        "decision" => {
+            let outcome = v
+                .get("outcome")
+                .and_then(|o| o.get("status"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("?");
+            format!(
+                "[decision] {} {} {}/{} -> {outcome}",
+                s("effect"),
+                who,
+                s("mechanism"),
+                s("target_uri")
+            )
+        }
+        "session.summary" | "session.heartbeat" => {
+            let kind = if s("type") == "session.heartbeat" {
+                "heartbeat"
+            } else {
+                "summary"
+            };
+            format!(
+                "[session {kind}] {} {}/{}: {} cmd(s), {}B in, {}B out, {}s elapsed",
+                who,
+                s("mechanism"),
+                s("target_uri"),
+                n("commands").unwrap_or(0),
+                n("bytes_in").unwrap_or(0),
+                n("bytes_out").unwrap_or(0),
+                n("elapsed_secs").unwrap_or(0),
+            )
+        }
+        "policy_drift" => format!(
+            "[POLICY DRIFT] {} (observed {}); brokering halted",
+            v.get("detail")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("content changed"),
+            v.get("observed_hash")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("?")
+                .chars()
+                .take(12)
+                .collect::<String>(),
+        ),
+        other => {
+            // Compact passthrough for anything this renderer doesn't know yet.
+            format!("[{other}] {v}")
+        }
+    }
 }
 
 fn cmd_audit_keygen(flags: &Flags) -> Result<(), String> {
@@ -840,6 +942,10 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
             .map_err(|e| e.to_string())?,
     );
 
+    let session_heartbeat_secs = flags
+        .values
+        .get("session-heartbeat-secs")
+        .map_or(300, |v| v.parse().unwrap_or(300));
     let config = chaperone_gateway_core::GatewayConfig {
         default_session_ttl_secs: flags
             .values
@@ -853,6 +959,7 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
             .values
             .get("timeout-secs")
             .map_or(30, |v| v.parse().unwrap_or(30)),
+        session_heartbeat_secs,
     };
 
     let confirm_timeout = Duration::from_secs(
@@ -964,7 +1071,9 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
     let event_hub = chaperone_gateway_core::EventHub::new();
     if let Some(path) = flags.values.get("events-socket") {
         event_hub.listen(std::path::Path::new(path))?;
-        println!("event feed listening on {path} (tail with any stream reader)");
+        println!(
+            "event feed listening on {path} (watch with: chaperone tail --events-socket {path})"
+        );
     }
     gateway_core.with_event_hub(Arc::clone(&event_hub));
 
@@ -1064,6 +1173,25 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
         // D39: live policy drift watch - any change to the governing file
         // under a running gateway halts brokering, loudly.
         tokio::spawn(policy_watch.run(Arc::clone(&gateway), watch_audit, Some(event_hub)));
+
+        // P1-3: session liveness scan - heartbeats for long-lived sessions and
+        // summaries for TTL-expired ones, on the feed. Scan period is half the
+        // heartbeat threshold (clamped to 15s..1h) so a beat lands within
+        // ~threshold*1.5 at worst. session_heartbeat_secs=0 disables heartbeats
+        // inside the scan, but reaping of expired sessions still runs each tick.
+        {
+            let gw = Arc::clone(&gateway);
+            let period =
+                std::time::Duration::from_secs((session_heartbeat_secs / 2).clamp(15, 3600));
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(period);
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    tick.tick().await;
+                    gw.emit_session_heartbeats().await;
+                }
+            });
+        }
 
         let server = chaperone_transport::serve(&spec, handler).map_err(|e| e.to_string())?;
         println!("press Ctrl-C to stop");
@@ -1173,6 +1301,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "audit-keygen" => cmd_audit_keygen(&flags),
         #[cfg(unix)]
         "console" => cmd_console(&flags),
+        #[cfg(unix)]
+        "tail" => cmd_tail(&flags),
         "audit-verify" => cmd_audit_verify(&flags),
         "audit-export" => cmd_audit_export(&flags),
         "doctor" => cmd_doctor(&flags),

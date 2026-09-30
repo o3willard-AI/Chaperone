@@ -29,6 +29,7 @@ chaperone-policy = { path = "../policy" }
 chaperone-protocol = { path = "../protocol" }
 tempfile.workspace = true
 time.workspace = true
+serde_json.workspace = true
 
 chaperone-ui = { path = "../ui" }
 
