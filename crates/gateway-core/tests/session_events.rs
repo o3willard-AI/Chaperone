@@ -11,6 +11,10 @@
 //! - no relayed content in session events (counters + references only).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+// The events feed is a Unix-domain socket, so every test here subscribes via
+// std::os::unix::net::UnixStream. Gate the whole file: on non-unix targets the
+// feed (and therefore this coverage) does not exist.
+#![cfg(unix)]
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
