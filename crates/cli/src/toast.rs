@@ -142,9 +142,7 @@ fn num(v: &Value, k: &str) -> u64 {
 /// can warn once and keep tailing.
 pub fn send(t: &Toast) -> Result<(), String> {
     let mut n = notify_rust::Notification::new();
-    n.appname("Chaperone")
-        .summary(&t.title)
-        .body(&t.body);
+    n.appname("Chaperone").summary(&t.title).body(&t.body);
     // urgency() and notify_rust::Urgency are freedesktop/Linux and WinRT/Windows
     // primitives. On macOS (the NSUserNotificationCenter path, which is the
     // default) the method does not exist and Urgency is marked deprecated —
