@@ -11,6 +11,12 @@
 
 use std::process::ExitCode;
 
+// P1-1 item 2: OS toast notifications for `chaperone tail`. Unix-gated
+// alongside cmd_tail until PR-B's Windows feed parity lands (the toast
+// crate itself is cross-platform; the consumer is what is gated).
+#[cfg(unix)]
+mod toast;
+
 use chaperone_audit::AuditKey;
 use chaperone_identity::{EnrollmentError, EnrollmentStore};
 use chaperone_policy::Policy;
@@ -60,7 +66,7 @@ AUDIT CHAIN:
 
 LIVE OBSERVABILITY (unix only; D35/P1-1):
     chaperone console --socket <PATH>          (answer needs_confirmation prompts)
-    chaperone tail --events-socket <PATH>      (watch decisions + session events)
+    chaperone tail --events-socket <PATH> [--toast]  (watch decisions + session events; --toast adds OS notifications)
 
 HEALTH CHECK (diagnostic only; exit 1 if anything fails):
     chaperone doctor --policy <TOML> --enrollment <FILE> --store <VAULT>
@@ -306,11 +312,19 @@ fn cmd_tail(flags: &Flags) -> Result<(), String> {
     use std::io::{BufRead as _, Write as _};
 
     let path = flags.require("events-socket")?;
+    let toast = flags.has("toast");
     let sock = std::os::unix::net::UnixStream::connect(std::path::Path::new(&path))
         .map_err(|e| format!("cannot reach the events feed at {path}: {e} (is serve running with --events-socket {path}?)"))?;
-    eprintln!("tailing {path} (Ctrl-C to stop)");
+    eprintln!(
+        "tailing {path}{} (Ctrl-C to stop)",
+        if toast { " with OS notifications" } else { "" }
+    );
     let reader = std::io::BufReader::new(sock);
     let mut out = std::io::stdout();
+    // Toast failures warn once, then go quiet: the terminal render is the
+    // guaranteed surface; `tail` must not die or nag because no
+    // notification daemon answered.
+    let mut toast_broken = false;
     for line in reader.lines() {
         let line = line.map_err(|e| format!("feed read: {e}"))?;
         if line.trim().is_empty() {
@@ -320,7 +334,17 @@ fn cmd_tail(flags: &Flags) -> Result<(), String> {
         // raw rather than dropping it (a tail that loses lines is worse than
         // one that shows ugly ones).
         match serde_json::from_str::<serde_json::Value>(&line) {
-            Ok(v) => writeln!(out, "{}", render_event(&v)).map_err(|e| e.to_string())?,
+            Ok(v) => {
+                writeln!(out, "{}", render_event(&v)).map_err(|e| e.to_string())?;
+                if toast
+                    && !toast_broken
+                    && let Some(t) = toast::toast_for(&v)
+                    && let Err(e) = toast::send(&t)
+                {
+                    eprintln!("warning: {e} — continuing without OS notifications");
+                    toast_broken = true;
+                }
+            }
             Err(_) => writeln!(out, "{line}").map_err(|e| e.to_string())?,
         }
         out.flush().map_err(|e| e.to_string())?;

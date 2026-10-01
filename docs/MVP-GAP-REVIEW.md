@@ -84,7 +84,7 @@ Reproduce first, then fix, then mark.
 | P0-1 | Response path relays a reflected credential back into agent space | Blocking | The README's central claim is written unconditionally; the HTTP injector returns target headers and body verbatim, so a reflecting target launders the secret straight into agent context |
 | P0-2 | No test proves the no-leak property | Blocking | The guarantee is architectural, not demonstrated. There is no test that would fail if a secret leaked into agent-visible bytes |
 | P0-3 | `notify_on_use` is a control that does nothing | Blocking | Parsed, round-tripped to TOML, rendered as a checkbox — and read by no consumer. The events feed broadcasts every decision regardless |
-| P1-1 | ~~No notification consumer ships~~ PARTIALLY SHIPPED (PR #75): `chaperone tail` + `sponsor_id` in feed; toast + Windows parity open | High | "The accountable person is notified" currently means "they happened to have a terminal attached to a Unix socket." On Windows even that is unavailable |
+| P1-1 | ~~No notification consumer ships~~ MOSTLY SHIPPED (PRs #75/#76): `chaperone tail`, `sponsor_id` in feed, OS toast (`--toast`); Windows transport parity open | High | "The accountable person is notified" currently means "they happened to have a terminal attached to a Unix socket." On Windows even that is unavailable |
 | P1-2 | ~~Policy expresses a cross-product, not a pairing~~ SHIPPED (PR #74, D43 pairs) | High | Independent axes mean one fleet rule permits *any* key against *any* host. Binding key→host costs one rule per host — and the over-permission is invisible in the rule text |
 | P1-3 | ~~Session notification granularity is per-establishment, not per-use~~ SHIPPED (PR #75) | High | One SSH session = one event, then silence across every command relayed. This is the exact case D37 says notification exists for |
 | P2-1 | The wizard is artifact-shaped; the user's task is intent-shaped | Medium | Setup walks vault → policy → audit key → enrollment. The user's mental model is one sentence, and it isn't that one |
@@ -299,8 +299,8 @@ produces both regardless of the flag.
 
 ## P1-1 — No notification consumer ships, and Windows has no channel at all
 
-**PARTIALLY SHIPPED (PR #75, 2026-09-30).** Items 1 and the sponsor gap are
-done; items 2–3 remain open:
+**MOSTLY SHIPPED (PRs #75 + #76, 2026-09-30).** Items 1 and 2 and the sponsor
+gap are done; only item 3 (Windows transport parity) remains open:
 
 - **SHIPPED — `chaperone tail`** (item 1): subscribes to the feed and renders
   one human-legible line per event (`[decision] allow human@example.org via
@@ -315,9 +315,20 @@ done; items 2–3 remain open:
   `sponsor_name` to the payload (D35 "no new facts" stays trivially true;
   the enrollment store remains the one source for display names). P0-2's
   sentinel already asserts the feed line secret-free and passes unchanged.
-- **OPEN — OS-native toast** (item 2) and **Windows transport parity**
-  (item 3: named-pipe feed + console parity). Item 3 also unshrinks the
-  S-2 skip list without a test rewrite.
+- **SHIPPED — OS-native toast** (item 2, PR #76): `chaperone tail --toast`
+  pushes events to the desktop notification daemon via `notify-rust` (one
+  maintained cross-platform crate, as prescribed: zbus/dbus on Linux,
+  UserNotifications on macOS, WinRT on Windows). Consumer-side by design —
+  the daemon is headless-deployed; the operator running `tail` has the
+  session bus. A pure event→(title, body, urgency) mapper
+  (`cli/src/toast.rs`, 7 unit tests, headless-safe): denials,
+  confirmation gates, and policy drift are Critical; allows and session
+  summaries Normal; heartbeats Low; unknown types don't interrupt.
+  Delivery is best-effort: failure warns once on stderr and the terminal
+  render continues — proven live on a daemonless box (real dbus
+  `ServiceUnknown`, warn-once fired, tail kept working).
+- **OPEN — Windows transport parity** (item 3: named-pipe feed + console
+  parity). Item 3 also unshrinks the S-2 skip list without a test rewrite.
 
 **What exists.** A read-only fan-out socket
 (`crates/gateway-core/src/events.rs`, D35) broadcasting one JSON line per
