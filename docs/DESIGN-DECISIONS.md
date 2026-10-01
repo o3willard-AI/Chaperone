@@ -749,3 +749,63 @@ Acceptance gate (P1-2's): one rule expresses "each fleet key may be used only
 against its own host," and a test proves key A cannot reach host B under it —
 plus TOML round-trip stability, default-deny untouched, and `policy-check`
 showing the matched pair.
+
+## D44 — Operator-channel Windows parity: one cross-platform facade, owner-only DACL
+
+**Status:** Accepted (2026-10-01, P1-1 item 3). **Fills:** MVP-GAP-REVIEW P1-1
+item 3 ("same owner-only discipline the UDS path uses"), supersedes the
+S-2 "events feed SKIPPED-WITH-RECORD on Windows" posture and the issue #43
+loud-failure stub.
+
+**Decision.** The two operator-facing channels — the read-only events feed
+(D35) and the 1:1 confirmation console (D8/D32) — run on ONE code path on
+every platform, backed by a new facade in `chaperone-transport`
+(`operator_pipe::OperatorListener` / `OperatorStream`, over the maintained
+`interprocess` crate): Unix-domain sockets on unix, named pipes on Windows.
+The Windows stubs are deleted; `chaperone tail`, `chaperone console`,
+`--console-socket`, and `--events-socket` are real on Windows.
+
+**Security posture — stronger than the D13 fallback, deliberately.** The gap
+review asked for "the same owner-only discipline the UDS path uses."
+`interprocess` exposes `ListenerOptionsExt::security_descriptor`, which wraps
+the Win32 SD API safely, so the pipe is created with a protected DACL
+(`D:P(A;;GA;;;CO)(A;;GA;;;SY)(A;;GA;;;BA)` — Creator-Owner, SYSTEM, local
+Administrators full control; no inheritance, Everyone absent): the exact
+named-pipe analogue of the unix `0600`. The workspace `unsafe_code =
+"forbid"` is preserved. This *upgrades* the earlier plan of matching the
+agent channel's D13 default-DACL posture (creator-token derived, explicit
+ACLs deferred to hardening); operator channels now exceed it. Note D13's
+agent-channel upgrade remains a separate open hardening item — this decision
+does not silently change the agent channel.
+
+**Placement.** All platform-specific pipe mechanics live in the facade, not
+in `cfg(windows)` branches scattered through gateway-core/CLI/tests. This is
+also a verification strategy: `chaperone-transport` has a tiny dependency
+tree and cross-compiles from the Linux dev box (`cargo check/clippy --target
+x86_64-pc-windows-msvc`, both green at acceptance), while gateway-core cannot
+(aws-lc-rs needs MSVC `lib.exe`). The riskiest code is compiler-proven for
+Windows before CI ever sees it; windows-latest CI provides native execution
+proof of the whole tree.
+
+**Windows naming.** Operators pass filesystem-style endpoint strings
+uniformly; on Windows the pipe name is the endpoint's file-name component in
+the `\\.\pipe\` namespace (pipe names cannot contain separators). Tests use
+unique file names per endpoint because of this mapping. Live-endpoint probing
+preserves the unix posture: bind refuses when a connect succeeds ("a live
+feed already owns …"); a stale endpoint is reclaimed (`try_overwrite`), and
+client connects retry briefly on `ERROR_PIPE_BUSY` (the agent channel's
+existing pattern).
+
+**Test consequences.** S-2's skip list is now empty: `no_secret_leak`
+surface 4 (events feed) is mechanically asserted on all three platforms, and
+the Windows stub-string test is deleted along with the stub. Feed-observation
+tests (`notify_on_use`, `session_events`, `policy_guard` drift) and the
+console acceptance tests run on Windows unmodified — console tests moved off
+the unix-only `UnixStream::pair()` shortcut onto real `ConsoleHub::spawn`
+endpoints, exercising the production bind path on every platform.
+
+**Accepted costs.** `interprocess` + `widestring` dependency trees (flagged
+in the PR like the earlier zbus/tree-size disclosure); the console's
+timeout-read uses a 10 ms nonblocking poll loop (`read_byte_timeout`)
+because Windows pipes lack `set_read_timeout` — acceptable for a
+human-speed prompt channel, documented on the method.

@@ -1,17 +1,22 @@
-//! Phase 12 acceptance tests: the operator console socket (D8/D32).
+//! Phase 12 acceptance tests: the operator console channel (D8/D32).
 //!
 //! - A connected operator's `y` approves through the full gateway flow.
 //! - With NO operator connected, confirmations fail closed immediately
 //!   (no hang, no auto-approve).
 //! - The prompt block renders on the console with full context.
+//!
+//! Runs on every platform since P1-1 item 3: the console is a real endpoint
+//! (UDS 0600 on unix, owner-only named pipe on Windows, D44) bound through
+//! `ConsoleHub::spawn` — the same path `serve` uses — rather than a
+//! unix-only `UnixStream::pair()` shortcut. Endpoint file names are unique
+//! per test because Windows pipe names derive from the file-name component.
 
-#![cfg(unix)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 
 use chaperone_gateway_core::{ConfirmationGate, ConsoleHub, OperatorGate};
+use chaperone_transport::operator_pipe::OperatorStream;
 use std::time::Duration;
 
 const AGENT: &str = "agent:console-1";
@@ -26,18 +31,40 @@ fn ctx() -> chaperone_gateway_core::ConfirmContext {
     }
 }
 
-fn connected_pair(hub_path: &str) -> (Arc<ConsoleHub>, UnixStream) {
-    let (client, server) = UnixStream::pair().unwrap();
-    (ConsoleHub::from_stream(server, hub_path.into()), client)
+/// Binds a real console endpoint and connects the operator side. Returns
+/// (hub, operator stream, tempdir-keeper).
+fn connected_pair(name: &str) -> (Arc<ConsoleHub>, OperatorStream, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(name);
+    let hub = ConsoleHub::spawn(&path).unwrap();
+    let operator = OperatorStream::connect(path.to_str().unwrap()).unwrap();
+    // Let the acceptor thread register the connection before the gate runs.
+    std::thread::sleep(Duration::from_millis(120));
+    (hub, operator, dir)
+}
+
+/// Reads the rendered prompt back on the operator side (deadline-bounded so
+/// a missing prompt fails instead of hanging).
+fn read_prompt(operator: &OperatorStream) -> String {
+    let timeout = Duration::from_secs(5);
+    let mut seen = String::new();
+    while let Ok(b) = operator.read_byte_timeout(timeout) {
+        // Prompts end at the "[y/N]: " suffix; drain until the read
+        // deadline expires of data (no more bytes => TimedOut => stop).
+        seen.push(b as char);
+        if seen.ends_with("[y/N]: ") {
+            break;
+        }
+    }
+    seen
 }
 
 #[tokio::test]
 async fn connected_operator_y_approves() {
-    let (hub, mut operator_side) = connected_pair("/tmp/unused-console-a");
+    let (hub, operator, _dir) = connected_pair("console-a.sock");
 
     // Operator pre-writes the approval; the gate reads it when it runs.
-    use std::io::Write as _;
-    operator_side.write_all(b"y\n").unwrap();
+    operator.write_all(b"y\n").unwrap();
 
     let gate = OperatorGate::new(Box::new(hub), Duration::from_secs(5));
     assert_eq!(
@@ -46,10 +73,7 @@ async fn connected_operator_y_approves() {
     );
 
     // The prompt reached the operator with full context.
-    let mut seen = String::new();
-    use std::io::Read as _;
-    operator_side.set_nonblocking(true).unwrap();
-    let _ = operator_side.read_to_string(&mut seen);
+    let seen = read_prompt(&operator);
     for needle in [AGENT, "stripe-prod", "http-bearer"] {
         assert!(seen.contains(needle), "prompt missing {needle}: {seen:?}");
     }
@@ -57,9 +81,8 @@ async fn connected_operator_y_approves() {
 
 #[tokio::test]
 async fn connected_operator_n_refuses() {
-    let (hub, mut operator_side) = connected_pair("/tmp/unused-console-b");
-    use std::io::Write as _;
-    operator_side.write_all(b"n\n").unwrap();
+    let (hub, operator, _dir) = connected_pair("console-b.sock");
+    operator.write_all(b"n\n").unwrap();
 
     let gate = OperatorGate::new(Box::new(hub), Duration::from_secs(5));
     assert_eq!(
@@ -70,7 +93,7 @@ async fn connected_operator_n_refuses() {
 
 #[tokio::test]
 async fn no_operator_connected_fails_closed_fast() {
-    let hub = ConsoleHub::new("/tmp/unused-console-c".into());
+    let hub = ConsoleHub::new("unused-console-c".into());
     let gate = OperatorGate::new(Box::new(hub), Duration::from_secs(30));
     // Must NOT wait 30s: an absent console is a refusal, not a pause.
     let started = std::time::Instant::now();
@@ -81,8 +104,8 @@ async fn no_operator_connected_fails_closed_fast() {
 
 #[tokio::test]
 async fn disconnected_operator_mid_prompt_is_refusal() {
-    let (hub, operator_side) = connected_pair("/tmp/unused-console-d");
-    drop(operator_side); // console vanished after connecting
+    let (hub, operator, _dir) = connected_pair("console-d.sock");
+    drop(operator); // console vanished after connecting
 
     let gate = OperatorGate::new(Box::new(hub), Duration::from_secs(5));
     assert_eq!(

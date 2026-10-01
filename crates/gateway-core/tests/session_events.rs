@@ -11,10 +11,9 @@
 //! - no relayed content in session events (counters + references only).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-// The events feed is a Unix-domain socket, so every test here subscribes via
-// std::os::unix::net::UnixStream. Gate the whole file: on non-unix targets the
-// feed (and therefore this coverage) does not exist.
-#![cfg(unix)]
+// The events feed has a real transport on every platform (P1-1 item 3:
+// Windows named pipe, D44), so this coverage runs everywhere via the
+// cross-platform operator-pipe facade.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -229,25 +228,24 @@ fn closer(spine: &Spine, handle: &str, nonce: &str) -> Value {
 
 // ---------- feed subscription (same pattern as notify_on_use.rs) ----------
 
-fn subscribe(events_path: &std::path::Path) -> std::os::unix::net::UnixStream {
-    let sub = std::os::unix::net::UnixStream::connect(events_path).unwrap();
+fn subscribe(events_path: &std::path::Path) -> chaperone_transport::operator_pipe::OperatorStream {
+    let sub =
+        chaperone_transport::operator_pipe::OperatorStream::connect(events_path.to_str().unwrap())
+            .unwrap();
     std::thread::sleep(Duration::from_millis(120));
     sub
 }
 
 /// Reads feed lines until one has `type == want`, or None on timeout.
-fn next_event_of(sub: &std::os::unix::net::UnixStream, want: &str) -> Option<Value> {
-    use std::io::Read as _;
-    sub.set_read_timeout(Some(Duration::from_millis(900)))
-        .unwrap();
+fn next_event_of(
+    sub: &chaperone_transport::operator_pipe::OperatorStream,
+    want: &str,
+) -> Option<Value> {
+    let timeout = Duration::from_millis(900);
     let mut buf: Vec<u8> = Vec::new();
-    let mut byte = [0u8; 1];
-    // &UnixStream implements Read (shared-borrow reads), mirroring
-    // notify_on_use.rs's reader pattern.
-    let mut reader = sub;
-    while reader.read_exact(&mut byte).is_ok() {
-        buf.push(byte[0]);
-        if byte[0] == b'\n' {
+    while let Ok(b) = sub.read_byte_timeout(timeout) {
+        buf.push(b);
+        if b == b'\n' {
             let line = String::from_utf8_lossy(&buf).trim().to_owned();
             buf.clear();
             if let Ok(v) = serde_json::from_str::<Value>(&line)

@@ -16,12 +16,12 @@
 //! never evidence — a notification preference must not become an evidence
 //! preference).
 //!
-//! The events feed is a unix-domain socket (P1-1; no Windows transport yet), so
-//! these observation tests are `#[cfg(unix)]`, matching policy_guard.rs. The
-//! gating logic itself is platform-independent.
+//! The events feed has a real transport on every platform (P1-1 item 3:
+//! Windows named pipe, D44), so these observation tests run everywhere — the
+//! notify_on_use gating logic is platform-independent and now proven on
+//! Windows too.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-#![cfg(unix)]
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -179,23 +179,21 @@ impl Spine {
 
 /// Connect a feed subscriber and give the hub's accept loop a moment to register
 /// it before the decision broadcasts (same pattern as policy_guard.rs).
-fn subscribe(events_path: &std::path::Path) -> std::os::unix::net::UnixStream {
-    let sub = std::os::unix::net::UnixStream::connect(events_path).unwrap();
+fn subscribe(events_path: &std::path::Path) -> chaperone_transport::operator_pipe::OperatorStream {
+    let sub =
+        chaperone_transport::operator_pipe::OperatorStream::connect(events_path.to_str().unwrap())
+            .unwrap();
     std::thread::sleep(Duration::from_millis(120));
     sub
 }
 
 /// Reads one newline-terminated feed line, or None on timeout (no broadcast).
-fn read_line_opt(sub: &std::os::unix::net::UnixStream) -> Option<String> {
-    use std::io::Read as _;
-    sub.set_read_timeout(Some(Duration::from_millis(700)))
-        .unwrap();
-    let mut reader = sub;
+fn read_line_opt(sub: &chaperone_transport::operator_pipe::OperatorStream) -> Option<String> {
+    let timeout = Duration::from_millis(700);
     let mut buf = Vec::new();
-    let mut byte = [0u8; 1];
-    while reader.read_exact(&mut byte).is_ok() {
-        buf.push(byte[0]);
-        if byte[0] == b'\n' {
+    while let Ok(b) = sub.read_byte_timeout(timeout) {
+        buf.push(b);
+        if b == b'\n' {
             return Some(String::from_utf8_lossy(&buf).into_owned());
         }
     }
