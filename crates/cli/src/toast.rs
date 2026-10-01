@@ -141,26 +141,33 @@ fn num(v: &Value, k: &str) -> u64 {
 /// Best-effort delivery. Errors are returned (never panic) so the caller
 /// can warn once and keep tailing.
 pub fn send(t: &Toast) -> Result<(), String> {
-    let urgency = match t.urgency {
-        Urgency::Critical => notify_rust::Urgency::Critical,
-        Urgency::Normal => notify_rust::Urgency::Normal,
-        Urgency::Low => notify_rust::Urgency::Low,
-    };
-    notify_rust::Notification::new()
-        .appname("Chaperone")
+    let mut n = notify_rust::Notification::new();
+    n.appname("Chaperone")
         .summary(&t.title)
-        .body(&t.body)
-        .urgency(urgency)
-        .timeout(notify_rust::Timeout::from(
-            if matches!(t.urgency, Urgency::Critical) {
-                0 // persist until dismissed
-            } else {
-                8000
-            },
-        ))
-        .show()
-        .map(|_handle| ())
-        .map_err(|e| format!("toast delivery failed: {e}"))
+        .body(&t.body);
+    // urgency() and notify_rust::Urgency are freedesktop/Linux and WinRT/Windows
+    // primitives. On macOS (the NSUserNotificationCenter path, which is the
+    // default) the method does not exist and Urgency is marked deprecated —
+    // macOS has no urgency level — so urgency is applied only where the
+    // platform exposes it.
+    #[cfg(not(target_os = "macos"))]
+    {
+        n.urgency(match t.urgency {
+            Urgency::Critical => notify_rust::Urgency::Critical,
+            Urgency::Normal => notify_rust::Urgency::Normal,
+            Urgency::Low => notify_rust::Urgency::Low,
+        });
+    }
+    n.timeout(notify_rust::Timeout::from(
+        if matches!(t.urgency, Urgency::Critical) {
+            0 // persist until dismissed (freedesktop); ignored elsewhere
+        } else {
+            8000
+        },
+    ))
+    .show()
+    .map(|_handle| ())
+    .map_err(|e| format!("toast delivery failed: {e}"))
 }
 
 #[cfg(test)]
