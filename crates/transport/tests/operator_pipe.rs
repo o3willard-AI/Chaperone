@@ -163,6 +163,69 @@ fn watchdog_fires_on_a_hanging_body() {
     });
 }
 
+/// Pins the contract of the primitive the CH-77 fix repairs, in isolation:
+/// a read against a peer that stays connected but sends NOTHING must return
+/// `TimedOut` after ~the deadline — it must NOT fast-fail with some other
+/// error (the pre-fix Windows behavior: `ERROR_NO_DATA` fell through the
+/// `WouldBlock` arm and returned immediately) and must NOT hang (the deeper
+/// possibility the watchdog guards). Asserting both the error kind AND the
+/// elapsed time distinguishes "polled to deadline correctly" from "returned
+/// instantly with the wrong error," which the round-trip test alone cannot.
+///
+/// NOTE: on Linux this contract already held before the fix (unix
+/// `no_data_yet` is the unchanged `WouldBlock` branch), so this test is green
+/// here either way — it is NOT Linux-side proof of the Windows fix. Its value
+/// is a permanent contract pin and, on windows-latest, a precise diagnostic:
+/// if Windows still fast-fails, the elapsed-time assert names it; if it hangs,
+/// the watchdog localizes it. The Windows fix itself is proven only by the
+/// windows-latest leg.
+#[test]
+fn read_against_silent_peer_times_out_not_fast_fail() {
+    with_watchdog(std::time::Duration::from_secs(15), |_mark| {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("silent.sock");
+        let name = path.to_str().unwrap().to_owned();
+        let listener = OperatorListener::bind(&name, |p| format!("live owns {p}")).unwrap();
+
+        // Server accepts and then stays silent (holds the connection open
+        // without writing) for longer than the client's read deadline, so the
+        // client sees a live-but-quiet peer — the exact case that must time
+        // out rather than report EOF/BrokenPipe.
+        let server = std::thread::spawn(move || {
+            let _conn = listener.accept().unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            // _conn drops here; the client has long since returned.
+        });
+
+        let stream = OperatorStream::connect(&name).unwrap();
+        // Small settle so the server reaches accept() before the client reads.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let deadline = std::time::Duration::from_millis(400);
+        let started = std::time::Instant::now();
+        let result = stream.read_byte_timeout(deadline);
+        let elapsed = started.elapsed();
+
+        // Contract 1: TimedOut, and specifically NOT a fast-fail. The pre-fix
+        // Windows path returned ~immediately with BrokenPipe; requiring the
+        // elapsed time to be at least the deadline proves it actually polled.
+        let err_kind = result.as_ref().err().map(|e| e.kind());
+        assert_eq!(
+            err_kind,
+            Some(std::io::ErrorKind::TimedOut),
+            "silent peer must yield TimedOut, got {result:?}"
+        );
+        assert!(
+            elapsed >= deadline,
+            "read returned in {elapsed:?} < {deadline:?}: fast-failed instead of polling to the deadline"
+        );
+
+        // Do not join the 3s-sleeping server; abandon it (killed at process
+        // exit) so this test stays fast.
+        drop(server);
+    });
+}
+
 #[test]
 fn live_peer_refuses_second_bind() {
     let dir = tempfile::tempdir().unwrap();
