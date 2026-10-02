@@ -18,7 +18,10 @@
 //!
 //! Naming: `printname` is the operator-supplied endpoint string. On Unix it is
 //! a filesystem path (absolute, e.g. a tempdir socket); on Windows a pipe name
-//! in the `\\.\pipe\` namespace (a bare name is accepted and mapped there).
+//! in the `\\.\pipe\` namespace. The Windows mapping ([`windows_pipe_name`])
+//! preserves bare names exactly, and makes filesystem paths unique per PATH
+//! (basename + hash of the full path) so same-basename endpoints in different
+//! directories never collide in the single machine-wide pipe namespace.
 
 use std::io::{self, Read, Write};
 
@@ -44,6 +47,69 @@ pub struct OperatorStream {
     inner: LocalSocketStream,
 }
 
+/// Maps an operator-supplied endpoint string to a Windows pipe name.
+///
+/// Pure and platform-independent ON PURPOSE: only the Windows bind/connect
+/// path calls it, but compiling it everywhere lets the mapping be
+/// unit-tested natively on Linux/macOS CI instead of only on windows-latest.
+///
+/// Rules:
+/// 1. An explicit `\\.\pipe\<name>` resolves to `<name>` verbatim.
+/// 2. A bare name (no path separators) maps to itself — operators wanting a
+///    specific namespace name pass exactly that name.
+/// 3. A filesystem-style path maps to `<sanitized-basename>-<hash16>`, where
+///    the hash covers the FULL path string: pipe names live in one
+///    machine-wide namespace and cannot contain separators, so uniqueness
+///    must come from the path, not the basename. Two `...\events.sock` in
+///    different tempdirs get different pipe names (the collision that broke
+///    the first Windows CI run of the un-gated feed tests).
+///
+/// The basename keeps names human-legible in `\\.\pipe\` listings; 16 hex
+/// chars of SHA-256 make accidental cross-path collisions negligible.
+#[must_use]
+pub fn windows_pipe_name(printname: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    const PIPE_PREFIX: &str = r"\\.\pipe\";
+    if let Some(rest) = printname.strip_prefix(PIPE_PREFIX)
+        && !rest.is_empty()
+        && !rest.contains(['\\', '/'])
+    {
+        return rest.to_owned();
+    }
+    if !printname.contains(['\\', '/']) {
+        return printname.to_owned();
+    }
+    // Split on BOTH separators manually (not std::path::Path, whose notion
+    // of a separator is host-dependent): this function must behave
+    // identically on every platform so the mapping is testable on Linux CI.
+    let stem = printname
+        .rsplit(['\\', '/'])
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(printname)
+        .to_owned();
+    // Sanitize to pipe-legal chars; keep it legible, bounded.
+    let sanitized: String = stem
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(40)
+        .collect();
+    let digest = Sha256::digest(printname.as_bytes());
+    let hash16: String = digest
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()[..16]
+        .to_owned();
+    format!("{sanitized}-{hash16}")
+}
+
 /// Resolves an operator-supplied endpoint string to a platform local-socket
 /// name.
 ///
@@ -52,16 +118,8 @@ pub struct OperatorStream {
 pub fn endpoint_name(printname: &str) -> io::Result<interprocess::local_socket::Name<'static>> {
     #[cfg(windows)]
     {
-        // Pipe names cannot contain path separators, but callers pass
-        // filesystem-style endpoint strings uniformly (tempdirs, config dirs).
-        // Take the last path component as the pipe name: a bare name maps to
-        // itself, a full path to its file name, and an explicit \\.\pipe\x to x.
-        // Operators wanting a specific namespace name pass exactly that name.
-        let bare = std::path::Path::new(printname)
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| printname.to_owned());
-        bare.to_ns_name::<GenericNamespaced>()
+        windows_pipe_name(printname)
+            .to_ns_name::<GenericNamespaced>()
             .map(|n| n.into_owned())
     }
     #[cfg(not(windows))]
@@ -246,5 +304,64 @@ impl OperatorStream {
         // on this stream, which would surface the error there.
         let _ = self.set_nonblocking(false);
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::windows_pipe_name;
+
+    /// Rule 2: a bare name maps to itself — the operator-facing namespace
+    /// property from the original design.
+    #[test]
+    fn bare_name_maps_to_itself() {
+        assert_eq!(windows_pipe_name("chaperone-events"), "chaperone-events");
+        assert_eq!(windows_pipe_name("console.sock"), "console.sock");
+    }
+
+    /// Rule 1: an explicit pipe path resolves to its name verbatim.
+    #[test]
+    fn explicit_pipe_prefix_resolves_verbatim() {
+        assert_eq!(
+            windows_pipe_name(r"\\.\pipe\chaperone-events"),
+            "chaperone-events"
+        );
+    }
+
+    /// Rule 3, the CI collision fix: same basename under different
+    /// directories MUST yield different pipe names (the pipe namespace is
+    /// machine-wide; four parallel tests each binding their own tempdir's
+    /// `events.sock` collided under the old basename-only mapping).
+    #[test]
+    fn same_basename_different_dirs_never_collide() {
+        let a = windows_pipe_name(r"C:\Users\ci\AppData\Local\Temp\.tmpAAA\events.sock");
+        let b = windows_pipe_name(r"C:\Users\ci\AppData\Local\Temp\.tmpBBB\events.sock");
+        let c = windows_pipe_name("/tmp/.tmpCCC/events.sock");
+        assert_ne!(a, b, "tempdir A and B must not collide: {a} == {b}");
+        assert_ne!(a, c, "windows and unix style paths must not collide");
+        assert_ne!(b, c);
+    }
+
+    /// Rule 3 legibility: the basename stays recognizable and the name is
+    /// pipe-legal (no separators) and bounded.
+    #[test]
+    fn path_mapping_is_legible_sanitized_and_bounded() {
+        let n = windows_pipe_name(r"C:\ProgramData\Chaperone\events.sock");
+        assert!(n.starts_with("events.sock-"), "{n}");
+        assert!(
+            !n.contains(['\\', '/']),
+            "pipe name must be separator-free: {n}"
+        );
+        assert!(n.len() <= 40 + 1 + 16, "name too long: {} ({})", n, n.len());
+    }
+
+    /// Determinism: the same path always yields the same pipe name (bind and
+    /// connect are separate calls in separate processes).
+    #[test]
+    fn mapping_is_deterministic() {
+        let p = r"C:\Users\op\AppData\Local\Temp\.tmpXYZ\console.sock";
+        assert_eq!(windows_pipe_name(p), windows_pipe_name(p));
     }
 }

@@ -788,9 +788,18 @@ Windows before CI ever sees it; windows-latest CI provides native execution
 proof of the whole tree.
 
 **Windows naming.** Operators pass filesystem-style endpoint strings
-uniformly; on Windows the pipe name is the endpoint's file-name component in
-the `\\.\pipe\` namespace (pipe names cannot contain separators). Tests use
-unique file names per endpoint because of this mapping. Live-endpoint probing
+uniformly. The pipe namespace is machine-wide and pipe names cannot contain
+separators, so `operator_pipe::windows_pipe_name` maps an endpoint to a pipe
+name by three rules: an explicit `\\.\pipe\<name>` resolves verbatim; a bare
+name (no separators) maps to itself (operators wanting a specific namespace
+name pass exactly that); and a filesystem path maps to
+`<sanitized-basename>-<sha256-16hex-of-the-full-path>`. The hash suffix is
+what makes two `...\events.sock` in different directories — e.g. parallel
+tests each in their own tempdir — yield DIFFERENT pipe names, so they cannot
+collide in the single namespace. (The first cut mapped to the basename alone,
+which collided exactly this way and failed the first native Windows CI run of
+the un-gated feed tests; the fix is `windows_pipe_name`, unit-tested on Linux
+CI because it is deliberately platform-independent.) Live-endpoint probing
 preserves the unix posture: bind refuses when a connect succeeds ("a live
 feed already owns …"); a stale endpoint is reclaimed (`try_overwrite`), and
 client connects retry briefly on `ERROR_PIPE_BUSY` (the agent channel's
