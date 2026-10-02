@@ -110,6 +110,25 @@ pub fn windows_pipe_name(printname: &str) -> String {
     format!("{sanitized}-{hash16}")
 }
 
+/// Is this read error "no data right now, keep polling to the deadline"?
+///
+/// Unix: nonblocking empty reads are `WouldBlock`. Windows: a `PIPE_NOWAIT`
+/// read with no data returns `ERROR_NO_DATA` (232), which Rust surfaces with
+/// kind `BrokenPipe` but raw OS error 232 — a genuine broken pipe is
+/// `ERROR_BROKEN_PIPE` (109). Distinguishing by raw code keeps the poll loop
+/// waiting for data on Windows instead of fast-failing, while still treating
+/// a real disconnect as EOF.
+#[cfg(not(windows))]
+fn no_data_yet(e: &io::Error) -> bool {
+    e.kind() == io::ErrorKind::WouldBlock
+}
+
+#[cfg(windows)]
+fn no_data_yet(e: &io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(232) /* ERROR_NO_DATA */)
+        || e.kind() == io::ErrorKind::WouldBlock
+}
+
 /// Resolves an operator-supplied endpoint string to a platform local-socket
 /// name.
 ///
@@ -277,8 +296,19 @@ impl OperatorStream {
     }
 
     /// Reads one byte with a deadline (cross-platform replacement for
-    /// `UnixStream::set_read_timeout`, which the Windows pipe path lacks).
-    /// Polls in nonblocking mode; restores blocking mode before returning.
+    /// `UnixStream::set_read_timeout`, which the Windows pipe path lacks —
+    /// `interprocess` Windows streams return "named pipes do not support I/O
+    /// timeouts"). Polls in nonblocking mode until a byte arrives or the
+    /// deadline passes.
+    ///
+    /// Platform note: an empty nonblocking read is `WouldBlock` on unix, but
+    /// on Windows a `PIPE_NOWAIT` read with no data returns `ERROR_NO_DATA`
+    /// (232), which Rust surfaces as `BrokenPipe` — NOT `WouldBlock`. So the
+    /// poll loop must treat `ERROR_NO_DATA` as "no data yet, keep waiting"
+    /// (else it fast-fails before the deadline) while still mapping a genuine
+    /// `ERROR_BROKEN_PIPE` (109) to EOF. Without this the un-gated feed tests
+    /// either abort early or, if the nonblocking toggle does not take on a
+    /// client pipe handle, block forever — the Windows-only deadlock.
     ///
     /// # Errors
     /// `TimedOut` if no byte arrives before `timeout`; `UnexpectedEof` at
@@ -291,11 +321,11 @@ impl OperatorStream {
             match (&self.inner).read(&mut b) {
                 Ok(0) => break Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
                 Ok(_) => break Ok(b[0]),
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                Err(e) if no_data_yet(&e) => {
                     if std::time::Instant::now() >= deadline {
                         break Err(io::Error::from(io::ErrorKind::TimedOut));
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    std::thread::sleep(std::time::Duration::from_millis(5));
                 }
                 Err(e) => break Err(e),
             }

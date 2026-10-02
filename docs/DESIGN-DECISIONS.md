@@ -815,6 +815,43 @@ endpoints, exercising the production bind path on every platform.
 
 **Accepted costs.** `interprocess` + `widestring` dependency trees (flagged
 in the PR like the earlier zbus/tree-size disclosure); the console's
-timeout-read uses a 10 ms nonblocking poll loop (`read_byte_timeout`)
+timeout-read uses a short nonblocking poll loop (`read_byte_timeout`)
 because Windows pipes lack `set_read_timeout` — acceptable for a
 human-speed prompt channel, documented on the method.
+
+**Windows I/O deadlock on first native CI run (CH-77, 2026-10-02).** PR #77
+is NOT yet merged — release engineering is holding it until the Windows leg
+is green. The first native windows-latest run of the un-gated feed/console
+tests *hung* (the runner stalled rather than failing cleanly). Diagnosis,
+from the vendored `interprocess` 2.4.4 source (not from a Windows box — this
+project cannot execute Windows locally, aws-lc-rs needs `lib.exe`):
+- Windows pipes reject I/O timeouts outright (`no_timeouts()` →
+  "named pipes do not support I/O timeouts"), so `read_byte_timeout`'s
+  poll loop is the only bounded-wait mechanism.
+- The original loop keyed "no data yet" off `io::ErrorKind::WouldBlock`.
+  But `interprocess`'s read path runs errors through `decode_eof`
+  (`os/windows/misc.rs`), which remaps ONLY `ERROR_PIPE_NOT_CONNECTED` →
+  `BrokenPipe`; it does NOT map `ERROR_NO_DATA` (232). Rust's own mapping
+  surfaces a nonblocking empty pipe read as `ERROR_NO_DATA`→`BrokenPipe`,
+  never `WouldBlock`. So on Windows the loop's `WouldBlock` arm never fired:
+  an empty read fell through to `break Err(e)`, returning immediately.
+- Fix: a platform-split `no_data_yet(e)` predicate — `WouldBlock` on unix,
+  `WouldBlock` **or raw OS error 232** on Windows — so a no-data read polls
+  to the deadline instead of fast-failing, while a genuine
+  `ERROR_BROKEN_PIPE` (109) still maps to EOF. The unix branch is
+  byte-identical to before (zero risk to the green legs).
+
+**Honest limit of this fix.** The change corrects a *wrong fast-fail* into a
+correct bounded wait. Whether it also clears the *hang* depends on whether
+the deeper cause is `set_nonblocking(true)` not taking effect on a client
+pipe handle (in which case `ReadFile` parks regardless of the predicate).
+That branch cannot be distinguished from Linux source-reading alone, so the
+PR ships an INSTRUMENT, not just a fix: `bind_connect_roundtrip` now runs its
+body on a worker thread under a 20 s watchdog that panics naming the last
+phase reached (bind / connect / client-read / client-write / join). A future
+Windows deadlock then fails in ≤20 s and points at the exact call, instead of
+stalling the runner blind. The watchdog itself is proven to fire by
+`watchdog_fires_on_a_hanging_body` (`#[should_panic]`), so it cannot silently
+become an inert instrument. `listener_and_client_derive_same_pipe_name` pins
+Heph's invariant that bind and connect agree on the pipe name for one
+endpoint (a disagreement would deadlock the round-trip).
