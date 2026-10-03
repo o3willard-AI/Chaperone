@@ -568,6 +568,7 @@ dependencies = [
  "chaperone-injectors",
  "chaperone-policy",
  "chaperone-protocol",
+ "chaperone-transport",
  "chaperone-vault",
  "ed25519-dalek 2.2.0",
  "rand_core 0.6.4",
@@ -646,9 +647,12 @@ dependencies = [
 name = "chaperone-transport"
 version = "0.1.0"
 dependencies = [
+ "interprocess",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
+ "widestring",
 ]
 
 [[package]]
@@ -1034,6 +1038,12 @@ dependencies = [
  "quote",
  "syn 3.0.4",
 ]
+
+[[package]]
+name = "doctest-file"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2db04e74f0a9a93103b50e90b96024c9b2bdca8bce6a632ec71b88736d3d359"
 
 [[package]]
 name = "dunce"
@@ -1793,6 +1803,19 @@ dependencies = [
  "num-traits",
  "rand 0.10.2",
  "rand_core 0.10.1",
+]
+
+[[package]]
+name = "interprocess"
+version = "2.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6cb02ffbf25e8ef0f4a95bff054eef75f6d1bf16919474cf2caa63b21997478a"
+dependencies = [
+ "doctest-file",
+ "libc",
+ "recvmsg",
+ "widestring",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2698,6 +2721,12 @@ checksum = "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a"
 dependencies = [
  "rand_core 0.10.1",
 ]
+
+[[package]]
+name = "recvmsg"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3edd4d5d42c92f0a659926464d4cce56b562761267ecf0f469d85b7de384175"
 
 [[package]]
 name = "redox_syscall"
@@ -4014,6 +4043,12 @@ dependencies = [
  "wasite",
  "web-sys",
 ]
+
+[[package]]
+name = "widestring"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
 
 [[package]]
 name = "windows"

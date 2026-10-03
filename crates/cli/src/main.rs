@@ -11,10 +11,10 @@
 
 use std::process::ExitCode;
 
-// P1-1 item 2: OS toast notifications for `chaperone tail`. Unix-gated
-// alongside cmd_tail until PR-B's Windows feed parity lands (the toast
-// crate itself is cross-platform; the consumer is what is gated).
-#[cfg(unix)]
+// P1-1 item 2: OS toast notifications for `chaperone tail`, gated
+// alongside cmd_tail (unix sockets + Windows named pipes; notify-rust
+// covers Linux/macOS/Windows delivery).
+#[cfg(any(unix, windows))]
 mod toast;
 
 use chaperone_audit::AuditKey;
@@ -64,7 +64,7 @@ AUDIT CHAIN:
                            --target-uri <URI> --mechanism <M>
                            [--max-response-bytes N] [--session-ttl-s S]
 
-LIVE OBSERVABILITY (unix only; D35/P1-1):
+LIVE OBSERVABILITY (unix + Windows; D35/D44/P1-1):
     chaperone console --socket <PATH>          (answer needs_confirmation prompts)
     chaperone tail --events-socket <PATH> [--toast]  (watch decisions + session events; --toast adds OS notifications)
 
@@ -263,21 +263,28 @@ fn cmd_policy_check(flags: &Flags) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(unix)]
+/// P1-1: `chaperone console` — attach to the operator confirmation channel.
+/// Cross-platform via the operator-pipe facade (unix socket / Windows named
+/// pipe, owner-only either way — D44).
+#[cfg(any(unix, windows))]
 fn cmd_console(flags: &Flags) -> Result<(), String> {
-    use std::io::{BufRead as _, Read as _, Write as _};
+    use std::io::{BufRead as _, Write as _};
 
     let path = flags.require("socket")?;
-    let mut sock = std::os::unix::net::UnixStream::connect(std::path::Path::new(&path))
-        .map_err(|e| format!("cannot reach console at {path}: {e}"))?;
-    let mut server_out = sock.try_clone().map_err(|e| e.to_string())?;
+    let sock = std::sync::Arc::new(
+        chaperone_transport::operator_pipe::OperatorStream::connect(&path)
+            .map_err(|e| format!("cannot reach console at {path}: {e}"))?,
+    );
 
-    // Socket -> stdout on a thread; stdin lines -> socket on this one.
+    // Channel -> stdout on a thread; stdin lines -> channel on this one.
+    // Both directions share one &OperatorStream (Read/Write on the borrowed
+    // form), exactly like the previous UnixStream::try_clone arrangement.
+    let reader_sock = std::sync::Arc::clone(&sock);
     let reader_thread = std::thread::spawn(move || {
-        let mut buf = Vec::new();
+        let mut buf: Vec<u8> = Vec::new();
         let mut byte = [0u8; 1];
         loop {
-            match server_out.read(&mut byte) {
+            match reader_sock.read(&mut byte) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
                     buf.push(byte[0]);
@@ -293,8 +300,9 @@ fn cmd_console(flags: &Flags) -> Result<(), String> {
 
     for line in std::io::stdin().lock().lines() {
         let line = line.map_err(|e| format!("stdin: {e}"))?;
-        sock.write_all(line.as_bytes())
-            .and_then(|_| sock.write_all(b"\n"))
+        let mut payload = line.into_bytes();
+        payload.push(b'\n');
+        sock.write_all(&payload)
             .map_err(|e| format!("console write: {e}"))?;
     }
     drop(sock);
@@ -304,57 +312,73 @@ fn cmd_console(flags: &Flags) -> Result<(), String> {
 
 /// P1-1: `chaperone tail` — subscribe to the read-only events feed and print
 /// one human-legible line per event. Read-only by construction (D35): the
-/// socket never accepts writes back, and this command never sends anything.
+/// endpoint never accepts writes back, and this command never sends anything.
 /// No secret material is in the feed (asserted by `no_secret_leak`), so the
-/// rendered line is safe terminal output.
-#[cfg(unix)]
+/// rendered line is safe terminal output. Cross-platform via the
+/// operator-pipe facade (P1-1 item 3).
+#[cfg(any(unix, windows))]
 fn cmd_tail(flags: &Flags) -> Result<(), String> {
-    use std::io::{BufRead as _, Write as _};
+    use std::io::Write as _;
 
     let path = flags.require("events-socket")?;
     let toast = flags.has("toast");
-    let sock = std::os::unix::net::UnixStream::connect(std::path::Path::new(&path))
+    let sock = chaperone_transport::operator_pipe::OperatorStream::connect(&path)
         .map_err(|e| format!("cannot reach the events feed at {path}: {e} (is serve running with --events-socket {path}?)"))?;
     eprintln!(
         "tailing {path}{} (Ctrl-C to stop)",
         if toast { " with OS notifications" } else { "" }
     );
-    let reader = std::io::BufReader::new(sock);
     let mut out = std::io::stdout();
     // Toast failures warn once, then go quiet: the terminal render is the
     // guaranteed surface; `tail` must not die or nag because no
     // notification daemon answered.
     let mut toast_broken = false;
-    for line in reader.lines() {
-        let line = line.map_err(|e| format!("feed read: {e}"))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        // Render JSON events human-legibly; pass anything unparseable through
-        // raw rather than dropping it (a tail that loses lines is worse than
-        // one that shows ugly ones).
-        match serde_json::from_str::<serde_json::Value>(&line) {
-            Ok(v) => {
-                writeln!(out, "{}", render_event(&v)).map_err(|e| e.to_string())?;
-                if toast
-                    && !toast_broken
-                    && let Some(t) = toast::toast_for(&v)
-                    && let Err(e) = toast::send(&t)
-                {
-                    eprintln!("warning: {e} — continuing without OS notifications");
-                    toast_broken = true;
+    // The feed's line discipline is one JSON object per line; read it
+    // byte-wise through the shared-borrow Read so the same loop serves the
+    // unix socket and the Windows pipe (no BufReader over a non-Clone
+    // stream).
+    let mut line: Vec<u8> = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match sock.read(&mut byte) {
+            Ok(0) | Err(_) => break, // feed closed: stop cleanly
+            Ok(_) => {
+                if byte[0] != b'\n' {
+                    line.push(byte[0]);
+                    continue;
                 }
+                let text = String::from_utf8_lossy(&line).trim().to_owned();
+                line.clear();
+                if text.is_empty() {
+                    continue;
+                }
+                // Render JSON events human-legibly; pass anything unparseable
+                // through raw rather than dropping it (a tail that loses
+                // lines is worse than one that shows ugly ones).
+                match serde_json::from_str::<serde_json::Value>(&text) {
+                    Ok(v) => {
+                        writeln!(out, "{}", render_event(&v)).map_err(|e| e.to_string())?;
+                        if toast
+                            && !toast_broken
+                            && let Some(t) = toast::toast_for(&v)
+                            && let Err(e) = toast::send(&t)
+                        {
+                            eprintln!("warning: {e} — continuing without OS notifications");
+                            toast_broken = true;
+                        }
+                    }
+                    Err(_) => writeln!(out, "{text}").map_err(|e| e.to_string())?,
+                }
+                out.flush().map_err(|e| e.to_string())?;
             }
-            Err(_) => writeln!(out, "{line}").map_err(|e| e.to_string())?,
         }
-        out.flush().map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 /// One legible line per feed event type. Unknown types degrade to compact
 /// JSON rather than being dropped.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn render_event(v: &serde_json::Value) -> String {
     let s = |k: &str| v.get(k).and_then(serde_json::Value::as_str).unwrap_or("?");
     let n = |k: &str| v.get(k).and_then(serde_json::Value::as_u64);
@@ -1022,17 +1046,14 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
         ))
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn socket_gate(
         path: &str,
         timeout: Duration,
     ) -> Result<Arc<dyn chaperone_gateway_core::ConfirmationGate>, String> {
         use chaperone_gateway_core::{ConsoleHub, OperatorGate};
-        let listener =
-            chaperone_gateway_core::console::UnixListener2::bind(std::path::Path::new(path))
-                .map_err(|e| e.to_string())?;
-        let hub = ConsoleHub::new(path.into());
-        ConsoleHub::spawn_acceptor(listener, Arc::clone(&hub));
+        // Owner-only on every platform (D44): UDS 0600 / owner-only pipe DACL.
+        let hub = ConsoleHub::spawn(std::path::Path::new(path))?;
         println!(
             "operator console listening on {path} (attach with: chaperone console --socket {path})"
         );
@@ -1043,15 +1064,15 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
         Arc::new(chaperone_gateway_core::AlwaysTimeoutGate)
     } else {
         match flags.values.get("console-socket") {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Some(path) => socket_gate(path, confirm_timeout)?,
-            // Issue #44: the flag was silently ignored on non-unix builds.
-            // Don't fail — just make sure the operator doesn't believe it
-            // took effect.
-            #[cfg(not(unix))]
+            // Issue #44: on platforms with neither Unix-domain sockets nor
+            // named pipes, don't fail — just make sure the operator doesn't
+            // believe the flag took effect.
+            #[cfg(not(any(unix, windows)))]
             Some(path) => {
                 eprintln!(
-                    "note: --console-socket {path} is ignored on this platform (no Unix-domain sockets); using stdin/stdout for confirmations"
+                    "note: --console-socket {path} is ignored on this platform (no local operator channel); using stdin/stdout for confirmations"
                 );
                 stdio_gate(confirm_timeout)
             }
@@ -1323,9 +1344,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "list-agents" => cmd_list_agents(&flags),
         "policy-check" => cmd_policy_check(&flags),
         "audit-keygen" => cmd_audit_keygen(&flags),
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         "console" => cmd_console(&flags),
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         "tail" => cmd_tail(&flags),
         "audit-verify" => cmd_audit_verify(&flags),
         "audit-export" => cmd_audit_export(&flags),

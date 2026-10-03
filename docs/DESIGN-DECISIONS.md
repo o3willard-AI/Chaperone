@@ -749,3 +749,284 @@ Acceptance gate (P1-2's): one rule expresses "each fleet key may be used only
 against its own host," and a test proves key A cannot reach host B under it —
 plus TOML round-trip stability, default-deny untouched, and `policy-check`
 showing the matched pair.
+
+## D44 — Operator-channel Windows parity: one cross-platform facade, owner-only DACL
+
+**Status:** Accepted (2026-10-01, P1-1 item 3). **Fills:** MVP-GAP-REVIEW P1-1
+item 3 ("same owner-only discipline the UDS path uses"), supersedes the
+S-2 "events feed SKIPPED-WITH-RECORD on Windows" posture and the issue #43
+loud-failure stub.
+
+**Decision.** The two operator-facing channels — the read-only events feed
+(D35) and the 1:1 confirmation console (D8/D32) — run on ONE code path on
+every platform, backed by a new facade in `chaperone-transport`
+(`operator_pipe::OperatorListener` / `OperatorStream`, over the maintained
+`interprocess` crate): Unix-domain sockets on unix, named pipes on Windows.
+The Windows stubs are deleted; `chaperone tail`, `chaperone console`,
+`--console-socket`, and `--events-socket` are real on Windows.
+
+**Security posture — stronger than the D13 fallback, deliberately.** The gap
+review asked for "the same owner-only discipline the UDS path uses."
+`interprocess` exposes `ListenerOptionsExt::security_descriptor`, which wraps
+the Win32 SD API safely, so the pipe is created with a protected DACL
+(`D:P(A;;GA;;;CO)(A;;GA;;;SY)(A;;GA;;;BA)` — Creator-Owner, SYSTEM, local
+Administrators full control; no inheritance, Everyone absent): the exact
+named-pipe analogue of the unix `0600`. The workspace `unsafe_code =
+"forbid"` is preserved. This *upgrades* the earlier plan of matching the
+agent channel's D13 default-DACL posture (creator-token derived, explicit
+ACLs deferred to hardening); operator channels now exceed it. Note D13's
+agent-channel upgrade remains a separate open hardening item — this decision
+does not silently change the agent channel.
+
+**Placement.** All platform-specific pipe mechanics live in the facade, not
+in `cfg(windows)` branches scattered through gateway-core/CLI/tests. This is
+also a verification strategy: `chaperone-transport` has a tiny dependency
+tree and cross-compiles from the Linux dev box (`cargo check/clippy --target
+x86_64-pc-windows-msvc`, both green at acceptance), while gateway-core cannot
+(aws-lc-rs needs MSVC `lib.exe`). The riskiest code is compiler-proven for
+Windows before CI ever sees it; windows-latest CI provides native execution
+proof of the whole tree.
+
+**Windows naming.** Operators pass filesystem-style endpoint strings
+uniformly. The pipe namespace is machine-wide and pipe names cannot contain
+separators, so `operator_pipe::windows_pipe_name` maps an endpoint to a pipe
+name by three rules: an explicit `\\.\pipe\<name>` resolves verbatim; a bare
+name (no separators) maps to itself (operators wanting a specific namespace
+name pass exactly that); and a filesystem path maps to
+`<sanitized-basename>-<sha256-16hex-of-the-full-path>`. The hash suffix is
+what makes two `...\events.sock` in different directories — e.g. parallel
+tests each in their own tempdir — yield DIFFERENT pipe names, so they cannot
+collide in the single namespace. (The first cut mapped to the basename alone,
+which collided exactly this way and failed the first native Windows CI run of
+the un-gated feed tests; the fix is `windows_pipe_name`, unit-tested on Linux
+CI because it is deliberately platform-independent.) Live-endpoint probing
+preserves the unix posture: bind refuses when a connect succeeds ("a live
+feed already owns …"); a stale endpoint is reclaimed (`try_overwrite`), and
+client connects retry briefly on `ERROR_PIPE_BUSY` (the agent channel's
+existing pattern).
+
+**Test consequences.** S-2's skip list is now empty: `no_secret_leak`
+surface 4 (events feed) is mechanically asserted on all three platforms, and
+the Windows stub-string test is deleted along with the stub. Feed-observation
+tests (`notify_on_use`, `session_events`, `policy_guard` drift) and the
+console acceptance tests run on Windows unmodified — console tests moved off
+the unix-only `UnixStream::pair()` shortcut onto real `ConsoleHub::spawn`
+endpoints, exercising the production bind path on every platform.
+
+**Accepted costs.** `interprocess` + `widestring` dependency trees (flagged
+in the PR like the earlier zbus/tree-size disclosure); the console's
+timeout-read uses a short nonblocking poll loop (`read_byte_timeout`)
+because Windows pipes lack `set_read_timeout` — acceptable for a
+human-speed prompt channel, documented on the method.
+
+**Windows I/O deadlock on first native CI run (CH-77, 2026-10-02).** PR #77
+is NOT yet merged — release engineering is holding it until the Windows leg
+is green. The first native windows-latest run of the un-gated feed/console
+tests *hung* (the runner stalled rather than failing cleanly). Diagnosis,
+from the vendored `interprocess` 2.4.4 source (not from a Windows box — this
+project cannot execute Windows locally, aws-lc-rs needs `lib.exe`):
+- Windows pipes reject I/O timeouts outright (`no_timeouts()` →
+  "named pipes do not support I/O timeouts"), so `read_byte_timeout`'s
+  poll loop is the only bounded-wait mechanism.
+- The original loop keyed "no data yet" off `io::ErrorKind::WouldBlock`.
+  But `interprocess`'s read path runs errors through `decode_eof`
+  (`os/windows/misc.rs`), which remaps ONLY `ERROR_PIPE_NOT_CONNECTED` →
+  `BrokenPipe`; it does NOT map `ERROR_NO_DATA` (232). Rust's own mapping
+  surfaces a nonblocking empty pipe read as `ERROR_NO_DATA`→`BrokenPipe`,
+  never `WouldBlock`. So on Windows the loop's `WouldBlock` arm never fired:
+  an empty read fell through to `break Err(e)`, returning immediately.
+- Fix: a platform-split `no_data_yet(e)` predicate — `WouldBlock` on unix,
+  `WouldBlock` **or raw OS error 232** on Windows — so a no-data read polls
+  to the deadline instead of fast-failing, while a genuine
+  `ERROR_BROKEN_PIPE` (109) still maps to EOF. The unix branch is
+  byte-identical to before (zero risk to the green legs).
+
+**Honest limit of this fix.** The change corrects a *wrong fast-fail* into a
+correct bounded wait. Whether it also clears the *hang* depends on whether
+the deeper cause is `set_nonblocking(true)` not taking effect on a client
+pipe handle (in which case `ReadFile` parks regardless of the predicate).
+That branch cannot be distinguished from Linux source-reading alone, so the
+PR ships an INSTRUMENT, not just a fix: `bind_connect_roundtrip` now runs its
+body on a worker thread under a 20 s watchdog that panics naming the last
+phase reached (bind / connect / client-read / client-write / join). A future
+Windows deadlock then fails in ≤20 s and points at the exact call, instead of
+stalling the runner blind. The watchdog itself is proven to fire by
+`watchdog_fires_on_a_hanging_body` (`#[should_panic]`), so it cannot silently
+become an inert instrument. `listener_and_client_derive_same_pipe_name` pins
+Heph's invariant that bind and connect agree on the pipe name for one
+endpoint (a disagreement would deadlock the round-trip).
+
+**CH-77-2 — the ACTUAL Windows hang, and its fix (2026-10-02).** The
+attempt-2 read fix above was correct but was not the hang. windows-latest job
+111038618704 (run 37067424587) localized it precisely: in
+`gateway-core/tests/session_events.rs`, `decision_events_carry_sponsor_id`
+and `heartbeat_fires_once_per_window` PASSED (so connect + bounded read work
+on Windows), while `client_close_emits_summary_with_stats` and
+`ttl_expiry_reaps_with_summary` ran >60 s each and the job was cancelled at
+the 6 h limit. The two hang tests are exactly the two where a session CLOSES
+(client close, TTL reap) and the gateway broadcasts a `session.summary`.
+
+Root cause — a WRITE-side circular wait on the broker thread, not a read:
+`EventHub::broadcast` wrote each line to subscriber sockets INLINE, on the
+calling (broker) thread, under the subscribers mutex. The two hang tests
+produce TWO feed lines the subscriber has not yet drained (the opener's
+`decision`, then the close's `session.summary`) before the client gets to
+read. On Windows the pipe output buffer is 512 bytes (`interprocess`
+`PipeListenerOptions::output_buffer_size_hint` default; two ~250-byte JSON
+lines exceed it), so writing line #2 blocked until the client read line #1 —
+but the client reads only AFTER `handle_message(closer)` /
+`emit_session_heartbeats()` returns, which cannot return until the write
+completes. Circular wait ⇒ hang. Unix hid it: UDS socket buffers (~200 KB)
+absorbed both unread lines, so the write never blocked. That is why only
+windows-latest hung, and why the operator_pipe read watchdog never fired —
+`session_events` stalled the whole test run before that binary's tests ran.
+
+Fix — move feed writes OFF the broker thread entirely:
+- `EventHub` is now a queue + a dedicated writer thread. `broadcast` only
+  enqueues the line (bounded: `MAX_QUEUED_LINES` = 4096, newest dropped on
+  overflow — the feed is a loss-tolerant live tap per D35, the audit chain is
+  the evidence of record) and returns WITHOUT touching a socket. No broker
+  call can block on a subscriber, so the circular wait is structurally
+  impossible, not merely timed-out.
+- The writer thread delivers each queued line to every subscriber under a
+  bounded deadline (`SUBSCRIBER_WRITE_TIMEOUT` = 2 s) via the new
+  `OperatorStream::write_all_timeout` (nonblocking poll loop, mirroring
+  `read_byte_timeout`; Windows `no_space_yet` maps ERROR_PIPE_BUSY 231 /
+  ERROR_NO_DATA 232 to "retry"). A subscriber that stalls or dies is DROPPED,
+  never allowed to wedge delivery to the others — the D35 tap semantics,
+  enforced.
+- The attempt-2 `no_data_yet` read fix and the operator_pipe round-trip
+  watchdog are KEPT (both correct). The watchdog is RELOCATED/DUPLICATED into
+  `session_events.rs` (`run_guarded`, all four tests, phase marks at
+  build/subscribe/open/command/close/reap/read) so the file that actually
+  hung now fails fast and located if it ever regresses;
+  `watchdog_fires_on_a_hanging_body` proves that watchdog fires.
+
+Verification (Linux; Windows native is CI's call):
+- `events::tests::broadcast_never_blocks_on_a_stalled_subscriber` is the
+  regression pin, and it is FALSIFIABLE — proven by temporarily reverting
+  `broadcast` to the inline blocking write: the test then FAILED in ~5 s with
+  the located message "REGRESSION: broadcast blocked on subscriber socket
+  I/O" (it does NOT hang the runner; the flood runs on a worker behind a
+  channel `recv_timeout`). The good version was restored and re-verified
+  green.
+- `events::tests::healthy_subscriber_receives_queued_lines_in_order` proves
+  the async hub still delivers in order and completely (the queue did not
+  break the one-object-per-line contract).
+- `operator_pipe` gains `write_to_stalled_peer_times_out_not_hang` (bounded
+  write to a connected non-draining peer — the exact Windows condition) and
+  `write_to_draining_peer_succeeds` (positive control).
+- `session_events` all four tests run under the watchdog; full workspace 43
+  suites green, fmt/clippy(linux + windows facade)/deny all green.
+
+**CH-77-2, second Windows finding — `Ok(0)` is ambiguous on pipes (2026-10-03).**
+The first windows-latest run of the async hub (`9ca09d8`) completed in ~2 min
+instead of hanging 6 h — the deadlock fix works, and
+`broadcast_never_blocks_on_a_stalled_subscriber` passed on Windows. But
+`healthy_subscriber_receives_queued_lines_in_order` failed with an instant
+`UnexpectedEof`, and (lib-test failure ⇒ cargo aborts) `session_events` never
+ran. Mechanism, from `interprocess` source (`os/windows/named_pipe/stream/
+impl/recv_bytes.rs` + `os/windows/misc.rs`): EVERY Windows pipe read goes
+through `downgrade_eof`, which converts `BrokenPipe`-kind errors into
+`Ok(0)` — that covers both NOWAIT "no data yet" (`ERROR_NO_DATA` 232) and a
+real disconnect (`ERROR_PIPE_NOT_CONNECTED` 233). So attempt 2's
+`no_data_yet(232)` Err-arm never fires on Windows reads (the error never
+surfaces as `Err` — it is downgraded first), and the old `Ok(0) ⇒ EOF`
+reading made any client that raced the writer thread see an instant EOF.
+Fix: platform-split `zero_read_is_eof()` — true on unix (`Ok(0)` IS the peer
+closing; no-data is `Err(WouldBlock)`, distinct), false on Windows (`Ok(0)`
+polls to the deadline, then `TimedOut`). Accepted cost on Windows: a
+genuinely disconnected peer costs the read timeout instead of an instant EOF
+— bounded and acceptable for tap readers; the console answer path uses the
+BLOCKING `read_byte` (never nonblocking), so its fail-closed EOF semantics
+are untouched. Why attempt 2 masked this: with inline broadcast the line was
+always already in the pipe buffer before the client read, so the no-data
+race never occurred; the async writer thread made the race observable —
+which is exactly what a positive-control test is for. This failure was caught
+by Windows CI in 2 minutes, not by a 6-hour hang: the fast-fail instrumentation
+is doing its job.
+
+**CH-77-2, third Windows finding — NOWAIT writes silently don't deliver;
+final design is per-subscriber threads with BLOCKING writes (2026-10-03).**
+With the `Ok(0)` read fix in place, windows-latest run 2 changed the failure
+from instant `UnexpectedEof` to `TimedOut` after the full 5s deadline: the
+read side now polls correctly, but the data NEVER ARRIVES. The single-writer
+hub delivered via `OperatorStream::write_all_timeout`, which flips the pipe
+to `PIPE_NOWAIT` and relies on `interprocess`'s NOWAIT write + flush
+semantics. Empirical conclusion from run 2: that path reports success but
+does not commit bytes to a healthy subscriber (the exact Win32 behavior of
+NOWAIT writes + `FlushFileBuffers` through this abstraction is not something
+to keep guessing at — this was the third Windows-pipe guess, and guessing
+is what burned the previous two CI cycles).
+
+Final design — remove the guess entirely:
+- **Per-subscriber delivery threads.** Each accepted subscriber gets a
+  `sync_channel(256)` and a dedicated thread doing conventional BLOCKING
+  `write_all` — the one write path empirically proven on Windows (the
+  pre-fix inline hub delivered single lines fine; `bind_connect_roundtrip`'s
+  blocking writes pass on windows-latest). No `PIPE_NOWAIT` is ever set on
+  a write-side handle anywhere. `write_all_timeout` and its `no_space_yet`
+  helper are DELETED, along with their two transport tests (a pointer note
+  remains in `operator_pipe.rs` tests so the coverage isn't silently lost).
+- **`broadcast` does `try_send` only** — never touches a socket, never
+  blocks, so the CH-77-2 circular-wait deadlock remains structurally
+  impossible. A subscriber whose bounded queue is full (stalled observer) or
+  whose thread died is pruned from the registry on the spot (D35 drop
+  semantics). A parked blocking write on a wedged peer is isolated to that
+  subscriber's own thread: it affects neither the broker nor other
+  subscribers, and exits when the peer closes or the channel disconnects.
+- **Read side unchanged from the run-2 fix**: `zero_read_is_eof()`
+  platform split stands (`Ok(0)` = EOF on unix, ambiguous-and-poll on
+  Windows).
+- The regression pin (`broadcast_never_blocks_on_a_stalled_subscriber`,
+  proven falsifiable by an actual revert experiment) and the positive
+  control (`healthy_subscriber_receives_queued_lines_in_order` — the test
+  that caught BOTH run-1 and run-2 failures) move unchanged onto the new
+  hub shape; they pin hub-level properties, not the removed primitive.
+
+Process note, recorded honestly: three Windows-pipe behaviors were guessed
+from Linux source-reading across CH-77/CH-77-2 (`WouldBlock` mapping,
+`ERROR_NO_DATA` surfacing, NOWAIT write delivery). Guesses 1–2 were wrong in
+ways CI exposed in minutes; guess 3 is now deleted rather than fixed, in
+favor of the one behavior with empirical Windows evidence. The lesson for
+this codebase: on Windows pipe I/O, prefer the boring blocking path with
+thread isolation over clever nonblocking modes through an abstraction
+layer; require native-CI evidence before trusting any NOWAIT semantics.
+
+**CH-77-2 run 3 (job 111187240294) — the design is PROVEN on Windows; the
+last failure was a test artifact (2026-10-03).** The per-subscriber
+blocking-write hub ran green on windows-latest where it matters: ALL
+production-shaped tests passed — `session_events` 5/5 (including both
+original hang tests `client_close_emits_summary_with_stats` and
+`ttl_expiry_reaps_with_summary`), `console` 4/4, `no_secret_leak` surface 4
+3/3, `notify_on_use` 3/3, both hub tests (stall-pin + positive control),
+`policy_guard` drift. The CH-77-2 acceptance criterion (the originally
+hanging tests complete on Windows) was MET. The single red was the synthetic
+`bind_connect_roundtrip`, and the watchdog located it precisely:
+- Real error (previously hidden): `write_all(b"ack\\n")` after a
+  `read_byte_timeout` on the same handle → `Os { code: 232, kind:
+  BrokenPipe, "The pipe is being closed." }` then an indefinite stall.
+  Empirical finding: **on Windows, mixing a NOWAIT-toggled read with a
+  subsequent write on the same pipe handle is broken** — the NOWAIT mode
+  change and/or its restore leaves the handle in a state where the next
+  blocking write fails with 232 or wedges. No production path does this:
+  feed clients are read-only (D35), console clients use blocking
+  `read_byte` in both directions (their tests pass on Windows).
+  `read_byte_timeout` stays exactly where it is safe: read-only handles,
+  all of them Windows-green.
+- Test fixed to the production pattern: blocking reads on both sides (same
+  shape as the passing console tests). The NOWAIT-read-then-write mix is
+  removed from the suite — documented here and in the test so the hazard is
+  recorded, not silently dropped.
+- Second lesson, fixed in the harness: run 3 reported the failure as
+  "HANG at phase client-write" after the full 20 s because the transport
+  `with_watchdog` lacked the Done-Drop-guard — a worker PANIC never set the
+  done flag, so the watchdog mislabeled it a hang and delayed the run.
+  `with_watchdog` now matches `run_guarded` (Drop-guard +
+  `resume_unwind`): panics propagate verbatim immediately; only a true
+  stall gets the HANG label. The `watchdog_fires_on_a_hanging_body`
+  self-test still proves the hang path.
+
+
+
+

@@ -16,9 +16,11 @@
 //! - audit chain records (journal) — mechanically asserted, all platforms.
 //! - error responses — mechanically asserted, all platforms.
 //! - policy file — mechanically asserted, all platforms.
-//! - events feed — asserted on unix. On Windows the surface is
-//!   SKIPPED-WITH-RECORD (no transport until P1-1 named-pipe parity) and the
-//!   stub's loud-failure string is asserted secret-free instead.
+//! - events feed — asserted on every platform. P1-1 item 3 gave Windows a
+//!   real owner-only named-pipe transport (D44), so the former S-2
+//!   "SKIPPED-WITH-RECORD on Windows" posture and the stub's
+//!   loud-failure-string assertion are both gone: surface 4 is now mechanically
+//!   asserted everywhere, and the S-2 skip list is empty.
 //! - outbound wire — asserted EXACTLY-ONE: the target proves it received the
 //!   real credential, so the test would fail if injection silently stopped.
 //! - gateway stdout/stderr — the http injection path emits no diagnostics by
@@ -197,17 +199,10 @@ async fn build(vault_token: &str, events_path: Option<&std::path::Path>) -> Spin
     .unwrap();
 
     if let Some(path) = events_path {
-        #[cfg(unix)]
-        {
-            let hub = chaperone_gateway_core::EventHub::spawn(path).unwrap();
-            gateway.with_event_hub(hub);
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = path;
-            // S-2: the events feed has no Windows transport yet (P1-1 parity);
-            // the surface is enumerated-and-skipped, recorded by the caller.
-        }
+        // P1-1 item 3: the feed has a Windows transport (named pipe, D44),
+        // so the hub spawns — and surface 4 is asserted — on every platform.
+        let hub = chaperone_gateway_core::EventHub::spawn(path).unwrap();
+        gateway.with_event_hub(hub);
     }
 
     Spine {
@@ -271,18 +266,14 @@ impl Spine {
     }
 }
 
-/// Reads one line from a connected events subscriber (unix only).
-#[cfg(unix)]
-fn read_one_event_line(sub: &std::os::unix::net::UnixStream) -> String {
-    use std::io::Read as _;
-    sub.set_read_timeout(Some(std::time::Duration::from_secs(5)))
-        .unwrap();
-    let mut reader = sub;
+/// Reads one line from a connected events subscriber (any platform; the
+/// operator-pipe facade's deadline read replaces UnixStream::set_read_timeout).
+fn read_one_event_line(sub: &chaperone_transport::operator_pipe::OperatorStream) -> String {
+    let timeout = std::time::Duration::from_secs(5);
     let mut buf = Vec::new();
-    let mut byte = [0u8; 1];
-    while reader.read_exact(&mut byte).is_ok() {
-        buf.push(byte[0]);
-        if byte[0] == b'\n' {
+    while let Ok(b) = sub.read_byte_timeout(timeout) {
+        buf.push(b);
+        if b == b'\n' {
             break;
         }
     }
@@ -358,10 +349,9 @@ async fn no_secret_leak_bearer_against_reflecting_target() {
     let events_path = dir.path().join("events.sock");
     let spine = build(SENTINEL, Some(&events_path)).await;
 
-    #[cfg(unix)]
-    let sub = std::os::unix::net::UnixStream::connect(&events_path).ok();
-    #[cfg(not(unix))]
-    let _ = &events_path;
+    let sub =
+        chaperone_transport::operator_pipe::OperatorStream::connect(events_path.to_str().unwrap())
+            .ok();
 
     let resp = spine
         .gateway
@@ -379,14 +369,9 @@ async fn no_secret_leak_bearer_against_reflecting_target() {
         "the real secret must reach the target on the outbound wire"
     );
 
-    // The events-feed line (unix); recorded skip on Windows (S-2).
-    #[cfg(unix)]
+    // The events-feed line: asserted on every platform since P1-1 item 3
+    // gave Windows a real transport (S-2's skip list is now empty).
     let event_line = sub.as_ref().map(read_one_event_line);
-    #[cfg(not(unix))]
-    let event_line: Option<String> = {
-        eprintln!("events feed: SKIPPED — no Windows transport until named-pipe parity (P1-1)");
-        None
-    };
 
     assert_absent_everywhere(SENTINEL, &resp, &spine, event_line.as_deref());
 
@@ -491,24 +476,8 @@ async fn no_secret_leak_in_error_response() {
     );
 }
 
-/// S-2 (Windows): the events-feed surface has no transport on Windows until
-/// P1-1 named-pipe parity. The skip is recorded in the bearer test's output;
-/// additionally, the stub's loud-failure string is asserted secret-free here,
-/// so even the absent surface's error text is proven clean rather than
-/// assumed. Runs only in the Windows CI leg.
-#[cfg(not(unix))]
-#[test]
-fn windows_eventhub_stub_strings_are_secret_free() {
-    let hub = chaperone_gateway_core::EventHub::new();
-    let err = hub
-        .listen(std::path::Path::new("unused-events.sock"))
-        .expect_err("the Windows stub must fail loudly, never silently");
-    assert!(
-        !err.contains(SENTINEL),
-        "stub failure string carried secret material: {err}"
-    );
-    assert!(
-        err.contains("not implemented on this platform"),
-        "stub must keep failing loudly and honestly: {err}"
-    );
-}
+// NOTE (P1-1 item 3): the S-2 Windows skip and the
+// `windows_eventhub_stub_strings_are_secret_free` test lived here while the
+// events feed had no Windows transport. The stub is gone — the feed is a
+// real owner-only named pipe (D44) — so surface 4 is asserted in the bearer
+// test on every platform and the skip list is empty.

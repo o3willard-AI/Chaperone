@@ -18,12 +18,14 @@ mod server;
 
 #[cfg(windows)]
 mod named_pipe;
+pub mod operator_pipe;
 #[cfg(unix)]
 mod uds;
 
 pub use client::{ClientError, Connection, ConnectionStream};
 pub use codec::{FrameError, MAX_FRAME_BYTES, read_frame, write_frame};
 pub use message::{MessageError, Request, transport_error_frame};
+pub use operator_pipe::{OperatorListener, OperatorStream, endpoint_name};
 #[cfg(unix)]
 pub use server::default_socket_path;
 pub use server::{

@@ -19,6 +19,7 @@ chaperone-identity = { path = "../identity" }
 chaperone-injectors = { path = "../injectors" }
 chaperone-policy = { path = "../policy" }
 chaperone-protocol = { path = "../protocol" }
+chaperone-transport = { path = "../transport" }
 chaperone-vault = { path = "../vault" }
 rand_core.workspace = true
 async-trait.workspace = true

@@ -27,7 +27,6 @@ use chaperone_gateway_core::{
 use chaperone_identity::{Attestor, EnrollmentStore, IdentityConfig, ReplayCache};
 use chaperone_policy::Policy;
 use chaperone_vault::VaultRouter;
-#[cfg(unix)]
 use serde_json::Value;
 use serde_json::json;
 
@@ -46,7 +45,6 @@ const WATCH_TICK: Duration = Duration::from_millis(25);
 struct Spine {
     gateway: Arc<Gateway>,
     audit: Arc<AuditWriter>,
-    #[cfg(unix)]
     audit_path: std::path::PathBuf,
     policy_path: std::path::PathBuf,
     _dir: tempfile::TempDir,
@@ -99,7 +97,6 @@ fn build(doc: &str) -> Spine {
     Spine {
         gateway,
         audit,
-        #[cfg(unix)]
         audit_path,
         policy_path,
         _dir: dir,
@@ -113,7 +110,6 @@ fn spawn_watch(spine: &Spine, hub: Option<Arc<EventHub>>) {
 }
 
 /// Waits until `pred` holds or the deadline passes (timing-safe asserts).
-#[cfg(unix)]
 fn wait_until(deadline_ms: u128, pred: impl Fn() -> bool) -> bool {
     let start = std::time::Instant::now();
     while start.elapsed().as_millis() < deadline_ms {
@@ -152,14 +148,15 @@ async fn halted_gateway_refuses_everything_with_reason() {
     );
 }
 
-#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn content_drift_halts_records_and_broadcasts() {
     let spine = build(DOC);
 
     let events_path = spine._dir.path().join("events.sock");
     let hub = EventHub::spawn(&events_path).unwrap();
-    let mut subscriber = std::os::unix::net::UnixStream::connect(&events_path).unwrap();
+    let subscriber =
+        chaperone_transport::operator_pipe::OperatorStream::connect(events_path.to_str().unwrap())
+            .unwrap();
 
     spawn_watch(&spine, Some(Arc::clone(&hub)));
 
@@ -206,15 +203,12 @@ async fn content_drift_halts_records_and_broadcasts() {
 
     // A subscriber received the broadcast line.
     let mut buf = Vec::new();
-    let mut byte = [0u8; 1];
-    subscriber
-        .set_read_timeout(Some(Duration::from_secs(3)))
-        .unwrap();
-    use std::io::Read as _;
     loop {
-        subscriber.read_exact(&mut byte).unwrap();
-        buf.push(byte[0]);
-        if byte[0] == b'\n' {
+        let b = subscriber
+            .read_byte_timeout(Duration::from_secs(3))
+            .expect("no drift broadcast reached the subscriber");
+        buf.push(b);
+        if b == b'\n' {
             break;
         }
     }
@@ -223,7 +217,6 @@ async fn content_drift_halts_records_and_broadcasts() {
     assert_eq!(line["halted"], true);
 }
 
-#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn deleted_policy_file_halts() {
     let spine = build(DOC);

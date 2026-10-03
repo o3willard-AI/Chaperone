@@ -84,7 +84,7 @@ Reproduce first, then fix, then mark.
 | P0-1 | Response path relays a reflected credential back into agent space | Blocking | The README's central claim is written unconditionally; the HTTP injector returns target headers and body verbatim, so a reflecting target launders the secret straight into agent context |
 | P0-2 | No test proves the no-leak property | Blocking | The guarantee is architectural, not demonstrated. There is no test that would fail if a secret leaked into agent-visible bytes |
 | P0-3 | `notify_on_use` is a control that does nothing | Blocking | Parsed, round-tripped to TOML, rendered as a checkbox — and read by no consumer. The events feed broadcasts every decision regardless |
-| P1-1 | ~~No notification consumer ships~~ MOSTLY SHIPPED (PRs #75/#76): `chaperone tail`, `sponsor_id` in feed, OS toast (`--toast`); Windows transport parity open | High | "The accountable person is notified" currently means "they happened to have a terminal attached to a Unix socket." On Windows even that is unavailable |
+| P1-1 | ~~No notification consumer ships~~ SHIPPED (PRs #75/#76/#77): `chaperone tail`, `sponsor_id` in feed, OS toast (`--toast`), Windows named-pipe parity (feed + console, owner-only, D44) | High | "The accountable person is notified" currently means "they happened to have a terminal attached to a Unix socket." On Windows even that is unavailable |
 | P1-2 | ~~Policy expresses a cross-product, not a pairing~~ SHIPPED (PR #74, D43 pairs) | High | Independent axes mean one fleet rule permits *any* key against *any* host. Binding key→host costs one rule per host — and the over-permission is invisible in the rule text |
 | P1-3 | ~~Session notification granularity is per-establishment, not per-use~~ SHIPPED (PR #75) | High | One SSH session = one event, then silence across every command relayed. This is the exact case D37 says notification exists for |
 | P2-1 | The wizard is artifact-shaped; the user's task is intent-shaped | Medium | Setup walks vault → policy → audit key → enrollment. The user's mental model is one sentence, and it isn't that one |
@@ -299,8 +299,8 @@ produces both regardless of the flag.
 
 ## P1-1 — No notification consumer ships, and Windows has no channel at all
 
-**MOSTLY SHIPPED (PRs #75 + #76, 2026-09-30).** Items 1 and 2 and the sponsor
-gap are done; only item 3 (Windows transport parity) remains open:
+**SHIPPED (PRs #75 + #76 + #77, 2026-09-30/10-01).** All three items and the
+sponsor gap are done:
 
 - **SHIPPED — `chaperone tail`** (item 1): subscribes to the feed and renders
   one human-legible line per event (`[decision] allow human@example.org via
@@ -327,8 +327,19 @@ gap are done; only item 3 (Windows transport parity) remains open:
   Delivery is best-effort: failure warns once on stderr and the terminal
   render continues — proven live on a daemonless box (real dbus
   `ServiceUnknown`, warn-once fired, tail kept working).
-- **OPEN — Windows transport parity** (item 3: named-pipe feed + console
-  parity). Item 3 also unshrinks the S-2 skip list without a test rewrite.
+- **SHIPPED — Windows transport parity** (item 3, PR #77, D44): feed +
+  console run on one cross-platform facade (`chaperone-transport::
+  operator_pipe` over `interprocess`) — UDS on unix, named pipes on Windows,
+  **owner-only on both** (0600 / protected owner DACL: stronger than the D13
+  default-DACL fallback the plan anticipated; `unsafe_code = "forbid"`
+  intact). `chaperone tail`, `chaperone console`, `--console-socket`, and
+  `--events-socket` are real on Windows; the issue-#43 loud-failure stub is
+  deleted. As predicted, the S-2 skip list shrank **to empty** with no test
+  rewrite: surface 4 is now asserted on all three platforms, and the
+  feed/console observation tests run on Windows unchanged (console tests now
+  exercise the production `ConsoleHub::spawn` bind path everywhere).
+  Platform code is cross-compile-verified locally (transport checks green for
+  `x86_64-pc-windows-msvc`); native execution proof is windows-latest CI.
 
 **What exists.** A read-only fan-out socket
 (`crates/gateway-core/src/events.rs`, D35) broadcasting one JSON line per
@@ -775,6 +786,14 @@ three have since been ruled by Stephen, 2026-09-28):**
     named-pipe parity lands the Windows skip list shrinks and coverage
     tightens with no test rewrite. This keeps P0-2's "green on all three
     platforms" honest without waiting on P1-1's larger transport slice.
+  - **SUPERSEDED IN PART (2026-10-01, D44 / P1-1 item 3):** the named-pipe
+    parity this entry anticipated has landed. The skip list is now **empty**:
+    surface 4 (events feed) is mechanically asserted on Linux, macOS, and
+    Windows alike; the `EventHub` stub and its loud-failure strings no longer
+    exist, so the stub-string assertion was deleted along with the stub (not
+    weakened — the surface itself is now proven). Console parity landed with
+    it: the console tests bind real endpoints via `ConsoleHub::spawn` on every
+    platform instead of the unix-only `UnixStream::pair()` shortcut.
 - **S-3 — Audit-path assertion in the P0-1 scrub (P0-1/P0-2 boundary).
   RESOLVED (Stephen, 2026-09-28): option 1 now — normative sentence +
   sentinel coverage; option 2 (type-level enforcement) deferred to backlog
@@ -825,8 +844,9 @@ Items S-1 through S-3 in the backlog are decisions the spec must record before
 the corresponding slices are worked; they are done when decided and written
 down, not when code lands. All three are decided (Stephen, 2026-09-28): S-1
 (no-relay-of-echo), S-2 (skip-with-record per-platform surfaces plus stub
-error-string assertions), S-3 (normative sentence plus reflecting-target
-sentinel coverage; structural hardening deferred to B-4).
+error-string assertions — since superseded in part by D44/P1-1 item 3: the
+skip list is now empty and the stub is gone), S-3 (normative sentence plus
+reflecting-target sentinel coverage; structural hardening deferred to B-4).
 
 Treat P0 items as blocking any demo to anyone outside the current contributor
 set — not because the system is unsafe without them, but because P0-1 and P0-2
