@@ -993,5 +993,40 @@ this codebase: on Windows pipe I/O, prefer the boring blocking path with
 thread isolation over clever nonblocking modes through an abstraction
 layer; require native-CI evidence before trusting any NOWAIT semantics.
 
+**CH-77-2 run 3 (job 111187240294) — the design is PROVEN on Windows; the
+last failure was a test artifact (2026-10-03).** The per-subscriber
+blocking-write hub ran green on windows-latest where it matters: ALL
+production-shaped tests passed — `session_events` 5/5 (including both
+original hang tests `client_close_emits_summary_with_stats` and
+`ttl_expiry_reaps_with_summary`), `console` 4/4, `no_secret_leak` surface 4
+3/3, `notify_on_use` 3/3, both hub tests (stall-pin + positive control),
+`policy_guard` drift. The CH-77-2 acceptance criterion (the originally
+hanging tests complete on Windows) was MET. The single red was the synthetic
+`bind_connect_roundtrip`, and the watchdog located it precisely:
+- Real error (previously hidden): `write_all(b"ack\\n")` after a
+  `read_byte_timeout` on the same handle → `Os { code: 232, kind:
+  BrokenPipe, "The pipe is being closed." }` then an indefinite stall.
+  Empirical finding: **on Windows, mixing a NOWAIT-toggled read with a
+  subsequent write on the same pipe handle is broken** — the NOWAIT mode
+  change and/or its restore leaves the handle in a state where the next
+  blocking write fails with 232 or wedges. No production path does this:
+  feed clients are read-only (D35), console clients use blocking
+  `read_byte` in both directions (their tests pass on Windows).
+  `read_byte_timeout` stays exactly where it is safe: read-only handles,
+  all of them Windows-green.
+- Test fixed to the production pattern: blocking reads on both sides (same
+  shape as the passing console tests). The NOWAIT-read-then-write mix is
+  removed from the suite — documented here and in the test so the hazard is
+  recorded, not silently dropped.
+- Second lesson, fixed in the harness: run 3 reported the failure as
+  "HANG at phase client-write" after the full 20 s because the transport
+  `with_watchdog` lacked the Done-Drop-guard — a worker PANIC never set the
+  done flag, so the watchdog mislabeled it a hang and delayed the run.
+  `with_watchdog` now matches `run_guarded` (Drop-guard +
+  `resume_unwind`): panics propagate verbatim immediately; only a true
+  stall gets the HANG label. The `watchdog_fires_on_a_hanging_body`
+  self-test still proves the hang path.
+
+
 
 

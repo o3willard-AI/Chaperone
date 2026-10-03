@@ -13,6 +13,14 @@ use chaperone_transport::operator_pipe::{OperatorListener, OperatorStream};
 /// Runs `body` on a worker thread; if it does not finish within `limit`, panic
 /// with a message naming the phase reached, so a hang is a fast located
 /// failure (the whole point of this test on windows-latest).
+///
+/// A worker PANIC is distinguished from a HANG (CH-77-2 run 3 lesson): the
+/// Done-guard sets the flag even on unwind, so an assertion failure
+/// propagates immediately via `resume_unwind` instead of being mislabeled
+/// "HANG" after the full limit expires. Windows run 3 lost the real error
+/// (`code: 232` on a write) behind a 20s HANG banner for exactly this
+/// reason; the session_events `run_guarded` already had the guard, this one
+/// did not.
 fn with_watchdog(
     limit: std::time::Duration,
     body: impl FnOnce(&dyn Fn(&'static str)) + Send + 'static,
@@ -27,19 +35,31 @@ fn with_watchdog(
     let phase_w = Arc::clone(&phase);
 
     let worker = std::thread::spawn(move || {
+        struct Done(Arc<AtomicBool>);
+        impl Drop for Done {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let _done = Done(done_w);
         let mark = move |p: &'static str| {
             *phase_w.lock().unwrap() = p;
         };
         let mark_ref: &dyn Fn(&'static str) = &mark;
         body(mark_ref);
-        done_w.store(true, Ordering::SeqCst);
     });
 
     let deadline = std::time::Instant::now() + limit;
-    while std::time::Instant::now() < deadline {
+    loop {
         if done.load(Ordering::SeqCst) {
-            worker.join().unwrap();
-            return;
+            match worker.join() {
+                Ok(()) => return,
+                // Propagate the body's own panic verbatim — NOT a HANG label.
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
         }
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
@@ -71,16 +91,21 @@ fn bind_connect_roundtrip() {
             );
         }
 
-        // Server: accept one client, echo one JSON line, then read one line
-        // back — a true bidirectional round-trip (the console path reads what
-        // the client writes; the feed path writes what the client reads).
+        // Server: accept one client, write one JSON line, then read one line
+        // back — a true bidirectional round-trip. BOTH sides use BLOCKING
+        // reads, matching the production console path (ConsoleHub::read_answer
+        // uses blocking read_byte). CH-77-2 run 3: this test originally used
+        // read_byte_timeout (NOWAIT) for the client read and then write_all on
+        // the same handle, which on Windows failed with code 232 — a
+        // NOWAIT-read-then-write combination no production path has (feed
+        // clients are read-only per D35; console is blocking both ways).
         let server = std::thread::spawn(move || {
             let conn = listener.accept().unwrap();
             conn.write_all(b"{\"type\":\"decision\"}\n").unwrap();
-            // Read the client's reply with a deadline so the server side also
-            // cannot hang forever.
             let mut got = Vec::new();
-            while let Ok(b) = conn.read_byte_timeout(std::time::Duration::from_secs(5)) {
+            // Push the terminator too, so `got` is the exact client bytes
+            // (b"ack\n") — the assertion compares whole writes.
+            while let Ok(b) = conn.read_byte() {
                 got.push(b);
                 if b == b'\n' {
                     break;
@@ -93,10 +118,13 @@ fn bind_connect_roundtrip() {
         let stream = OperatorStream::connect(&name).unwrap();
 
         mark("client-read");
-        // Read the broadcast line byte-by-byte the way EventHub consumers do,
-        // with a deadline (a hang here is the exact deadlock we are guarding).
+        // Read the broadcast line byte-by-byte the way feed consumers do, but
+        // BLOCKING: the server has already written the line (its write
+        // completed before this read), so no deadline is needed to prove
+        // delivery, and staying blocking keeps this handle in the same mode
+        // for the write below (no NOWAIT-then-write mix — see server note).
         let mut line: Vec<u8> = Vec::new();
-        while let Ok(b) = stream.read_byte_timeout(std::time::Duration::from_secs(5)) {
+        while let Ok(b) = stream.read_byte() {
             if b == b'\n' {
                 break;
             }
