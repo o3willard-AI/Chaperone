@@ -66,6 +66,33 @@ impl Matcher {
         }
     }
 
+    /// Operator-facing plain-language rendering of this axis, e.g. `any
+    /// value`, `exactly \`planner-7\``, `starting with \`local://prod/\``.
+    ///
+    /// **DISPLAY ONLY.** This never participates in a decision, and its
+    /// output is deliberately NOT re-parseable into an equivalent matcher —
+    /// the decoration (`exactly`, backticks) is what guarantees that, and
+    /// `describe_is_display_only_and_never_round_trips_into_a_decision`
+    /// pins it. If a caller ever feeds this string back into
+    /// [`Matcher::parse`], that is a bug: a display helper must never become
+    /// a security boundary by accident.
+    ///
+    /// The wording is also the UI's axis vocabulary, so the rule preview
+    /// (P2-2) can join phrases without knowing anything about matcher
+    /// internals. `Matcher::Any` reads as "any", never as the literal `*`:
+    /// an empty axis is *wider* than a glob of `*`, and an operator who
+    /// cannot tell them apart is being told their rule is narrower than it
+    /// is.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            Matcher::Any => "any value".to_owned(),
+            Matcher::Exact(v) => format!("exactly `{v}`"),
+            Matcher::Prefix(p) => format!("starting with `{p}`"),
+            Matcher::Glob(g) => format!("matching `{g}`"),
+        }
+    }
+
     /// The rule-file string that parses back to exactly this matcher
     /// (`None` for [`Matcher::Any`], which is written by omitting the axis).
     ///
@@ -213,5 +240,70 @@ mod tests {
         assert!(!g.matches("cred-x"));
         let p = Matcher::Prefix("日".to_owned());
         assert!(p.matches("日本語"));
+    }
+
+    // ---- P2-2: operator-facing rendering (display only) ----
+
+    #[test]
+    fn describe_any_says_any_never_a_literal_star() {
+        // The pin that matters: an empty axis coerces to `Any`, and the UI
+        // used to render that as the literal "*" via its own display hack.
+        // "any <thing>" and a glob "*" must never read the same, or the
+        // preview tells an operator their rule is narrower than it is.
+        let d = Matcher::Any.describe();
+        assert!(
+            d.starts_with("any "),
+            "Any should read as 'any ...', got {d}"
+        );
+        assert!(
+            !d.contains("\"*\""),
+            "Any must not render as a literal *, got {d}"
+        );
+        // A glob of "*" is a *different* thing and must not read as "any".
+        assert_ne!(d, Matcher::Glob("*".to_owned()).describe());
+    }
+
+    #[test]
+    fn describe_renders_each_variant_distinctly() {
+        let variants = [
+            Matcher::Any,
+            Matcher::Exact("agent:planner-7".to_owned()),
+            Matcher::Prefix("local://prod/".to_owned()),
+            Matcher::Glob("vault://prod/*".to_owned()),
+        ];
+        let rendered: Vec<String> = variants.iter().map(Matcher::describe).collect();
+        for (i, a) in rendered.iter().enumerate() {
+            for (j, b) in rendered.iter().enumerate() {
+                assert!(
+                    i == j || a != b,
+                    "variants {i} and {j} render identically: {a}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn describe_is_display_only_and_never_round_trips_into_a_decision() {
+        // "Display only" means exactly this: feeding describe() output back
+        // into parse() must not silently reconstruct a matcher. If some future
+        // caller does that, describe() has become a security boundary by
+        // accident. Every rendering that contains a `*`-bearing value is
+        // checked to be un-parseable back to an equivalent matcher.
+        for m in [
+            Matcher::Any,
+            Matcher::Exact("agent:planner-7".to_owned()),
+            Matcher::Prefix("local://prod/".to_owned()),
+            Matcher::Glob("vault://prod/*".to_owned()),
+            Matcher::Glob("ssh://*.internal".to_owned()),
+        ] {
+            let d = m.describe();
+            if let Ok(back) = Matcher::parse(&d) {
+                assert_ne!(
+                    back, m,
+                    "describe output re-parsed into the same matcher ({d:?}); \
+                     it must stay display-only"
+                );
+            }
+        }
     }
 }
