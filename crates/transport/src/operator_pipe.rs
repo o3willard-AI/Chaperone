@@ -129,6 +129,23 @@ fn no_data_yet(e: &io::Error) -> bool {
         || e.kind() == io::ErrorKind::WouldBlock
 }
 
+/// Is this write error "no buffer space right now, keep polling to the
+/// deadline"? Mirror of [`no_data_yet`] for the write side (CH-77-2).
+///
+/// Unix: `WouldBlock`. Windows: a `PIPE_NOWAIT` write that cannot be
+/// accepted immediately returns `ERROR_PIPE_BUSY` (231) or `ERROR_NO_DATA`
+/// (232) depending on pipe state; both mean "retry", neither means "peer
+/// gone" (`ERROR_BROKEN_PIPE` 109 still surfaces as a real error).
+#[cfg(not(windows))]
+fn no_space_yet(e: &io::Error) -> bool {
+    e.kind() == io::ErrorKind::WouldBlock
+}
+
+#[cfg(windows)]
+fn no_space_yet(e: &io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(231) | Some(232)) || e.kind() == io::ErrorKind::WouldBlock
+}
+
 /// Resolves an operator-supplied endpoint string to a platform local-socket
 /// name.
 ///
@@ -264,6 +281,56 @@ impl OperatorStream {
         let mut w = &self.inner;
         w.write_all(bytes)?;
         w.flush()
+    }
+
+    /// Writes all bytes with a deadline (CH-77-2). The blocking
+    /// [`Self::write_all`] can park indefinitely when the peer is connected
+    /// but not reading and the pipe/socket buffer is full — on Windows the
+    /// pipe output buffer is only 512 bytes by default, so a second queued
+    /// event line blocks while the first is still unread. A feed is a
+    /// loss-tolerant live tap (D35): a stalled subscriber must be DROPPED
+    /// (its writer gives up, hub removes it), never allowed to stall the
+    /// broker. Polls in nonblocking mode, mirroring `read_byte_timeout`.
+    ///
+    /// # Errors
+    /// `TimedOut` if the peer does not drain within `timeout`;
+    /// `UnexpectedEof`/broken-pipe errors if the peer is gone; any other
+    /// write failure passes through.
+    pub fn write_all_timeout(&self, bytes: &[u8], timeout: std::time::Duration) -> io::Result<()> {
+        self.set_nonblocking(true)?;
+        let deadline = std::time::Instant::now() + timeout;
+        let mut w = &self.inner;
+        let mut written = 0usize;
+        let result = loop {
+            match w.write(&bytes[written..]) {
+                // A zero-byte write on a non-empty slice means the buffer is
+                // momentarily full (Windows PIPE_NOWAIT may report progress 0
+                // instead of an error) — poll, don't fail.
+                Ok(0) => {
+                    if std::time::Instant::now() >= deadline {
+                        break Err(io::Error::from(io::ErrorKind::TimedOut));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                Ok(n) => {
+                    written += n;
+                    if written >= bytes.len() {
+                        break Ok(());
+                    }
+                }
+                Err(e) if no_space_yet(&e) => {
+                    if std::time::Instant::now() >= deadline {
+                        break Err(io::Error::from(io::ErrorKind::TimedOut));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                Err(e) => break Err(e),
+            }
+        };
+        // Best-effort flush + restore; failures surface on the next write.
+        let _ = w.flush();
+        let _ = self.set_nonblocking(false);
+        result
     }
 
     /// Reads exactly one byte (shared-borrow), the console's answer protocol.

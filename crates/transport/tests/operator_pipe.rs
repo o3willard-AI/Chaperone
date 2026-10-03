@@ -267,3 +267,93 @@ fn connect_without_listener_fails() {
         "connect with no listener must fail: {err}"
     );
 }
+
+/// CH-77-2 core: the write-side bound. This is the primitive that makes the
+/// feed deadlock impossible — a write to a connected-but-NOT-draining peer
+/// (full pipe buffer, the Windows condition that hung `session_events`) must
+/// return `TimedOut` within ~the deadline, never block forever. Filling the
+/// buffer needs a payload larger than the socket's (~200KB on Linux, 512B on
+/// Windows pipes), so 4MB guarantees the block on every platform; the writer
+/// fills what it can, then polls to the deadline and gives up.
+///
+/// Falsifiable: revert `write_all_timeout` to the plain blocking `write_all`
+/// and this test hangs (caught by the watchdog) instead of returning TimedOut.
+#[test]
+fn write_to_stalled_peer_times_out_not_hang() {
+    with_watchdog(std::time::Duration::from_secs(15), |_mark| {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stall.sock");
+        let name = path.to_str().unwrap().to_owned();
+        let listener = OperatorListener::bind(&name, |p| format!("live owns {p}")).unwrap();
+
+        // Server accepts and then NEVER reads — the stalled subscriber. Held
+        // open past the client's deadline so the peer is alive but full.
+        let server = std::thread::spawn(move || {
+            let _conn = listener.accept().unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        });
+
+        let stream = OperatorStream::connect(&name).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let payload = vec![b'x'; 4 * 1024 * 1024]; // >> any socket buffer
+        let deadline = std::time::Duration::from_millis(400);
+        let started = std::time::Instant::now();
+        let result = stream.write_all_timeout(&payload, deadline);
+        let elapsed = started.elapsed();
+
+        // Bounded: TimedOut (not a hang, not a silent success). Some bytes
+        // went into the buffer first, so elapsed is >= the deadline only if
+        // the buffer filled and it polled — assert it returned in bounded
+        // time regardless, which is the anti-hang property.
+        let err_kind = result.as_ref().err().map(|e| e.kind());
+        assert_eq!(
+            err_kind,
+            Some(std::io::ErrorKind::TimedOut),
+            "a stalled peer must bound the write to TimedOut, got {result:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "write must not block beyond the deadline: took {elapsed:?}"
+        );
+        drop(server); // abandon the 5s sleeper
+    });
+}
+
+/// Positive control for the above: with a DRAINING peer, `write_all_timeout`
+/// completes normally. Proves the timeout path is not just "always fails".
+#[test]
+fn write_to_draining_peer_succeeds() {
+    with_watchdog(std::time::Duration::from_secs(15), |_mark| {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("drain.sock");
+        let name = path.to_str().unwrap().to_owned();
+        let listener = OperatorListener::bind(&name, |p| format!("live owns {p}")).unwrap();
+
+        // Server accepts and drains continuously, counting bytes.
+        let server = std::thread::spawn(move || {
+            let conn = listener.accept().unwrap();
+            let mut total = 0usize;
+            let mut buf = [0u8; 8192];
+            while total < 256 * 1024 {
+                match conn.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => total += n,
+                }
+            }
+            total
+        });
+
+        let stream = OperatorStream::connect(&name).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let payload = vec![b'y'; 256 * 1024];
+        let result = stream.write_all_timeout(&payload, std::time::Duration::from_secs(5));
+        assert!(
+            result.is_ok(),
+            "draining peer must accept the write: {result:?}"
+        );
+        let got = server.join().unwrap();
+        assert_eq!(got, payload.len(), "server must receive every byte");
+    });
+}

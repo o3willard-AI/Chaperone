@@ -855,3 +855,67 @@ stalling the runner blind. The watchdog itself is proven to fire by
 become an inert instrument. `listener_and_client_derive_same_pipe_name` pins
 Heph's invariant that bind and connect agree on the pipe name for one
 endpoint (a disagreement would deadlock the round-trip).
+
+**CH-77-2 — the ACTUAL Windows hang, and its fix (2026-10-02).** The
+attempt-2 read fix above was correct but was not the hang. windows-latest job
+111038618704 (run 37067424587) localized it precisely: in
+`gateway-core/tests/session_events.rs`, `decision_events_carry_sponsor_id`
+and `heartbeat_fires_once_per_window` PASSED (so connect + bounded read work
+on Windows), while `client_close_emits_summary_with_stats` and
+`ttl_expiry_reaps_with_summary` ran >60 s each and the job was cancelled at
+the 6 h limit. The two hang tests are exactly the two where a session CLOSES
+(client close, TTL reap) and the gateway broadcasts a `session.summary`.
+
+Root cause — a WRITE-side circular wait on the broker thread, not a read:
+`EventHub::broadcast` wrote each line to subscriber sockets INLINE, on the
+calling (broker) thread, under the subscribers mutex. The two hang tests
+produce TWO feed lines the subscriber has not yet drained (the opener's
+`decision`, then the close's `session.summary`) before the client gets to
+read. On Windows the pipe output buffer is 512 bytes (`interprocess`
+`PipeListenerOptions::output_buffer_size_hint` default; two ~250-byte JSON
+lines exceed it), so writing line #2 blocked until the client read line #1 —
+but the client reads only AFTER `handle_message(closer)` /
+`emit_session_heartbeats()` returns, which cannot return until the write
+completes. Circular wait ⇒ hang. Unix hid it: UDS socket buffers (~200 KB)
+absorbed both unread lines, so the write never blocked. That is why only
+windows-latest hung, and why the operator_pipe read watchdog never fired —
+`session_events` stalled the whole test run before that binary's tests ran.
+
+Fix — move feed writes OFF the broker thread entirely:
+- `EventHub` is now a queue + a dedicated writer thread. `broadcast` only
+  enqueues the line (bounded: `MAX_QUEUED_LINES` = 4096, newest dropped on
+  overflow — the feed is a loss-tolerant live tap per D35, the audit chain is
+  the evidence of record) and returns WITHOUT touching a socket. No broker
+  call can block on a subscriber, so the circular wait is structurally
+  impossible, not merely timed-out.
+- The writer thread delivers each queued line to every subscriber under a
+  bounded deadline (`SUBSCRIBER_WRITE_TIMEOUT` = 2 s) via the new
+  `OperatorStream::write_all_timeout` (nonblocking poll loop, mirroring
+  `read_byte_timeout`; Windows `no_space_yet` maps ERROR_PIPE_BUSY 231 /
+  ERROR_NO_DATA 232 to "retry"). A subscriber that stalls or dies is DROPPED,
+  never allowed to wedge delivery to the others — the D35 tap semantics,
+  enforced.
+- The attempt-2 `no_data_yet` read fix and the operator_pipe round-trip
+  watchdog are KEPT (both correct). The watchdog is RELOCATED/DUPLICATED into
+  `session_events.rs` (`run_guarded`, all four tests, phase marks at
+  build/subscribe/open/command/close/reap/read) so the file that actually
+  hung now fails fast and located if it ever regresses;
+  `watchdog_fires_on_a_hanging_body` proves that watchdog fires.
+
+Verification (Linux; Windows native is CI's call):
+- `events::tests::broadcast_never_blocks_on_a_stalled_subscriber` is the
+  regression pin, and it is FALSIFIABLE — proven by temporarily reverting
+  `broadcast` to the inline blocking write: the test then FAILED in ~5 s with
+  the located message "REGRESSION: broadcast blocked on subscriber socket
+  I/O" (it does NOT hang the runner; the flood runs on a worker behind a
+  channel `recv_timeout`). The good version was restored and re-verified
+  green.
+- `events::tests::healthy_subscriber_receives_queued_lines_in_order` proves
+  the async hub still delivers in order and completely (the queue did not
+  break the one-object-per-line contract).
+- `operator_pipe` gains `write_to_stalled_peer_times_out_not_hang` (bounded
+  write to a connected non-draining peer — the exact Windows condition) and
+  `write_to_draining_peer_succeeds` (positive control).
+- `session_events` all four tests run under the watchdog; full workspace 43
+  suites green, fmt/clippy(linux + windows facade)/deny all green.
+
