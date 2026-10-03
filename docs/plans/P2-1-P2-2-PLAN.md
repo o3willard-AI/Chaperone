@@ -4,7 +4,8 @@ Author: ox-chap (Hermes, host 192.168.101.11)
 Date: 2026-10-03
 Baseline: `main` @ `92ed67e` (PR #77 merged, 8/8 CI)
 Source findings: `docs/MVP-GAP-REVIEW.md` §P2-1, §P2-2
-Status: **proposal — nothing implemented, no branch pushed, awaiting review**
+Status: **reviewed — all five decisions ruled by Heph 2026-10-03. Implementation not started.**
+Rulings: see §7. P2-2 unblocked and may begin.
 
 ---
 
@@ -251,23 +252,68 @@ we've held elsewhere; I'd like P2 to meet it too.
 
 ---
 
-## 7. Decisions I need from you
+## 7. Decisions — RULED by Heph (Hephaestus), 2026-10-03
 
-Numbered so you can rule item-by-item. I have a recommendation on each.
+Heph independently re-verified every code claim in §0 against a scratch worktree at
+`92ed67e` before ruling. All confirmed, with one line-number correction (`main.rs:242-254`
+is actually `:246-252`) and one substantive addition to §3.1.
 
-1. **Sequencing** — P2-2 before P2-1 (§2). *Recommend: yes.*
-2. **§3.4 formatting** — extract the `rule[i] pair[p]` formatting into
-   `chaperone-policy` as shared, or copy it into the UI? *Recommend: extract; it
-   is a small, obviously-correct public addition and copying is how the two
-   surfaces drift. Your call on blast radius.*
-3. **§4.2 write ordering** — rule-last vs secret-last on partial failure (§4.2).
-   *No strong preference; I want your reasoning. My tiebreak is "never leave
-   something that reads as configured but isn't."*
-4. **§4.3 scope** — add the `no_secret_leak` sentinel case in the P2-1 PR, or
-   split it? *Recommend: in the same PR. Splitting means a PR that ships a secret
-   into an HTML renderer without the sentinel guarding it.*
-5. **§5 P2-1 sizing** — is ~3.5–4.5 days acceptable for review turnaround, or do
-   you want P2-1 itself split into (a) the flow and (b) the tests?
+Rulings, in his words where it matters:
+
+1. **Sequencing — RULED YES.** P2-2 first, own PR. "The dependency is argumentative but
+   correct, and P2-2's test box is the falsifiability harness P2-1's acceptance #7 needs.
+   Nothing to flip."
+
+2. **Formatting — RULED: EXTRACT, not copy.** Additional reasoning beyond my
+   recommendation: no string rendering exists in the policy crate today (only
+   `PolicyError` has `Display`), so this is a clean pure addition. Implement it as
+   `Display` on `DecisionSource` (or a narrow `fn source_label`), and **extract only the
+   source-label — keep the JSON envelope in the CLI.** His point that changes the design:
+   *"the drift argument cuts both ways; D36 exists to stop exactly this CLI/UI divergence,
+   and a shared impl makes acceptance #4's parity STRUCTURAL rather than test-enforced."*
+   Blast radius accepted for a total `#[must_use]` string fn.
+
+3. **Write ordering — RULED: RULE LAST.** Vault → enrollment → audit key → **rule**.
+   His reasoning: the rule is the only artifact whose presence turns the grant *on*;
+   everything else is inert scaffolding under default-deny. A rule-without-secret reads
+   as granted (policy says `allow`) but fails at action time on vault miss — that is the
+   misleading residue. Orphan secret/enrollment/audit are all inert, cleanable, and
+   **over-permit nothing**. And validate all four in memory before any write, so a
+   validation failure writes nothing at all.
+   **Correction he made to my framing, which I am recording rather than quietly dropping:**
+   the bad residue is not "deny-all" — it is *an allow rule with a dangling `cred_ref`*.
+   My conclusion (rule-last) was right, but my description of the hazard was wrong.
+
+4. **Sentinel — RULED: SAME PR, with a naming correction.** I called this "a case in an
+   existing sentinel"; Heph verified that is imprecise. `no_secret_leak` lives in
+   `crates/gateway-core/tests/no_secret_leak.rs`. The UI has an escaper and
+   `secrets_store_list_and_never_leak_values` (`ui_http.rs:194`) but **no sentinel by
+   that name.** So this is a *new UI assertion extending the existing never-leak-values
+   test*, not a case inside `no_secret_leak`. Same-PR still stands ("don't ship a
+   secret→HTML path the gateway test doesn't cover"), but gateway-core is **not** in
+   scope and nobody should think it is.
+
+5. **Sizing — RULED: accept ~3.5–4.5 days, do NOT split flow-vs-tests.** Key reasoning:
+   acceptance test #9 (forced vault-write failure → assert safe residue) is the entire
+   point of §4.2 and must land *with* the flow — splitting ships an untested
+   multi-artifact write path. If something forces a split mid-slice, **split on the
+   matrix-template normalisation** (the other soft spot) instead. "Don't pre-empt it."
+
+**Additional ruling on §3.3 (the caveat predicate, which I had asked him to weigh in on):**
+operate on the **parsed `Matcher::Glob` string**, not the raw form input, and fire only
+when it actually contains `*`. Scope adjacency to the *dangerous* positions only —
+`*.` (star before dot, the hostname-boundary bypass called out in `matcher.rs`'s own
+header) and `*/` (star spanning into a path). **Do NOT fire on a trailing `/*`** (a
+legitimate open tail, `vault://prod/*`) — that would put the caveat on every fleet rule
+and train operators to dismiss it, which is the exact failure the design is trying to
+avoid. Mechanical, no regex. Both directions pinned by acceptance test #5.
+
+**Process rulings:** PR #33 close and the 22-branch prune approved. I open the P2-2 PR
+from `docs/p2-plan`; Heph reviews. Heph fast-forwarded his own clone to `92ed67e`.
+His one nit — the plan's status line still read "no branch pushed" — is fixed above.
+
+**Net effect on scope: P2-2 is unchanged and unblocked. P2-1 gained one new artifact
+write order and lost an inaccurate hazard description; its estimate is unchanged.**
 
 ---
 
