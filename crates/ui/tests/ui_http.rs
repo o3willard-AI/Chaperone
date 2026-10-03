@@ -740,3 +740,188 @@ fn html_escaper_neutralizes_markup() {
     assert!(!escaped.contains('\''));
     assert!(escaped.contains("&amp;"));
 }
+
+// ---- P2-2: the rule editor's decision preview ----
+
+#[tokio::test(flavor = "multi_thread")]
+async fn preview_renders_the_parsed_rule_not_the_raw_form() {
+    // Acceptance #2: an empty agent_id axis coerces to `Any`, and the preview
+    // must say so. The old display helper rendered it as the literal "*",
+    // which reads as a glob - narrower than what the rule actually permits.
+    let t = app().await;
+    let c = t.cookie();
+    http(t.port, "POST", "/setup/policy", &[], Some(""), Some(&c)).await;
+
+    let (_, page) = http(
+        t.port,
+        "GET",
+        "/rules/new?mechanism=http-bearer",
+        &[],
+        None,
+        Some(&c),
+    )
+    .await;
+    assert!(
+        page.contains("This rule would allow"),
+        "preview section missing: {page}"
+    );
+    // Any axis must read as "any", not as a bare star.
+    assert!(
+        page.contains("any value"),
+        "empty axis must preview as 'any value': {page}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn preview_names_pair_bindings() {
+    // Acceptance #3: a pair-bound rule's preview names the binding.
+    let t = app().await;
+    let c = t.cookie();
+    http(t.port, "POST", "/setup/policy", &[], Some(""), Some(&c)).await;
+    http(
+        t.port,
+        "POST",
+        "/rules/add",
+        &[],
+        Some(&form(&[
+            ("mechanism", "ssh-session"),
+            ("effect", "allow"),
+            ("target_uri", "ssh://*.internal:22"),
+            ("agent_id", ""),
+            ("cred_ref", ""),
+            (
+                "pairs",
+                "local://ssh/fleet/app-01 | ssh://app-01.internal:22
+local://ssh/fleet/app-02 | ssh://app-02.internal:22",
+            ),
+        ])),
+        Some(&c),
+    )
+    .await;
+
+    // Re-open the editor with the SAME pair rows as query params; the
+    // preview must name the binding it parsed.
+    let (_, page) = http(
+        t.port,
+        "GET",
+        "/rules/new?mechanism=ssh-session&pairs=local%3A%2F%2Fssh%2Ffleet%2Fapp-01%20%7C%20ssh%3A%2F%2Fapp-01.internal%3A22",
+        &[],
+        None,
+        Some(&c),
+    )
+    .await;
+    assert!(
+        page.contains("app-01.internal"),
+        "the preview must name the parsed binding: {page}"
+    );
+    assert!(
+        page.contains("binds 1 credential"),
+        "the preview must say the rule carries bindings: {page}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn caveat_fires_only_on_dangerous_star_positions() {
+    // Acceptance #5, both directions. Heph's ruling (2026-10-03): fire on
+    // `*.` and `*/` in the parsed Glob, but NOT on a trailing `/*` - that is
+    // a legitimate open tail (`vault://prod/*`) and caveat-ing every fleet
+    // rule is how operators learn to dismiss the warning.
+    let t = app().await;
+    let c = t.cookie();
+    http(t.port, "POST", "/setup/policy", &[], Some(""), Some(&c)).await;
+
+    // Dangerous: star before a dot (the hostname-boundary bypass).
+    let (_, danger) = http(
+        t.port,
+        "GET",
+        "/rules/new?mechanism=http-bearer&target_uri=ssh%3A%2F%2F*.internal%3A22",
+        &[],
+        None,
+        Some(&c),
+    )
+    .await;
+    assert!(
+        danger.contains("does not enforce a hostname boundary"),
+        "star-before-dot must warn: {danger}"
+    );
+
+    // Legitimate: trailing /* must NOT warn.
+    let (_, ok) = http(
+        t.port,
+        "GET",
+        "/rules/new?mechanism=http-bearer&target_uri=vault%3A%2F%2Fprod%2F*",
+        &[],
+        None,
+        Some(&c),
+    )
+    .await;
+    assert!(
+        !ok.contains("does not enforce a hostname boundary"),
+        "trailing /* is a legitimate open tail and must not warn: {ok}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_box_evaluates_through_the_shared_engine() {
+    // Acceptance #4: the test box calls `Policy::evaluate` - the same
+    // function the gateway calls - and renders the verdict via the shared
+    // `DecisionSource::label`. If the UI ever reimplements evaluation or
+    // shells out, this fails.
+    let t = app().await;
+    let c = t.cookie();
+    http(t.port, "POST", "/setup/policy", &[], Some(""), Some(&c)).await;
+    http(
+        t.port,
+        "POST",
+        "/rules/add",
+        &[],
+        Some(&form(&[
+            ("name", "ci reads github"),
+            ("mechanism", "http-bearer"),
+            ("target_uri", "https://api.github.com/*"),
+            ("agent_id", ""),
+            ("cred_ref", "local://prod/github/token"),
+            ("effect", "allow"),
+        ])),
+        Some(&c),
+    )
+    .await;
+
+    // A request the ruleset allows.
+    let (_, allowed) = http(
+        t.port,
+        "POST",
+        "/policy/test",
+        &[],
+        Some(&form(&[
+            ("agent_id", "agent:any"),
+            ("cred_ref", "local://prod/github/token"),
+            ("target_uri", "https://api.github.com/user"),
+            ("mechanism", "http-bearer"),
+        ])),
+        Some(&c),
+    )
+    .await;
+    assert!(allowed.contains("allow"), "verdict missing: {allowed}");
+    assert!(
+        allowed.contains("rule[0] (ci reads github)"),
+        "shared label must be rendered: {allowed}"
+    );
+
+    // A request no rule matches hits the default-deny floor.
+    let (_, denied) = http(
+        t.port,
+        "POST",
+        "/policy/test",
+        &[],
+        Some(&form(&[
+            ("agent_id", "agent:any"),
+            ("cred_ref", "local://prod/other/token"),
+            ("target_uri", "https://evil.example.com/steal"),
+            ("mechanism", "http-bearer"),
+        ])),
+        Some(&c),
+    )
+    .await;
+    assert!(denied.contains("default_deny"), "floor missing: {denied}");
+}

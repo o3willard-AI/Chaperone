@@ -1030,3 +1030,70 @@ hanging tests complete on Windows) was MET. The single red was the synthetic
 
 
 
+
+---
+
+## D45 — Operator decision preview: one engine, one vocabulary, one caveat rule
+
+**Status:** decided (ox-chap, implementing P2-2; rulings 1-5 by Heph
+2026-10-03). Closes MVP-GAP-REVIEW P2-2.
+
+### The problem
+
+Four independent glob matchers with no feedback on what the result permits is
+an expert interface. The gap review's framing is the governing one: **a security
+control wearing a UX costume.** The operator most likely to write an
+over-permissive rule is the one least likely to read `matcher.rs`'s header note
+that `*` spans `/` and `:`.
+
+### Three decisions, each with its alternative recorded
+
+**1. The preview describes the PARSED rule, never the raw form strings.**
+`preview::candidate_rule` performs the same construction `rules_add` performs —
+empty axis coerces to `Matcher::Any`, `glob:`/`prefix:`/`exact:` tags parse
+through `Matcher::parse`. *Alternative considered:* render the form fields
+verbatim (one line of code, guaranteed to drift). Rejected: the preview would
+describe a rule the validator would not produce, which is worse than no preview
+at all.
+
+**2. `Matcher::Any` renders as "any value", never as the literal `*`.** The
+pre-existing `axis_text` helper in `pages.rs` rendered `Any` as `"*"`, which is
+indistinguishable on screen from a glob of `*` — while `Any` is strictly *wider*.
+An operator who cannot tell them apart is being told their rule is narrower than
+it is. `Matcher::describe` is display-only and its output is deliberately not
+re-parseable, pinned by
+`describe_is_display_only_and_never_round_trips_into_a_decision`.
+
+**3. `DecisionSource::label` is shared, not copied.** The CLI's `policy-check`,
+the gateway's deny reason, and the UI's test box all render provenance. There
+were three hand-rolled formatters before this decision; two are gone. The
+gateway keeps its own phrasing (`denied by rule[0] (name)`, `default-deny`)
+because its text is operator- and log-visible — the exact strings are pinned by
+`deny_reason_text_is_unchanged`. The shared piece is the provenance itself.
+*Alternative considered:* copy the CLI's formatter into the UI (narrower public
+API). Rejected per Heph's ruling: it makes the parity test-enforced rather than
+structural, which is the divergence D36 exists to prevent.
+
+### The caveat predicate (Heph's ruling, applied literally)
+
+Fires only when a `target_uri` or `cred_ref` axis is a `Matcher::Glob` that
+actually contains `*`, AND the pattern has `*` adjacent to `.` or `/` in a
+dangerous position:
+
+- `*.` — star before dot. The hostname-boundary bypass named in `matcher.rs`'s
+  own SECURITY NOTE: `ssh://*.internal` also matches `ssh://evil.com/.internal`.
+- `*/` — star spanning into a path.
+- **Does NOT fire on a trailing `/*`.** `vault://prod/*` is a legitimate open
+  tail; caveat-ing it puts the warning on every fleet rule and trains operators
+  to dismiss it — the exact failure the caveat exists to prevent.
+
+Mechanical, no regex, both directions pinned by
+`caveat_fires_only_on_dangerous_star_positions`.
+
+### Non-goals, recorded so they are not re-litigated
+
+No JS (D40 holds). No reimplementation of evaluation: the test box calls
+`Policy::evaluate`, the same function the gateway calls. No shell-out to the CLI.
+No change to `evaluate`, to the axes, to the effect trichotomy, or to the TOML
+schema. The preview is labelled "not saved yet" so it can never be mistaken for
+current state — over-labelling was preferred to under-labelling.
