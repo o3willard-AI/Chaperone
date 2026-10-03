@@ -704,18 +704,20 @@ impl Gateway {
             return Self::error(
                 message,
                 "E_DENIED",
+                // P2-2 ruling 2: one shared label, three surfaces (CLI
+                // `policy-check` JSON, this deny reason, and the operator
+                // UI's test box). The gateway keeps its own operator-facing
+                // phrasing rather than the CLI's terse vocabulary, so the
+                // shared piece is the provenance itself — composed once from
+                // `DecisionSource::label` instead of re-formatting the same
+                // rule/pair indices a third time. The exact strings are
+                // pinned by `deny_reason_text_is_unchanged` in
+                // tests/end_to_end.rs.
                 &match &decision.source {
                     DecisionSource::DefaultDeny => {
                         "no policy rule permits this action (default-deny)".to_owned()
                     }
-                    DecisionSource::Rule { index, name, pair } => format!(
-                        "denied by rule[{}]{}{}",
-                        index,
-                        name.as_deref()
-                            .map(|n| format!(" ({n})"))
-                            .unwrap_or_default(),
-                        pair.map(|p| format!(" pair[{p}]")).unwrap_or_default()
-                    ),
+                    DecisionSource::Rule { .. } => format!("denied by {}", decision.source.label()),
                 },
             );
         }

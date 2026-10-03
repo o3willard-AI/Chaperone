@@ -495,3 +495,45 @@ async fn agents_cannot_supply_their_own_authorization() {
         "smuggled credentials never leave"
     );
 }
+
+// P2-2: the gateway's deny reason text is pinned so the shared-label
+// dedupe cannot silently change it. These are operator- and log-visible
+// strings, so the wording is behaviour, not an implementation detail.
+#[tokio::test]
+async fn deny_reason_text_is_unchanged() {
+    let captured = Captured::new(b"{}".to_vec());
+    let url = spawn_target(captured.clone()).await;
+
+    // (a) default-deny floor
+    let floor = build_spine(url.clone(), "").await;
+    let resp = floor
+        .gateway
+        .handle_message(&floor.sign_intent("n1", json!({})))
+        .await;
+    assert_eq!(resp["code"], "E_DENIED");
+    assert_eq!(
+        resp["reason"],
+        "no policy rule permits this action (default-deny)"
+    );
+
+    // (b) named rule
+    let named = build_spine(
+        url,
+        r#"
+[[rule]]
+effect = "deny"
+name = "ci reads github"
+agent_id = "*"
+cred_ref = "*"
+target_uri = "*"
+mechanism = "http-bearer"
+"#,
+    )
+    .await;
+    let resp = named
+        .gateway
+        .handle_message(&named.sign_intent("n2", json!({})))
+        .await;
+    assert_eq!(resp["code"], "E_DENIED");
+    assert_eq!(resp["reason"], "denied by rule[0] (ci reads github)");
+}

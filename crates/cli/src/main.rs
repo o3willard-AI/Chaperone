@@ -238,19 +238,14 @@ fn cmd_policy_check(flags: &Flags) -> Result<(), String> {
         }),
     };
     let decision = policy.evaluate(&request);
+    // P2-2 ruling 2: the source label comes from `DecisionSource::label`,
+    // the same function the operator UI's test box uses. The CLI keeps its
+    // JSON envelope; only the label itself is shared, so the two surfaces
+    // cannot drift into different vocabularies for the same verdict (D36).
     println!(
         "{{\"effect\":\"{}\",\"source\":\"{}\",\"limits\":{{\"max_response_bytes\":{},\"session_ttl_s\":{}}}}}",
         decision.effect.as_str(),
-        match &decision.source {
-            chaperone_policy::DecisionSource::DefaultDeny => "default_deny".to_owned(),
-            chaperone_policy::DecisionSource::Rule { index, name, pair } => format!(
-                "rule[{index}]{}{}",
-                name.as_deref()
-                    .map(|n| format!(" ({n})"))
-                    .unwrap_or_default(),
-                pair.map(|p| format!(" pair[{p}]")).unwrap_or_default()
-            ),
-        },
+        decision.source.label(),
         decision
             .limits
             .max_response_bytes
