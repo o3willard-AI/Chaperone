@@ -12,87 +12,77 @@
 //!
 //! Transport: `chaperone_transport::operator_pipe` on every platform
 //! (P1-1 item 3 — the Windows stub that failed loudly per issue #43 is gone;
-//! the feed now exists wherever the gateway runs). An unbound hub still
-//! queues to zero subscribers until [`EventHub::listen`] attaches an
-//! endpoint, or never — the in-process UI and the policy-integrity guard
-//! broadcast regardless.
+//! the feed now exists wherever the gateway runs).
 //!
-//! **Delivery is asynchronous (CH-77-2).** [`EventHub::broadcast`] only
-//! enqueues the line; a dedicated writer thread performs the socket writes
-//! under a bounded deadline and drops subscribers that stall. This is not a
-//! performance nicety — it is the deadlock fix. A feed write on the broker
-//! thread circular-waits whenever a connected subscriber is not draining:
-//! delivery needs the client to read, the client reads only after the broker
-//! call returns, and the broker call returns only after the write completes.
-//! Unix hid this (≈200 KB socket buffers absorbed queued lines); Windows
-//! pipes buffer ~512 bytes, so the SECOND unread line blocked `handle_message`
-//! forever (session summary on close/reap — the windows-latest hang). D35's
-//! loss-tolerant tap semantics make the resolution clean: the feed never
-//! gates brokering; a subscriber that cannot keep up within
-//! [`SUBSCRIBER_WRITE_TIMEOUT`] is disconnected, exactly like a dead one.
+//! **Delivery is asynchronous and per-subscriber (CH-77-2).** [`EventHub::
+//! broadcast`] only `try_send`s the line into each subscriber's bounded
+//! queue; it NEVER performs socket I/O and never blocks. Each subscriber has
+//! a dedicated delivery thread doing conventional BLOCKING writes. Two
+//! Windows failure modes drove this shape, both verified on windows-latest:
+//!
+//! 1. Inline writes on the broker thread circular-wait: delivery needs the
+//!    client to drain, the client drains only after the broker call returns,
+//!    the broker call returns only after the write completes. Windows pipes
+//!    buffer 512 bytes, so the second unread line (session summary behind an
+//!    unread decision) wedged `handle_message` forever — the 6-hour CI hang.
+//!    Enqueue-only broadcast makes this structurally impossible.
+//! 2. `PIPE_NOWAIT` writes via `interprocess` silently failed to deliver
+//!    (a bounded-write experiment never reached healthy subscribers; the
+//!    exact Win32 semantics are undocumented at this layer). Blocking writes
+//!    are the codebase's empirically proven Windows path — the pre-fix inline
+//!    hub delivered single lines fine — so the delivery threads stick to
+//!    them and NO nonblocking mode is ever set on a write-side handle.
+//!
+//! A subscriber that cannot keep up fills its bounded queue and is dropped
+//! (D35: the feed is a loss-tolerant tap; the audit chain is the evidence of
+//! record). Its delivery thread may stay parked on a blocking write until
+//! the peer closes — isolated: it affects neither the broker nor other
+//! subscribers.
 
-use std::collections::VecDeque;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
+use std::sync::{Mutex, MutexGuard};
 
 use chaperone_transport::operator_pipe::{OperatorListener, OperatorStream};
 
-/// Bounded per-line write deadline for one subscriber. A healthy reader
-/// drains in milliseconds even on Windows' small pipe buffers; anything
-/// slower than this for a single ~300-byte line is a stalled observer, and
-/// D35 says the feed drops it rather than letting it wedge delivery to the
-/// others (or, pre-CH-77-2, the broker itself).
-const SUBSCRIBER_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+/// Per-subscriber queue depth. Small: the feed is a live tap, and a
+/// subscriber this far behind is already missing the picture. A full queue
+/// drops the subscriber (D35), which is cheaper than unbounded memory or
+/// back-pressure on the broker.
+const SUB_QUEUE_LEN: usize = 256;
 
-/// Maximum queued undelivered lines. The feed is a live tap, not a journal —
-/// the audit chain is the evidence of record — so on overflow the NEW line is
-/// dropped (oldest queued lines stay ordered and deliverable).
-const MAX_QUEUED_LINES: usize = 4096;
+/// One registered subscriber: the send half of its delivery queue. The
+/// receive half and the socket live on its dedicated delivery thread.
+struct Sub {
+    tx: SyncSender<String>,
+}
 
-/// Shared state between the hub handle, its accept loop, and its writer
-/// thread. Outlives the `EventHub` drop via the shutdown flag: `Drop`
-/// signals, the writer exits.
+/// Shared registry, kept alive by the hub handle(s) and the accept loop.
 struct Shared {
-    /// (pending lines, shutdown flag).
-    queue: Mutex<(VecDeque<String>, bool)>,
-    cv: Condvar,
-    subscribers: Mutex<Vec<OperatorStream>>,
+    subs: Mutex<Vec<Sub>>,
     count: AtomicUsize,
 }
 
-/// The event hub: queues broadcast lines and hands subscribers to a writer
-/// thread. Cloning is by `Arc`; cheap to share.
+/// The event hub: registers subscribers and fans broadcast lines out to
+/// their delivery queues. Cheap to share (`Arc` inside).
 pub struct EventHub {
     shared: Arc<Shared>,
 }
 
 impl EventHub {
-    /// An unbound hub: broadcasts queue to zero subscribers until
+    /// An unbound hub: broadcasts fan out to zero subscribers until
     /// [`EventHub::listen`] attaches an endpoint (or never — the in-process
-    /// UI and the policy-integrity guard broadcast regardless). Spawns the
-    /// writer thread, which idles on the condvar until lines or subscribers
-    /// exist and exits when the last hub handle drops.
+    /// UI and the policy-integrity guard broadcast regardless).
     #[must_use]
     pub fn new() -> Arc<Self> {
-        let shared = Arc::new(Shared {
-            queue: Mutex::new((VecDeque::new(), false)),
-            cv: Condvar::new(),
-            subscribers: Mutex::new(Vec::new()),
-            count: AtomicUsize::new(0),
-        });
-        std::thread::Builder::new()
-            .name("chaperone-events-writer".to_owned())
-            .spawn({
-                let shared = Arc::clone(&shared);
-                move || writer_loop(&shared)
-            })
-            // A failed spawn leaves the hub functional minus delivery:
-            // broadcast still enqueues (bounded), nothing blocks. Loud-ish
-            // but non-fatal; the feed is not evidence-of-record.
-            .ok();
-        Arc::new(Self { shared })
+        Arc::new(Self {
+            shared: Arc::new(Shared {
+                subs: Mutex::new(Vec::new()),
+                count: AtomicUsize::new(0),
+            }),
+        })
     }
 
     /// Binds the events endpoint at `path` and spawns its accept loop.
@@ -134,19 +124,21 @@ impl EventHub {
     ///
     /// Returns as soon as the line is enqueued — NEVER performs socket I/O
     /// and never blocks on a subscriber (CH-77-2; see module docs). Delivery
-    /// is loss-tolerant by design: the queue is bounded, and a subscriber
-    /// that stalls is dropped by the writer.
+    /// is loss-tolerant by design: a subscriber whose queue is full, or whose
+    /// delivery thread has died, is dropped on the spot.
     pub fn broadcast(&self, line: &str) {
-        let mut guard = self
-            .shared
-            .queue
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !guard.1 && guard.0.len() < MAX_QUEUED_LINES {
-            guard.0.push_back(format!("{line}\n"));
-        }
-        drop(guard);
-        self.shared.cv.notify_one();
+        let wire = format!("{line}\n");
+        let mut subs = self.lock_subs();
+        subs.retain(|sub| match sub.tx.try_send(wire.clone()) {
+            Ok(()) => true,
+            // Full (stalled observer) or Disconnected (dead delivery thread):
+            // both mean this subscriber is gone as far as the feed is
+            // concerned — drop it, per D35's tap semantics.
+            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
+                self.shared.count.fetch_sub(1, Ordering::SeqCst);
+                false
+            }
+        });
     }
 
     /// Number of currently connected subscribers.
@@ -154,87 +146,41 @@ impl EventHub {
     pub fn subscriber_count(&self) -> usize {
         self.shared.count.load(Ordering::SeqCst)
     }
-}
 
-impl Drop for EventHub {
-    fn drop(&mut self) {
-        // Signal the writer thread to exit and wake it. (Accept-loop threads
-        // exit when the listener handle dies with the last Shared.)
-        let mut guard = self
-            .shared
-            .queue
+    fn lock_subs(&self) -> MutexGuard<'_, Vec<Sub>> {
+        self.shared
+            .subs
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.1 = true;
-        drop(guard);
-        self.shared.cv.notify_all();
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
 impl Shared {
+    /// Registers a new subscriber and spawns its delivery thread: blocking
+    /// writes, one per queued line, exiting when the queue disconnects (hub
+    /// dropped / subscriber pruned) or a write fails (peer gone).
     fn add_subscriber(&self, stream: OperatorStream) {
-        self.subscribers
+        let (tx, rx): (SyncSender<String>, Receiver<String>) = sync_channel(SUB_QUEUE_LEN);
+        let spawned = std::thread::Builder::new()
+            .name("chaperone-events-sub".to_owned())
+            .spawn(move || {
+                for line in rx {
+                    if stream.write_all(line.as_bytes()).is_err() {
+                        break; // peer gone; the next broadcast prunes the registry
+                    }
+                }
+            })
+            .is_ok();
+        if !spawned {
+            // No thread to serve the queue: don't register a subscriber that
+            // can never be delivered to (it would sit until pruned).
+            return;
+        }
+        self.subs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(stream);
+            .push(Sub { tx });
         self.count.fetch_add(1, Ordering::SeqCst);
-    }
-}
-
-/// The writer thread: waits for queued lines, delivers each to every
-/// subscriber under a bounded deadline, and drops subscribers whose write
-/// fails or times out. Holding no lock while writing keeps `accept` and
-/// `subscriber_count` responsive even during a slow delivery.
-fn writer_loop(shared: &Arc<Shared>) {
-    loop {
-        // Wait for the next line (or shutdown).
-        let line = {
-            let mut guard = shared
-                .queue
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            loop {
-                if let Some(line) = guard.0.pop_front() {
-                    break Some(line);
-                }
-                if guard.1 {
-                    break None; // shutdown with an empty queue
-                }
-                guard = shared
-                    .cv
-                    .wait(guard)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-            }
-        };
-        let Some(line) = line else { return };
-
-        // Take the whole registry (short lock), write outside the lock, then
-        // re-register the survivors. A subscriber added mid-write joins on
-        // the next line — acceptable for a live tap (it missed at most the
-        // in-flight line, same as connecting a moment later).
-        let subs = std::mem::take(
-            &mut *shared
-                .subscribers
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
-        let mut alive = Vec::with_capacity(subs.len());
-        for sub in subs {
-            match sub.write_all_timeout(line.as_bytes(), SUBSCRIBER_WRITE_TIMEOUT) {
-                Ok(()) => alive.push(sub),
-                // Dead OR stalled: both are dropped, per D35's tap semantics.
-                Err(_) => {
-                    shared.count.fetch_sub(1, Ordering::SeqCst);
-                }
-            }
-        }
-        let mut guard = shared
-            .subscribers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Merge: keep anything the accept loop added while we were writing.
-        alive.append(&mut guard);
-        *guard = alive;
     }
 }
 
@@ -245,6 +191,16 @@ mod tests {
     use super::EventHub;
     use chaperone_transport::operator_pipe::OperatorStream;
 
+    fn wait_registered(hub: &EventHub, want: usize) -> bool {
+        (0..100).any(|_| {
+            if hub.subscriber_count() == want {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            false
+        })
+    }
+
     /// CH-77-2 regression pin: `broadcast` must NEVER block the caller on
     /// subscriber socket I/O — the windows-latest hang was exactly that (an
     /// inline feed write on the broker thread circular-waited with a
@@ -252,8 +208,14 @@ mod tests {
     /// connected subscriber reads NOTHING while the hub floods far more than
     /// any pipe/socket buffer (Linux UDS ≈200KB, Windows pipe 512B); every
     /// broadcast call must still return immediately. The old inline
-    /// implementation hangs this test; the queued writer-thread design passes
-    /// it by construction.
+    /// implementation hangs this test; the queued per-subscriber design
+    /// passes it by construction.
+    ///
+    /// FALSIFIABILITY (proven, not claimed): reverting `broadcast` to the
+    /// inline blocking write made this test FAIL in ~5s with the located
+    /// "REGRESSION: broadcast blocked on subscriber socket I/O" message —
+    /// the flood runs on a worker behind a channel `recv_timeout`, so even
+    /// the regression cannot stall the runner.
     #[test]
     fn broadcast_never_blocks_on_a_stalled_subscriber() {
         let dir = tempfile::tempdir().unwrap();
@@ -262,24 +224,16 @@ mod tests {
 
         // Connect and then NEVER read: the stalled observer.
         let stalled = OperatorStream::connect(path.to_str().unwrap()).unwrap();
-        // Let the accept loop register it.
-        let mut registered = false;
-        for _ in 0..50 {
-            if hub.subscriber_count() == 1 {
-                registered = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        assert!(registered, "accept loop never registered the subscriber");
+        assert!(
+            wait_registered(&hub, 1),
+            "accept loop never registered the subscriber"
+        );
 
         // Flood: 4096 lines × ~200 bytes ≈ 800KB, over every platform's
-        // buffer. The queue is bounded, so overflow lines are dropped — the
-        // point is that EVERY call returns without socket I/O. The flood runs
-        // on a worker reporting through a channel with recv_timeout, so a
-        // REGRESSION (inline write) fails as a fast located panic here rather
-        // than hanging the runner — the whole value of this pin is that it
-        // catches the old blocking design without re-stalling CI.
+        // buffer. The queue is bounded, so the stalled subscriber is dropped
+        // mid-flood — the point is that EVERY call returns without socket
+        // I/O. Worker + recv_timeout so a REGRESSION (inline write) fails as
+        // a fast located panic instead of hanging the runner.
         let line = format!("{{\"type\":\"decision\",\"pad\":\"{}\"}}", "x".repeat(150));
         let flood_hub = std::sync::Arc::clone(&hub);
         let (tx, rx) = std::sync::mpsc::channel();
@@ -298,10 +252,8 @@ mod tests {
             "broadcast loop took {elapsed:?} — enqueueing 4096 lines must be near-instant"
         );
 
-        // D35 drop semantics: the stalled subscriber is eventually removed
-        // by the writer (its bounded write times out) rather than wedging
-        // delivery forever. The writer's per-line timeout is 2s, so allow a
-        // generous window.
+        // D35 drop semantics: the stalled subscriber is pruned once its
+        // bounded queue backs up, rather than retained forever.
         let dropped = (0..100).any(|_| {
             std::thread::sleep(std::time::Duration::from_millis(100));
             hub.subscriber_count() == 0
@@ -314,20 +266,17 @@ mod tests {
     }
 
     /// Delivery still works with a healthy subscriber: broadcast lines are
-    /// received in order and complete (one-object-per-line contract).
+    /// received in order and complete (one-object-per-line contract). This
+    /// is the positive control that caught the Windows NOWAIT-write
+    /// non-delivery (run 2 of CH-77-2): a stall-only test suite would have
+    /// passed with a feed that never delivers anything.
     #[test]
     fn healthy_subscriber_receives_queued_lines_in_order() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("order.sock");
         let hub = EventHub::spawn(&path).unwrap();
         let sub = OperatorStream::connect(path.to_str().unwrap()).unwrap();
-        for _ in 0..50 {
-            if hub.subscriber_count() == 1 {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        assert_eq!(hub.subscriber_count(), 1);
+        assert!(wait_registered(&hub, 1));
 
         for i in 0..3 {
             hub.broadcast(&format!("{{\"type\":\"decision\",\"seq\":{i}}}"));

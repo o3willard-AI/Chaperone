@@ -946,4 +946,52 @@ which is exactly what a positive-control test is for. This failure was caught
 by Windows CI in 2 minutes, not by a 6-hour hang: the fast-fail instrumentation
 is doing its job.
 
+**CH-77-2, third Windows finding — NOWAIT writes silently don't deliver;
+final design is per-subscriber threads with BLOCKING writes (2026-10-03).**
+With the `Ok(0)` read fix in place, windows-latest run 2 changed the failure
+from instant `UnexpectedEof` to `TimedOut` after the full 5s deadline: the
+read side now polls correctly, but the data NEVER ARRIVES. The single-writer
+hub delivered via `OperatorStream::write_all_timeout`, which flips the pipe
+to `PIPE_NOWAIT` and relies on `interprocess`'s NOWAIT write + flush
+semantics. Empirical conclusion from run 2: that path reports success but
+does not commit bytes to a healthy subscriber (the exact Win32 behavior of
+NOWAIT writes + `FlushFileBuffers` through this abstraction is not something
+to keep guessing at — this was the third Windows-pipe guess, and guessing
+is what burned the previous two CI cycles).
+
+Final design — remove the guess entirely:
+- **Per-subscriber delivery threads.** Each accepted subscriber gets a
+  `sync_channel(256)` and a dedicated thread doing conventional BLOCKING
+  `write_all` — the one write path empirically proven on Windows (the
+  pre-fix inline hub delivered single lines fine; `bind_connect_roundtrip`'s
+  blocking writes pass on windows-latest). No `PIPE_NOWAIT` is ever set on
+  a write-side handle anywhere. `write_all_timeout` and its `no_space_yet`
+  helper are DELETED, along with their two transport tests (a pointer note
+  remains in `operator_pipe.rs` tests so the coverage isn't silently lost).
+- **`broadcast` does `try_send` only** — never touches a socket, never
+  blocks, so the CH-77-2 circular-wait deadlock remains structurally
+  impossible. A subscriber whose bounded queue is full (stalled observer) or
+  whose thread died is pruned from the registry on the spot (D35 drop
+  semantics). A parked blocking write on a wedged peer is isolated to that
+  subscriber's own thread: it affects neither the broker nor other
+  subscribers, and exits when the peer closes or the channel disconnects.
+- **Read side unchanged from the run-2 fix**: `zero_read_is_eof()`
+  platform split stands (`Ok(0)` = EOF on unix, ambiguous-and-poll on
+  Windows).
+- The regression pin (`broadcast_never_blocks_on_a_stalled_subscriber`,
+  proven falsifiable by an actual revert experiment) and the positive
+  control (`healthy_subscriber_receives_queued_lines_in_order` — the test
+  that caught BOTH run-1 and run-2 failures) move unchanged onto the new
+  hub shape; they pin hub-level properties, not the removed primitive.
+
+Process note, recorded honestly: three Windows-pipe behaviors were guessed
+from Linux source-reading across CH-77/CH-77-2 (`WouldBlock` mapping,
+`ERROR_NO_DATA` surfacing, NOWAIT write delivery). Guesses 1–2 were wrong in
+ways CI exposed in minutes; guess 3 is now deleted rather than fixed, in
+favor of the one behavior with empirical Windows evidence. The lesson for
+this codebase: on Windows pipe I/O, prefer the boring blocking path with
+thread isolation over clever nonblocking modes through an abstraction
+layer; require native-CI evidence before trusting any NOWAIT semantics.
+
+
 
