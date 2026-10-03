@@ -129,6 +129,27 @@ fn no_data_yet(e: &io::Error) -> bool {
         || e.kind() == io::ErrorKind::WouldBlock
 }
 
+/// Does a zero-byte read from a nonblocking stream definitively mean EOF?
+///
+/// Unix: yes — `Ok(0)` on a socket read is the peer closing; "no data yet"
+/// is `Err(WouldBlock)`, a separate case. Windows: NO — `interprocess`
+/// funnels every pipe read through its `downgrade_eof`, which converts both
+/// the NOWAIT no-data error (`ERROR_NO_DATA`, 232) and a real disconnect
+/// (`ERROR_PIPE_NOT_CONNECTED` → `BrokenPipe`) into `Ok(0)`. The two are
+/// indistinguishable at this API level, so `read_byte_timeout` treats `Ok(0)`
+/// as "keep polling to the deadline" and reports `TimedOut` (CH-77-2: the
+/// opposite reading made healthy Windows subscribers see an instant
+/// UnexpectedEof whenever they raced the writer thread).
+#[cfg(not(windows))]
+const fn zero_read_is_eof() -> bool {
+    true
+}
+
+#[cfg(windows)]
+const fn zero_read_is_eof() -> bool {
+    false
+}
+
 /// Is this write error "no buffer space right now, keep polling to the
 /// deadline"? Mirror of [`no_data_yet`] for the write side (CH-77-2).
 ///
@@ -368,25 +389,40 @@ impl OperatorStream {
     /// timeouts"). Polls in nonblocking mode until a byte arrives or the
     /// deadline passes.
     ///
-    /// Platform note: an empty nonblocking read is `WouldBlock` on unix, but
-    /// on Windows a `PIPE_NOWAIT` read with no data returns `ERROR_NO_DATA`
-    /// (232), which Rust surfaces as `BrokenPipe` — NOT `WouldBlock`. So the
-    /// poll loop must treat `ERROR_NO_DATA` as "no data yet, keep waiting"
-    /// (else it fast-fails before the deadline) while still mapping a genuine
-    /// `ERROR_BROKEN_PIPE` (109) to EOF. Without this the un-gated feed tests
-    /// either abort early or, if the nonblocking toggle does not take on a
-    /// client pipe handle, block forever — the Windows-only deadlock.
+    /// Platform semantics of "nothing to read right now" differ, and both
+    /// are handled (CH-77-2, from windows-latest evidence + `interprocess`
+    /// source):
+    /// - Unix: `Err(WouldBlock)` → poll; a real EOF is `Ok(0)` →
+    ///   `UnexpectedEof` immediately.
+    /// - Windows: `interprocess` runs every pipe read through
+    ///   `downgrade_eof`, which converts `BrokenPipe`-kind errors — BOTH the
+    ///   NOWAIT "no data yet" (`ERROR_NO_DATA`, 232) AND a real disconnect
+    ///   (`ERROR_PIPE_NOT_CONNECTED`, 233) — into `Ok(0)`. They are
+    ///   indistinguishable at this API level, so `Ok(0)` polls to the
+    ///   deadline and reports `TimedOut`; a disconnected peer costs at most
+    ///   the timeout instead of an instant EOF. (The `no_data_yet` arm below
+    ///   stays as belt-and-braces in case a raw 232 ever surfaces as `Err`.)
     ///
     /// # Errors
     /// `TimedOut` if no byte arrives before `timeout`; `UnexpectedEof` at
-    /// peer close; any other read failure passes through.
+    /// peer close (unix); any other read failure passes through.
     pub fn read_byte_timeout(&self, timeout: std::time::Duration) -> io::Result<u8> {
         self.set_nonblocking(true)?;
         let deadline = std::time::Instant::now() + timeout;
         let mut b = [0u8; 1];
         let result = loop {
             match (&self.inner).read(&mut b) {
-                Ok(0) => break Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
+                Ok(0) => {
+                    if zero_read_is_eof() {
+                        break Err(io::Error::from(io::ErrorKind::UnexpectedEof));
+                    }
+                    // Windows: Ok(0) is ambiguous (no-data-yet OR disconnect,
+                    // both downgraded by interprocess) — poll to the deadline.
+                    if std::time::Instant::now() >= deadline {
+                        break Err(io::Error::from(io::ErrorKind::TimedOut));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
                 Ok(_) => break Ok(b[0]),
                 Err(e) if no_data_yet(&e) => {
                     if std::time::Instant::now() >= deadline {

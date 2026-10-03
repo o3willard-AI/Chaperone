@@ -919,3 +919,31 @@ Verification (Linux; Windows native is CI's call):
 - `session_events` all four tests run under the watchdog; full workspace 43
   suites green, fmt/clippy(linux + windows facade)/deny all green.
 
+**CH-77-2, second Windows finding — `Ok(0)` is ambiguous on pipes (2026-10-03).**
+The first windows-latest run of the async hub (`9ca09d8`) completed in ~2 min
+instead of hanging 6 h — the deadlock fix works, and
+`broadcast_never_blocks_on_a_stalled_subscriber` passed on Windows. But
+`healthy_subscriber_receives_queued_lines_in_order` failed with an instant
+`UnexpectedEof`, and (lib-test failure ⇒ cargo aborts) `session_events` never
+ran. Mechanism, from `interprocess` source (`os/windows/named_pipe/stream/
+impl/recv_bytes.rs` + `os/windows/misc.rs`): EVERY Windows pipe read goes
+through `downgrade_eof`, which converts `BrokenPipe`-kind errors into
+`Ok(0)` — that covers both NOWAIT "no data yet" (`ERROR_NO_DATA` 232) and a
+real disconnect (`ERROR_PIPE_NOT_CONNECTED` 233). So attempt 2's
+`no_data_yet(232)` Err-arm never fires on Windows reads (the error never
+surfaces as `Err` — it is downgraded first), and the old `Ok(0) ⇒ EOF`
+reading made any client that raced the writer thread see an instant EOF.
+Fix: platform-split `zero_read_is_eof()` — true on unix (`Ok(0)` IS the peer
+closing; no-data is `Err(WouldBlock)`, distinct), false on Windows (`Ok(0)`
+polls to the deadline, then `TimedOut`). Accepted cost on Windows: a
+genuinely disconnected peer costs the read timeout instead of an instant EOF
+— bounded and acceptable for tap readers; the console answer path uses the
+BLOCKING `read_byte` (never nonblocking), so its fail-closed EOF semantics
+are untouched. Why attempt 2 masked this: with inline broadcast the line was
+always already in the pipe buffer before the client read, so the no-data
+race never occurred; the async writer thread made the race observable —
+which is exactly what a positive-control test is for. This failure was caught
+by Windows CI in 2 minutes, not by a 6-hour hang: the fast-fail instrumentation
+is doing its job.
+
+
