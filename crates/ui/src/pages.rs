@@ -713,25 +713,20 @@ pub async fn rules_new(
         esc(&agent_prefill),
         esc(&cred_prefill)
     ));
-    body.push_str(&format!(
-        "{}",
-        field(
-            "Effect",
+    body.push_str(&field(
+        "Effect",
             &format!(
                 "<select name=\"effect\">\n         <option value=\"allow\"{}>allow \u{2014} proceed without prompting</option>\n         <option value=\"needs_confirmation\"{}>needs_confirmation \u{2014} human gate each use</option>\n         <option value=\"deny\"{}>deny \u{2014} explicit refusal</option></select>",
                 if effect_prefill == "allow" { " selected" } else { "" },
                 if effect_prefill == "needs_confirmation" { " selected" } else { "" },
                 if effect_prefill == "deny" { " selected" } else { "" },
             )
-        )
     ));
     body.push_str(
         "<p><label><input type=\"checkbox\" name=\"notify_on_use\" checked> notify me when this credential is used (on_use)</label></p>",
     );
-    body.push_str(&format!(
-        "{}",
-        field(
-            "Credential-to-endpoint bindings (optional; one per line: cred_ref | target_uri)",
+    body.push_str(&field(
+        "Credential-to-endpoint bindings (optional; one per line: cred_ref | target_uri)",
             &format!(
                 "<textarea name=\"pairs\" rows=\"4\" spellcheck=\"false\" \
          placeholder=\"local://ssh/fleet/app-01 | ssh://app-01.internal:22&#10;\
@@ -742,7 +737,6 @@ pub async fn rules_new(
          <code>exact:</code> tags as the axes; a bare value is an exact match.</p>",
                 esc(&pairs_prefill)
             )
-        )
     ));
     body.push_str(&format!(
         "<div class=\"grid\">{}{}</div>",
@@ -775,10 +769,10 @@ pub async fn rules_new(
              needs_confirmation / deny, so there is nothing valid to describe              yet.</span></div>",
         );
     }
-    body.push_str(&format!(
+    body.push_str(
         "<p><button type=\"submit\">Validate &amp; save rule</button> \
-         <a href=\"/policy/test\">Test a request against the saved rules \u{2192}</a></p></form>"
-    ));
+         <a href=\"/policy/test\">Test a request against the saved rules \u{2192}</a></p></form>",
+    );
 
     Html(layout(
         "Add rule",
