@@ -127,7 +127,7 @@ fn short_hash(hash: &str) -> String {
     hash.chars().take(12).collect()
 }
 
-fn halted(state: &UiState) -> Option<String> {
+pub(crate) fn halted(state: &UiState) -> Option<String> {
     state
         .gateway
         .as_ref()

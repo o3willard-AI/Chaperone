@@ -24,6 +24,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 
+pub mod connect;
 pub mod matrix;
 pub mod pages;
 pub mod preview;
@@ -67,6 +68,8 @@ pub fn router(state: Arc<UiState>) -> Router {
         .route("/rules/delete", post(pages::rules_delete))
         .route("/policy/raw", get(pages::raw_page).post(pages::raw_save))
         .route("/policy/test", post(pages::policy_test))
+        .route("/connect", get(connect::page).post(connect::submit))
+        .route("/connect/done", get(connect::done))
         .layer(middleware::from_fn_with_state(
             Arc::clone(&state),
             token_gate,

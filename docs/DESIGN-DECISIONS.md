@@ -1097,3 +1097,74 @@ No JS (D40 holds). No reimplementation of evaluation: the test box calls
 No change to `evaluate`, to the axes, to the effect trichotomy, or to the TOML
 schema. The preview is labelled "not saved yet" so it can never be mistaken for
 current state — over-labelling was preferred to under-labelling.
+
+---
+
+## D46 — "Connect a service": one submit, four artifacts, rule last
+
+**Status:** decided (ox-chap, implementing P2-1). Plan
+`docs/plans/P2-1-P2-2-PLAN.md` §4; rulings 1-5 by Heph 2026-10-03. Closes
+MVP-GAP-REVIEW P2-1.
+
+### What it is
+
+The artifact-shaped wizard walks artifacts (enrollment, policy, audit key,
+vault); the operator's actual sentence is one line. "Connect a service" is
+organised around that sentence and produces a rule, a vault entry, an enrolled
+identity, and a runnable test command in one submit. **Composition, not new
+capability** — every primitive already existed behind `/secrets/store`,
+`/agents/enroll`, `/setup/audit-key`, and `/rules/add`.
+
+### Decision 1: Option A — the vault must already exist
+
+**Ruled by Stephen, 2026-10-03.** The flow refuses cleanly when no vault is
+open and points at the wizard; it never creates one implicitly.
+
+*Why:* it keeps the flow's secret surface to exactly ONE pasted value. Option B
+(passphrase field in the same form) is a nicer one-submit experience but puts two
+secrets in one form; option C (auto-create) opens a plaintext window and is not
+an option at all. Acceptance is unaffected: the wizard is UI, not CLI, so
+"daemon -> brokered audited action with no CLI command" still holds.
+
+### Decision 2: rule last (Heph, ruling 3) — and a bug the test found
+
+Validate all four artifacts in memory, write **vault -> enrollment -> audit key
+-> rule**. The rule is the only artifact whose presence turns the grant *on*;
+everything before it is inert scaffolding under default-deny and over-permits
+nothing.
+
+**Heph's correction to my original framing is recorded rather than dropped:** I
+described the bad residue as "deny-all". It is not — it is *an allow rule with a
+dangling `cred_ref`*: policy says allow, and it fails only at action time on a
+vault miss. The conclusion was right; the description was wrong.
+
+**The acceptance test found a real bug while being built.** The partial-failure
+test (rule-last residue) was written twice:
+
+1. *First attempt* induced the failure by making the config directory read-only
+   and asserted no rule exists. It passed — **and passed even when the rule was
+   deliberately reordered to be written FIRST.** The assertion was vacuous: the
+   vault is held in memory and does not touch the directory at `set()` time, so
+   the induced "failure" never happened and no mid-flow error ever occurred.
+2. *Second attempt* induces a failure that is real: a **directory squatting on
+   the audit-key path**, which sits between the vault entry and the rule.
+   `atomic_write` cannot persist onto a directory, so the write fails with every
+   earlier step already succeeded — precisely the window the ordering protects.
+
+That second version **failed immediately against correct-looking code**, and the
+cause was a genuine defect: the guard was `if !state.audit_key_path.exists()`.
+`Path::exists()` is true for a directory, so a directory on that path made the
+flow skip the audit key and write the rule anyway — producing exactly the
+misleading residue ruling 3 exists to prevent. Fixed to `is_file()`.
+
+Re-verified after the fix by re-running the reorder experiment: with the rule
+written first, the test now **fails** with `rule-last ordering violated: 1
+rule(s) exist`. The pin is falsifiable in the direction that matters.
+
+### Non-goals, recorded so they are not re-litigated
+
+No JS (D40). No "simple mode" writing rules the CLI would refuse (D36). The
+policy is rebuilt and re-validated through `Policy::from_rules(...).to_toml()` and
+re-parsed with `Policy::from_toml` **exactly as `rules_add` does**, so this flow
+is not a fifth writer. The existing artifact-shaped wizard is never removed.
+`CONNECTIVITY-MATRIX.md` untouched.

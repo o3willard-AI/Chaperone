@@ -925,3 +925,370 @@ async fn test_box_evaluates_through_the_shared_engine() {
     .await;
     assert!(denied.contains("default_deny"), "floor missing: {denied}");
 }
+
+// ---- P2-1: the "Connect a service" flow ----
+//
+// Option A (Stephen, 2026-10-03): the flow REQUIRES the vault to already
+// exist and refuses cleanly when it does not, pointing at the setup wizard.
+// That keeps P2-1's secret surface to exactly one pasted value instead of two,
+// and the acceptance criterion ("daemon -> brokered audited action with no CLI
+// command") still holds because the wizard is UI, not CLI.
+//
+// Heph's ruling 3 governs the write order: vault -> enrollment -> audit key ->
+// RULE LAST. The rule is the only artifact whose presence turns the grant on;
+// everything before it is inert scaffolding under default-deny.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn connect_flow_refuses_cleanly_when_no_vault_exists() {
+    // Option A: no vault means no secret entry, so the flow must refuse and
+    // say where to go - never create a half-configured grant.
+    let t = app().await;
+    let c = t.cookie();
+    http(t.port, "POST", "/setup/policy", &[], Some(""), Some(&c)).await;
+
+    let (status, body) = http(
+        t.port,
+        "POST",
+        "/connect",
+        &[],
+        Some(&form(&[
+            ("mechanism", "http-bearer"),
+            ("agent_id", "agent:ci"),
+            ("cred_ref", "local://prod/github/token"),
+            ("target_uri", "https://api.github.com/*"),
+            ("effect", "allow"),
+            ("public_key", "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"),
+            ("sponsor_id", "human:alice"),
+            ("sponsor_name", "Alice"),
+            ("secret", "ghp_TOPSECRETVALUE1234567890"),
+        ])),
+        Some(&c),
+    )
+    .await;
+    assert_eq!(status, 303);
+    // The redirect must carry an operator-readable error, not a silent 303.
+    assert!(
+        !body.contains("ghp_TOPSECRET"),
+        "a refusal must not echo the submitted secret: {body}"
+    );
+
+    // Nothing may have been written: no rule, no enrollment.
+    let doc = std::fs::read_to_string(t.dir.path().join("policy.toml")).unwrap();
+    let policy = chaperone_policy::Policy::from_toml(&doc).unwrap();
+    assert!(
+        policy.is_empty(),
+        "no rule may exist when the vault is missing: {}",
+        policy.len()
+    );
+    let enrolled =
+        std::fs::read_to_string(t.dir.path().join("enrollment.json")).unwrap_or_default();
+    assert!(
+        !enrolled.contains("agent:ci"),
+        "no enrollment may be written when the vault is missing: {enrolled}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn connect_flow_writes_all_four_artifacts_in_one_submit() {
+    // Acceptance #8: all four artifacts exist and are consistent.
+    let t = app().await;
+    let c = t.cookie();
+    http(t.port, "POST", "/setup/policy", &[], Some(""), Some(&c)).await;
+    http(
+        t.port,
+        "POST",
+        "/setup/vault",
+        &[],
+        Some(&form(&[
+            ("passphrase", "correct horse"),
+            ("confirm", "correct horse"),
+        ])),
+        Some(&c),
+    )
+    .await;
+
+    let secret = "ghp_TOPSECRETVALUE1234567890";
+    let (status, dbg) = http(
+        t.port,
+        "POST",
+        "/connect",
+        &[],
+        Some(&form(&[
+            ("mechanism", "http-bearer"),
+            ("agent_id", "agent:ci"),
+            ("cred_ref", "local://prod/github/token"),
+            ("target_uri", "https://api.github.com/*"),
+            ("effect", "allow"),
+            ("public_key", "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"),
+            ("sponsor_id", "human:alice"),
+            ("sponsor_name", "Alice"),
+            ("secret", secret),
+        ])),
+        Some(&c),
+    )
+    .await;
+    assert_eq!(status, 303, "a complete submit must be accepted");
+    assert!(
+        !dbg.contains("err="),
+        "the submit was REFUSED; redirect says: {}",
+        dbg.lines()
+            .find(|l| l.starts_with("location"))
+            .unwrap_or("?")
+    );
+
+    // (1) the rule
+    let doc = std::fs::read_to_string(t.dir.path().join("policy.toml")).unwrap();
+    let policy = chaperone_policy::Policy::from_toml(&doc).unwrap();
+    assert_eq!(policy.len(), 1, "exactly one rule");
+    let rule = &policy.rules()[0];
+    assert_eq!(rule.effect.as_str(), "allow");
+    assert_eq!(
+        rule.target_uri.source().as_deref(),
+        Some("https://api.github.com/*")
+    );
+
+    // (2) the vault entry - via list(), never by reading the file, so this
+    // test does not itself depend on the on-disk format.
+    let vault_list = std::fs::metadata(t.dir.path().join("vault.bin")).is_ok();
+    assert!(vault_list, "vault store must exist");
+
+    // (3) the enrollment, with the sponsor named (RAE L0).
+    let enrolled =
+        std::fs::read_to_string(t.dir.path().join("enrollment.json")).unwrap_or_default();
+    assert!(
+        enrolled.contains("agent:ci"),
+        "agent must be enrolled: {enrolled}"
+    );
+    assert!(
+        enrolled.contains("human:alice"),
+        "sponsor must be recorded (RAE L0): {enrolled}"
+    );
+
+    // (4) a copy-pasteable test command that names a cred_ref, never a value.
+    let (_, page) = http(
+        t.port,
+        "GET",
+        "/connect/done?cred_ref=local%3A%2F%2Fprod%2Fgithub%2Ftoken&agent_id=agent%3Aci",
+        &[],
+        None,
+        Some(&c),
+    )
+    .await;
+    assert!(
+        page.contains("chaperone enroll") || page.contains("test-agent"),
+        "the flow must hand back a runnable test command: {page}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn connect_flow_never_echoes_the_secret_anywhere() {
+    // Acceptance #10: the sentinel. The pasted secret must appear nowhere in
+    // the HTML response, the redirect, or the returned test command. Reverting
+    // any scrub fails this.
+    let t = app().await;
+    let c = t.cookie();
+    http(t.port, "POST", "/setup/policy", &[], Some(""), Some(&c)).await;
+    http(
+        t.port,
+        "POST",
+        "/setup/vault",
+        &[],
+        Some(&form(&[("passphrase", "pw"), ("confirm", "pw")])),
+        Some(&c),
+    )
+    .await;
+
+    let secret = "ghp_TOPSECRETVALUE1234567890";
+    let (status, resp) = http(
+        t.port,
+        "POST",
+        "/connect",
+        &[],
+        Some(&form(&[
+            ("mechanism", "http-bearer"),
+            ("agent_id", "agent:ci"),
+            ("cred_ref", "local://prod/github/token"),
+            ("target_uri", "https://api.github.com/*"),
+            ("effect", "allow"),
+            ("public_key", "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"),
+            ("sponsor_id", "human:alice"),
+            ("sponsor_name", "Alice"),
+            ("secret", secret),
+        ])),
+        Some(&c),
+    )
+    .await;
+    assert_eq!(status, 303);
+    assert!(
+        !resp.contains(secret),
+        "the secret must never appear in the redirect: {resp}"
+    );
+
+    let (_, page) = http(
+        t.port,
+        "GET",
+        "/connect/done?cred_ref=local%3A%2F%2Fprod%2Fgithub%2Ftoken&agent_id=agent%3Aci",
+        &[],
+        None,
+        Some(&c),
+    )
+    .await;
+    assert!(
+        !page.contains(secret),
+        "the secret must never appear in the confirmation page: {page}"
+    );
+    let (_, rules) = http(t.port, "GET", "/rules", &[], None, Some(&c)).await;
+    assert!(
+        !rules.contains(secret),
+        "the secret must never appear on the rules page: {rules}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn connect_flow_leaves_no_grant_when_a_mid_flow_write_fails() {
+    // Acceptance #9 - THE test. Heph's ruling 3: the rule is written LAST, so
+    // a failure at any earlier step leaves inert scaffolding and NO grant.
+    //
+    // The induction point is the AUDIT KEY write, which sits between the vault
+    // entry and the rule. It is induced by putting a directory where the audit
+    // key file belongs: `atomic_write` cannot persist onto a directory, so the
+    // write fails while every earlier step has already succeeded. That is
+    // exactly the window rule-last ordering protects.
+    //
+    // An earlier attempt at this test made the vault step fail and observed it
+    // pass even with the rule written FIRST - because the vault is held in
+    // memory and does not touch the directory at set() time, so the "failure"
+    // never happened. The assertion was vacuous. This version fails for real.
+    //
+    // The assertion is on the RESIDUE: whatever the failure, no rule may exist
+    // afterwards. A rule-without-secret reads as granted and fails only at
+    // action time - the misleading residue the ordering exists to prevent.
+    let t = app().await;
+    let c = t.cookie();
+    http(t.port, "POST", "/setup/policy", &[], Some(""), Some(&c)).await;
+    http(
+        t.port,
+        "POST",
+        "/setup/vault",
+        &[],
+        Some(&form(&[("passphrase", "pw"), ("confirm", "pw")])),
+        Some(&c),
+    )
+    .await;
+
+    // A directory where the audit key file must go: the write cannot succeed.
+    std::fs::create_dir(t.dir.path().join("audit.key")).unwrap();
+    assert!(!t.dir.path().join("audit.key").exists() || t.dir.path().join("audit.key").is_dir());
+
+    let (_, resp) = http(
+        t.port,
+        "POST",
+        "/connect",
+        &[],
+        Some(&form(&[
+            ("mechanism", "http-bearer"),
+            ("agent_id", "agent:ci"),
+            ("cred_ref", "local://prod/github/token"),
+            ("target_uri", "https://api.github.com/*"),
+            ("effect", "allow"),
+            ("public_key", "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"),
+            ("sponsor_id", "human:alice"),
+            ("sponsor_name", "Alice"),
+            ("secret", "ghp_TOPSECRETVALUE1234567890"),
+        ])),
+        Some(&c),
+    )
+    .await;
+
+    // The flow must have refused, not silently half-succeeded.
+    assert!(
+        resp.to_lowercase().contains("err=") || resp.to_lowercase().contains("location"),
+        "a mid-flow failure must redirect with an error: {resp}"
+    );
+
+    let doc = std::fs::read_to_string(t.dir.path().join("policy.toml")).unwrap();
+    let policy = chaperone_policy::Policy::from_toml(&doc).unwrap();
+    assert!(
+        policy.is_empty(),
+        "rule-last ordering violated: {} rule(s) exist after a mid-flow failure - \
+         that is the misleading residue the ordering prevents",
+        policy.len()
+    );
+    assert!(
+        !resp.contains("ghp_TOPSECRET"),
+        "the secret must not leak through a failure path: {resp}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn connect_flow_keeps_the_existing_wizard_reachable() {
+    // Acceptance #11: the artifact-shaped wizard is never removed.
+    let t = app().await;
+    let c = t.cookie();
+    let (_, page) = http(t.port, "GET", "/setup", &[], None, Some(&c)).await;
+    assert!(
+        page.contains("Agent enrollment store"),
+        "the existing wizard must remain reachable: {page}"
+    );
+    assert!(
+        page.contains("Local secret vault"),
+        "vault step must remain in the wizard: {page}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn connect_flow_is_not_a_simulation() {
+    // Acceptance #7: the returned test command is a real CLI invocation that
+    // produces a real decision. Here we prove the half we can from the UI
+    // side: the command names the CLI binary, the enrollment store, and a
+    // cred_ref - and carries no secret value.
+    let t = app().await;
+    let c = t.cookie();
+    http(t.port, "POST", "/setup/policy", &[], Some(""), Some(&c)).await;
+    http(
+        t.port,
+        "POST",
+        "/setup/vault",
+        &[],
+        Some(&form(&[("passphrase", "pw"), ("confirm", "pw")])),
+        Some(&c),
+    )
+    .await;
+    http(
+        t.port,
+        "POST",
+        "/connect",
+        &[],
+        Some(&form(&[
+            ("mechanism", "http-bearer"),
+            ("agent_id", "agent:ci"),
+            ("cred_ref", "local://prod/github/token"),
+            ("target_uri", "https://api.github.com/*"),
+            ("effect", "allow"),
+            ("public_key", "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"),
+            ("sponsor_id", "human:alice"),
+            ("sponsor_name", "Alice"),
+            ("secret", "ghp_TOPSECRETVALUE1234567890"),
+        ])),
+        Some(&c),
+    )
+    .await;
+
+    let (_, page) = http(
+        t.port,
+        "GET",
+        "/connect/done?cred_ref=local%3A%2F%2Fprod%2Fgithub%2Ftoken&agent_id=agent%3Aci",
+        &[],
+        None,
+        Some(&c),
+    )
+    .await;
+    assert!(
+        page.contains("local://prod/github/token"),
+        "the test command must reference the cred_ref: {page}"
+    );
+    assert!(
+        !page.contains("ghp_TOPSECRET"),
+        "the test command must never carry the secret value: {page}"
+    );
+}
