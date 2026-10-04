@@ -12,6 +12,7 @@ use chaperone_policy::{Effect, Matcher, Policy, Rule};
 use chaperone_vault::SecretString;
 
 use crate::matrix;
+use crate::preview;
 use crate::render::{effect_badge, esc, field, layout};
 use crate::setup::urlenc;
 use crate::state::{UiState, atomic_write};
@@ -637,11 +638,29 @@ pub async fn rules_new(
     }
 
     // Stage 2: full rule form, prefilled from the template.
-    let target_prefill = templates
-        .iter()
-        .find(|t| t.name == template_id)
-        .map(|t| t.target_uri)
-        .unwrap_or("");
+    // P2-2: the preview describes the candidate rule as currently filled in.
+    // Each field falls back to the template prefill, then to empty (= `Any`),
+    // and is echoed back into the input so what the preview describes is
+    // exactly what the operator sees and what `rules_add` will save.
+    let q = |k: &str| params.get(k).cloned().unwrap_or_default();
+    let target_prefill = {
+        let from_query = q("target_uri");
+        if from_query.is_empty() {
+            templates
+                .iter()
+                .find(|t| t.name == template_id)
+                .map_or_else(String::new, |t| t.target_uri.to_owned())
+        } else {
+            from_query
+        }
+    };
+    let agent_prefill = q("agent_id");
+    let cred_prefill = q("cred_ref");
+    let pairs_prefill = q("pairs");
+    let effect_prefill = {
+        let e = q("effect");
+        if e.is_empty() { "allow".to_owned() } else { e }
+    };
 
     let agent_options = {
         let mut s = String::from("<datalist id=\"agent-ids\">");
@@ -680,37 +699,44 @@ pub async fn rules_new(
         "Target URI glob (free text; templates prefill a tested shape)",
         &format!(
             "<input name=\"target_uri\" placeholder=\"https://api.example.com/*\" value=\"{}\" spellcheck=\"false\">",
-            esc(target_prefill)
+            esc(&target_prefill)
         ),
     ));
     body.push_str(&format!(
         "{agent_options}{cred_options}\
          <div class=\"grid\">\
          <p><label><strong>Agent id</strong> (empty = any)<br>\
-         <input name=\"agent_id\" list=\"agent-ids\" placeholder=\"agent:my-agent\" spellcheck=\"false\"></label></p>\
+         <input name=\"agent_id\" list=\"agent-ids\" value=\"{}\" placeholder=\"agent:my-agent\" spellcheck=\"false\"></label></p>\
          <p><label><strong>Credential reference</strong> (scheme://path)<br>\
-         <input name=\"cred_ref\" list=\"cred-refs\" placeholder=\"local://prod/github/token\" spellcheck=\"false\"></label></p>\
-         </div>"
+         <input name=\"cred_ref\" list=\"cred-refs\" value=\"{}\" placeholder=\"local://prod/github/token\" spellcheck=\"false\"></label></p>\
+         </div>",
+        esc(&agent_prefill),
+        esc(&cred_prefill)
     ));
     body.push_str(&field(
         "Effect",
-        "<select name=\"effect\">\
-         <option value=\"allow\">allow \u{2014} proceed without prompting</option>\
-         <option value=\"needs_confirmation\">needs_confirmation \u{2014} human gate each use</option>\
-         <option value=\"deny\">deny \u{2014} explicit refusal</option></select>",
+            &format!(
+                "<select name=\"effect\">\n         <option value=\"allow\"{}>allow \u{2014} proceed without prompting</option>\n         <option value=\"needs_confirmation\"{}>needs_confirmation \u{2014} human gate each use</option>\n         <option value=\"deny\"{}>deny \u{2014} explicit refusal</option></select>",
+                if effect_prefill == "allow" { " selected" } else { "" },
+                if effect_prefill == "needs_confirmation" { " selected" } else { "" },
+                if effect_prefill == "deny" { " selected" } else { "" },
+            )
     ));
     body.push_str(
         "<p><label><input type=\"checkbox\" name=\"notify_on_use\" checked> notify me when this credential is used (on_use)</label></p>",
     );
     body.push_str(&field(
         "Credential-to-endpoint bindings (optional; one per line: cred_ref | target_uri)",
-        "<textarea name=\"pairs\" rows=\"4\" spellcheck=\"false\" \
+            &format!(
+                "<textarea name=\"pairs\" rows=\"4\" spellcheck=\"false\" \
          placeholder=\"local://ssh/fleet/app-01 | ssh://app-01.internal:22&#10;\
-         local://ssh/fleet/app-02 | ssh://app-02.internal:22\"></textarea>\
+         local://ssh/fleet/app-02 | ssh://app-02.internal:22\">{}</textarea>\
          <p class=\"muted\">Leave blank for a plain axis rule. When set, the request must match \
          one binding <em>in addition</em> to the axes above \u{2014} this is how one rule binds each \
          fleet key to its own host (D43). Each field takes the same <code>glob:</code>/<code>prefix:</code>/\
          <code>exact:</code> tags as the axes; a bare value is an exact match.</p>",
+                esc(&pairs_prefill)
+            )
     ));
     body.push_str(&format!(
         "<div class=\"grid\">{}{}</div>",
@@ -723,7 +749,30 @@ pub async fn rules_new(
             "<input name=\"session_ttl_s\" inputmode=\"numeric\" placeholder=\"300\">"
         ),
     ));
-    body.push_str("<button type=\"submit\">Validate &amp; save rule</button></form>");
+    // P2-2: the decision preview, built from the PARSED candidate rule via
+    // the same construction `rules_add` performs - so it cannot describe a
+    // rule the validator would not actually produce. Labelled "not saved
+    // yet" so an operator cannot read it as current state.
+    if let Some(candidate) = preview::candidate_rule(
+        &mech,
+        &target_prefill,
+        &agent_prefill,
+        &cred_prefill,
+        &effect_prefill,
+        &pairs_prefill,
+    ) {
+        body.push_str(&preview::preview_block(&candidate));
+    } else {
+        body.push_str(
+            "<div class=\"card\"><strong>Preview unavailable</strong><br>\
+             <span class=\"muted\">the effect is not one of allow / \
+             needs_confirmation / deny, so there is nothing valid to describe              yet.</span></div>",
+        );
+    }
+    body.push_str(
+        "<p><button type=\"submit\">Validate &amp; save rule</button> \
+         <a href=\"/policy/test\">Test a request against the saved rules \u{2192}</a></p></form>",
+    );
 
     Html(layout(
         "Add rule",
@@ -953,6 +1002,97 @@ pub async fn raw_page(
     ))
 }
 
+#[derive(Deserialize)]
+/// Form body for the P2-2 decision test box.
+pub struct TestForm {
+    agent_id: String,
+    cred_ref: String,
+    target_uri: String,
+    mechanism: String,
+}
+
+/// POST /policy/test — "what would this request do?"
+///
+/// D36: this calls `Policy::evaluate`, the SAME function the gateway calls on
+/// the live path, and renders the provenance with `DecisionSource::label` —
+/// the same string `chaperone policy-check` prints. It does not reimplement
+/// evaluation and it does not shell out to the CLI. If that ever changes, the
+/// shared impl makes the CLI/UI parity structural rather than test-enforced,
+/// and `test_box_evaluates_through_the_shared_engine` in tests/ui_http.rs is
+/// the backstop.
+pub async fn policy_test(
+    State(state): State<Arc<UiState>>,
+    Form(form): Form<TestForm>,
+) -> Html<String> {
+    let doc = std::fs::read_to_string(&state.policy_path).unwrap_or_default();
+    let mut body = String::from("<h1>Decision test</h1>");
+
+    // An unparseable policy is reported, never silently treated as
+    // default-deny: "your ruleset does not load" and "nothing permits this"
+    // are very different messages and an operator must be able to tell them
+    // apart.
+    let policy = match Policy::from_toml(&doc) {
+        Ok(p) => p,
+        Err(e) => {
+            body.push_str(&format!(
+                "<div class=\"err\">The saved policy did not load, so no verdict \
+                 can be given: {e}</div>"
+            ));
+            body.push_str("<p><a href=\"/rules\">Back to rules</a></p>");
+            return Html(layout(
+                "Decision test",
+                state.setup_pending(),
+                halted(&state).as_deref(),
+                None,
+                None,
+                &body,
+            ));
+        }
+    };
+
+    let request = chaperone_policy::Request {
+        agent_id: form.agent_id.trim(),
+        cred_ref: form.cred_ref.trim(),
+        target_uri: form.target_uri.trim(),
+        mechanism: form.mechanism.trim(),
+        declared: None,
+    };
+    let decision = policy.evaluate(&request);
+    body.push_str(&preview::verdict_block(
+        decision.effect.as_str(),
+        &decision.source.label(),
+    ));
+
+    // The form repeats the request so the operator can vary one axis and
+    // re-ask without retyping. Values are echoed back through the escaper.
+    body.push_str(&format!(
+        "<form method=\"post\" action=\"/policy/test\" class=\"card\">\
+         <input name=\"agent_id\" value=\"{}\" placeholder=\"agent:my-agent\" \
+         spellcheck=\"false\"><br>\
+         <input name=\"cred_ref\" value=\"{}\" \
+         placeholder=\"local://prod/github/token\" spellcheck=\"false\"><br>\
+         <input name=\"target_uri\" value=\"{}\" \
+         placeholder=\"https://api.github.com/user\" spellcheck=\"false\"><br>\
+         <input name=\"mechanism\" value=\"{}\" placeholder=\"http-bearer\" \
+         spellcheck=\"false\">\
+         <p><button type=\"submit\">Evaluate</button> \
+         <span class=\"muted\">runs the real engine against your saved rules; \
+         nothing is enforced and nothing is contacted</span></p></form>",
+        esc(&form.agent_id),
+        esc(&form.cred_ref),
+        esc(&form.target_uri),
+        esc(&form.mechanism),
+    ));
+    body.push_str("<p><a href=\"/rules\">Back to rules</a></p>");
+    Html(layout(
+        "Decision test",
+        state.setup_pending(),
+        halted(&state).as_deref(),
+        None,
+        None,
+        &body,
+    ))
+}
 #[derive(Deserialize)]
 /// Form body for raw policy editing.
 pub struct RawForm {

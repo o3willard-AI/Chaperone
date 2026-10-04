@@ -159,6 +159,33 @@ pub enum DecisionSource {
     },
 }
 
+impl DecisionSource {
+    /// The single rendering of "how was this verdict reached", shared by
+    /// every surface that shows it: `policy-check` JSON, the gateway's deny
+    /// reasons, and the operator UI's test box (P2-2, ruling 2).
+    ///
+    /// This lives here, on the type, rather than in either caller, so the CLI
+    /// and the UI cannot drift into two different vocabularies for the same
+    /// verdict — D36 exists to prevent exactly that, and a shared impl makes
+    /// the parity structural instead of test-enforced. The CLI keeps its JSON
+    /// envelope; only the source label is shared.
+    ///
+    /// Display/provenance only: never parsed, never a security boundary.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            DecisionSource::DefaultDeny => "default_deny".to_owned(),
+            DecisionSource::Rule { index, name, pair } => format!(
+                "rule[{index}]{}{}",
+                name.as_deref()
+                    .map(|n| format!(" ({n})"))
+                    .unwrap_or_default(),
+                pair.map_or(String::new(), |p| format!(" pair[{p}]")),
+            ),
+        }
+    }
+}
+
 /// A complete verdict (PROTO-SPEC §9.1): effect, provenance, effective
 /// ceilings.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1157,6 +1184,63 @@ mod tests {
             matches!(allowed.source, DecisionSource::Rule { index: 1, .. }),
             "{:?}",
             allowed.source
+        );
+    }
+}
+
+#[cfg(test)]
+mod decision_source_label_tests {
+    use super::*;
+
+    #[test]
+    fn source_label_renders_the_same_text_the_cli_prints() {
+        assert_eq!(DecisionSource::DefaultDeny.label(), "default_deny");
+        assert_eq!(
+            DecisionSource::Rule {
+                index: 3,
+                name: Some("ci reads github".to_owned()),
+                pair: None
+            }
+            .label(),
+            "rule[3] (ci reads github)"
+        );
+        assert_eq!(
+            DecisionSource::Rule {
+                index: 3,
+                name: None,
+                pair: Some(17)
+            }
+            .label(),
+            "rule[3] pair[17]"
+        );
+        assert_eq!(
+            DecisionSource::Rule {
+                index: 0,
+                name: Some("n".to_owned()),
+                pair: Some(2)
+            }
+            .label(),
+            "rule[0] (n) pair[2]"
+        );
+    }
+
+    #[test]
+    fn cli_json_envelope_consumes_the_shared_label() {
+        // The D36 pin: the CLI must not hand-roll this string. If someone
+        // re-introduces a second formatter, the envelope test below is the
+        // thing that notices.
+        let s = DecisionSource::Rule {
+            index: 3,
+            name: Some("ci reads github".to_owned()),
+            pair: Some(17),
+        };
+        let json = format!(
+            "{{\"effect\":\"allow\",\"source\":\"{}\",\"limits\":{{\"max_response_bytes\":null,\"session_ttl_s\":null}}}}",
+            s.label()
+        );
+        assert_eq!(
+            json,
+            r#"{"effect":"allow","source":"rule[3] (ci reads github) pair[17]","limits":{"max_response_bytes":null,"session_ttl_s":null}}"#
         );
     }
 }

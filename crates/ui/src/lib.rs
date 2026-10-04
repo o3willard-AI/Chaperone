@@ -26,6 +26,7 @@ use axum::routing::{get, post};
 
 pub mod matrix;
 pub mod pages;
+pub mod preview;
 pub mod render;
 pub mod setup;
 pub mod state;
@@ -65,6 +66,7 @@ pub fn router(state: Arc<UiState>) -> Router {
         .route("/rules/add", post(pages::rules_add))
         .route("/rules/delete", post(pages::rules_delete))
         .route("/policy/raw", get(pages::raw_page).post(pages::raw_save))
+        .route("/policy/test", post(pages::policy_test))
         .layer(middleware::from_fn_with_state(
             Arc::clone(&state),
             token_gate,
