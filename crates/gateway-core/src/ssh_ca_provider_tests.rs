@@ -3,6 +3,8 @@
 //! experiment runs in milliseconds.
 
 use super::ssh_ca::HOST_EXTENSION;
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use super::*;
 
 use std::collections::HashMap;
@@ -176,7 +178,7 @@ fn resolve_never_returns_ca_material() {
     let ctx = StubCtx::new();
     ctx.seed_ca();
     ctx.seed_agent("agent:ci");
-    let provider = SshCaProvider::new(Arc::clone(&ctx));
+    let _provider = SshCaProvider::new(Arc::clone(&ctx));
 
     for entry in ["chaperone/ca/ssh", "", "..", "anything-else"] {
         let fut = Provider::resolve(&provider, entry);
