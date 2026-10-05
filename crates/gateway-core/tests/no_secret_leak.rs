@@ -450,10 +450,14 @@ fn http_path_emits_no_diagnostics() {
 }
 
 /// S-3 surface: ERROR responses. A failed outbound call must carry no secret
-/// material either — the error path is built from redacted transport
-/// diagnostics and request-side facts, and this test proves it against a vault
-/// holding the sentinel. Connection-refused (port 1, nothing listening) forces
-/// the E_MECHANISM path with the credential already resolved and injected into
+/// material either — and as of B-4 the error path is not merely *redacted*
+/// but STRUCTURALLY incapable of carrying free-form text: `InjectorError::
+/// Transport` takes a `TransportError`, a closed enum of classified causes
+/// whose `detail()` is a `&'static str`. There is no longer a string to
+/// redact. This test still proves the observable negative end to end, because
+/// a structural argument is only worth as much as the behaviour it produces.
+/// Connection-refused (port 1, nothing listening) forces the E_MECHANISM path
+/// with the credential already resolved and injected into
 /// the request build.
 #[tokio::test]
 async fn no_secret_leak_in_error_response() {
@@ -481,3 +485,39 @@ async fn no_secret_leak_in_error_response() {
 // events feed had no Windows transport. The stub is gone — the feed is a
 // real owner-only named pipe (D44) — so surface 4 is asserted in the bearer
 // test on every platform and the skip list is empty.
+
+/// B-4 structural pin: the error path cannot carry free-form text.
+///
+/// This is the difference between S-3 option 1 (a normative sentence plus this
+/// sentinel) and S-3 option 2 (B-4: the property is a type fact). Before B-4,
+/// `InjectorError::Transport(String)` existed and a runtime word filter
+/// stripped URLs from it on the way out. Now the variant holds a
+/// `TransportError` enum, which has no payload and renders a `&'static str`.
+///
+/// The assertion here is deliberately weak on its own - it checks the rendered
+/// text of each class - because the STRONG assertion is not expressible at
+/// runtime: it is that `InjectorError::Transport("...")` does not compile.
+/// Verified by running that exact probe during implementation; rustc rejected
+/// it with `expected TransportError, found &str`. A future contributor who
+/// tries to widen the variant back to a string will be stopped by the compiler,
+/// not by a failing test.
+#[test]
+fn error_classes_are_closed_and_render_static_text() {
+    use chaperone_injectors::TransportError as T;
+    for t in [
+        T::ConnectionRefused,
+        T::Timeout,
+        T::TlsFailure,
+        T::DnsFailure,
+        T::BodyReadFailed,
+        T::RequestBuildFailed,
+        T::AuditAppendFailed,
+    ] {
+        let d = t.detail();
+        assert!(!d.is_empty());
+        assert!(
+            !d.contains("://") && !d.contains('/'),
+            "no class may render a URL or path: {d:?}"
+        );
+    }
+}

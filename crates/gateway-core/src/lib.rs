@@ -302,7 +302,14 @@ impl Gateway {
         };
         this.audit
             .append(&load_event)
-            .map_err(|e| chaperone_injectors::InjectorError::Transport(e.to_string()))?;
+            // B-4: this is an audit-append failure, not a network one, so it
+            // gets its own class rather than being misfiled as a body-read
+            // failure. The audit error's own text is not relayed.
+            .map_err(|_| {
+                chaperone_injectors::InjectorError::Transport(
+                    chaperone_injectors::TransportError::AuditAppendFailed,
+                )
+            })?;
 
         Ok(this)
     }
