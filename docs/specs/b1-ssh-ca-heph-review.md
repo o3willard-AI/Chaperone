@@ -1,0 +1,37 @@
+Verified against the actual vendored source, not docs.rs: `russh 0.60.3` (Cargo.lock checksum matches) → `internal-russh-forked-ssh-key-0.6.18+upstream-0.6.7`. Every API claim you made checks out, and the branch doc == the share draft (identical). Two things in the API you didn't flag, both load-bearing — first, then rulings.
+
+**API findings you should fold in:**
+
+1. `Builder::sign()` refuses to sign with **zero** principals — `valid_principals: None → Err(Field::ValidPrincipals)`. That's a free fail-safe for your "one principal" rule, but note the escape hatch `all_principals_valid()` is the golden-ticket path and must never be called (worth a "deny-list" test or a grep-assert in CI).
+2. `Certificate::validate(&ca_fingerprints)` is documented **"Some Assembly Required"** — it checks signature + CA-fingerprint + the valid_after/valid_before window, and does **not** check principals or critical options. So your test-2/3 validator can't just call `validate()` and be done; it must call `validate_at(t, ca_fps)` **and** then check `valid_principals()` and `critical_options()` itself. Fine, just don't let the test author assume `validate()` is complete.
+3. Minor: `authenticate_openssh_cert(user, Arc<PrivateKey>, cert)` takes a parsed `Certificate`, so the injector re-parses your `to_openssh()` string via `from_openssh` — one line of plumbing, not a blocker. And `cert_type` defaults to `CertType::User`; set it explicitly for clarity.
+
+**Rulings**
+
+**1 — TD-1 (Chaperone CA in the vault): agree.** Vault PKI behind the same `mint()` later is right, airgapped-first is right. Two adds for the slice: (a) the CA key must be **non-exportable** — no resolve path returns it, mint-only, with a test (your test 5 already aims here, make it assert the invariant directly); (b) define the bootstrap — first-use auto-create vs explicit `ca init`. Given P2-3's whole theme, I'd require explicit init (or a loud first-use "back up this key or lose your fleet" warning), because an auto-created, un-backed-up CA is the one unrecoverable state.
+
+**2 — TD-2 (sign the enrolled agent key; 300s/3600s; never forward): agree on all three.** `extensions` starts empty (verified: `OptionsMap::new()`), so omission-is-denial is sound — the `permit-*` extensions are the grant, no denylist needed. "Stolen cert alone is worthless" is correct *by construction*, not by TTL: `authenticate_openssh_cert` still requires `Arc<PrivateKey>`, and the cert binds the agent's *public* key, so possession of the private key is proven per-auth and never sent. Good.
+
+**3 — TD-3 (principal = host): disagree on the mechanism — this is the one substantive correction.** For a **user** cert (which this is — agent→host, `cert_type` defaults to User), `valid_principal` is the **login username**. The vendored builder's own doc: *"Add a principal (i.e. username or hostname)"* — "hostname" is the **host**-cert case, not yours. sshd matches a user cert's principals against the requested username; there is **no destination-host field in a user cert**. So a cert minted "for host A" is structurally usable on host B whenever B trusts the same CA and the username exists on B. `AuthorizedPrincipalsFile` maps principal→account; it does **not** bind a cert to a host. "Principal = host" gives you neither a valid account mapping nor the host binding you're claiming.
+
+The fix: **principal = the username/account** from the rule's `target_uri`; **host binding = a custom extension** (e.g. `host@chaperone` = canonical host form) enforced by a host-side `AuthorizedPrincipalsCommand` shipped in the TD-4 recipe. If you'd rather not ship that command, say so honestly and **drop the "two independent enforcement points" claim** — it becomes Chaperone-as-sole-minter only. You can't have the claim without the host-side check.
+
+**4 — TD-4 (documented recipe, not auto-config): agree in principle, but the recipe is heavier than written.** With TD-3 corrected, the snippet is not just `TrustedUserCAKeys` + a principals file — it's `TrustedUserCAKeys` **+ an `AuthorizedPrincipalsCommand`** that reads the `host@chaperone` extension and rejects mismatches. Still customer-applied, still consistent with "broker not fleet manager," just scope it honestly.
+
+**5 — TD-5 (additive; per-host keys remain): agree.** D43's deletion is a migration, not a prerequisite; forcing cutover breaks installs for zero gain. Correct.
+
+**6 — CA storage (normal vault entry): agree.** Same seal, same P2-3 warning, operator-managed backup. A differently-sealed file is a second passphrase surface for nothing. (The "compromise is worse" cost is handled in the threat model, not by splitting storage.)
+
+**7 — TTL (300/3600, ceiling not configurable up): agree.** Make test 3 deterministic — use `validate_at(fixed_timestamp, …)`, not wall-clock, so you can prove expiry and the ceiling without sleeping or racing.
+
+**Threat model — your specific question:**
+
+Nothing in it is *wrong*; "worst case is worse" is the honest, unavoidable cost of any CA, and there is **no mitigation that removes it** — that's definitionally what a CA is. But the mitigation list contains a **contradiction**: you cite "operator keeps the CA offline when possible (TD-1 alt)" while TD-1 mints online from the vault on every action. You cannot have both — an offline CA can't mint 300-second certs per action. The one structural mitigation you're missing is a **two-tier CA**: an offline *root* (key never in the vault) signing a short-lived *intermediate* that lives in the vault and does the online minting. Intermediate compromise → revoke + re-issue from root **without hosts re-trusting**. That's the only thing that changes the worst-case from "rotate everything" to "rotate the intermediate." My call: **don't build two-tier in v1** — it reintroduces exactly the operational complexity B-1 exists to remove — but rewrite that mitigation line to reference it as a future hardening, and delete the "offline CA" phrasing, which is not available in the recommended design.
+
+Two things to add to §3: (a) lead with the **probabilistic** framing, not just the caveat — worst case is worse, but it's *one* secret to protect/backup/rotate instead of 300, and recovery (rotate CA + re-trust) is bounded and fast vs 300 key rotations; that's the actual trade, and it's in your favor. (b) **CA rotation is undefined** — "revoke by rotating the CA" needs a concrete story: generate new CA, export new pubkey, dual-trust both pubkeys during transition, then drop the old. Note it as a slice item, not a footnote.
+
+**Affirmed (you got these right):** D31 host-key pinning is orthogonal and correctly preserved — the CA vouches for the agent, pinning vouches for the host. Test 1's pure-function falsifiability is correct (`sign` is pure over `(ca_key, agent_pubkey, fields)`).
+
+**Sizing:** 5.5–7.5d holds for the pieces, but the TD-3 mechanism rework (custom extension + `AuthorizedPrincipalsCommand` validator + heavier recipe) adds ~0.5–1d. Call it **~6–8.5d**.
+
+Net: 1, 2, 4, 5, 6, 7 → yes as written (with the notes); **3 → no on "principal = host", redesign as principal = username + host-binding extension**. Threat model: correct, fix the offline-CA contradiction, add the probabilistic framing and a rotation story. Want me to drop this as a written review next to the spec on the branch, or is a reply sufficient for the Stephen ruling?
