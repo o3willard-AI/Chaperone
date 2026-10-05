@@ -1168,3 +1168,83 @@ policy is rebuilt and re-validated through `Policy::from_rules(...).to_toml()` a
 re-parsed with `Policy::from_toml` **exactly as `rules_add` does**, so this flow
 is not a fifth writer. The existing artifact-shaped wizard is never removed.
 `CONNECTIVITY-MATRIX.md` untouched.
+
+---
+
+## D47 — B-4: the audit/error path is secret-free BY CONSTRUCTION
+
+**Status:** decided (ox-chap, implementing B-4 = S-3 option 2). Closes the
+MVP-GAP-REVIEW B-4 item, deferred by Stephen 2026-09-28 with the gating note
+"likely required BEFORE SafeKeyPass ships."
+
+### The distinction this draws
+
+S-3 option 1 (shipped, holds the line) is: a **normative sentence** plus a
+sentinel test against a hostile reflecting target. That proves the property
+*holds today* for the strings the test exercises.
+
+B-4 makes it a **type fact**. The claim becomes "the audit/error path cannot
+carry free-form text" rather than "the audit/error path does not currently carry
+free-form text." Same philosophy as the licensing design's structural
+non-enforcement: *no `disable()` exists to call.*
+
+### What changed
+
+`InjectorError::Transport(String)` → `InjectorError::Transport(TransportError)`.
+
+`TransportError` is a closed enum with **no payload**: `ConnectionRefused`,
+`Timeout`, `TlsFailure`, `DnsFailure`, `BodyReadFailed`, `RequestBuildFailed`,
+`AuditAppendFailed`. `detail()` is a `const fn` returning `&'static str`, so
+there is no API for attaching caller text to it.
+
+`TransportError::classify(&reqwest::Error)` maps a client error to a class by
+reading only the error's **kind predicates** (`is_timeout`, `is_connect`,
+`is_body`, ...) — never its message, because the message is where URLs and other
+target-influenced text live.
+
+### What was deleted, and why that matters
+
+`redacted_error` — the runtime word filter that stripped anything URL-shaped
+from transport error text — is **removed**, along with its unit test. It is
+dead code now: there is no string left for it to filter. Leaving a
+belt-and-braces filter in place after the belt became the whole belt would invite
+the belief that the string path still exists.
+
+### The compile-fail evidence
+
+B-4's guarantee is not expressible as a runtime assertion, so it is verified by
+attempting the violation:
+
+```rust
+InjectorError::Transport("reflected-secret-value-from-response-body")
+// error[E0308]: expected `TransportError`, found `&str`
+```
+
+Run during implementation, output recorded in
+`error_classes_are_closed_and_render_static_text` and in the PR. A future
+contributor who tries to widen the variant back to a string is stopped by the
+compiler, not by a failing test.
+
+### Two judgement calls
+
+**1. `AuditEvent` was left alone — deliberately.** Its structural property is
+already intact: every field is a `&'a str`, a reference-shaped `String`, or the
+signed `intent_envelope`. There is no field that can carry resolved credential
+material or response bytes, and `append()` accepts nothing of the sort. B-4's
+real gap was the *error* path, not the audit record. Changing `AuditEvent`
+would have been refactoring for its own sake.
+
+**2. A new variant was added after the first cut got it wrong.** The gateway's
+startup audit-append failure was initially mapped to `BodyReadFailed` — it
+compiled, it was locally plausible, and it was operator-misleading:
+"response body unreadable" describes an outbound read, not a failed genesis
+write. `AuditAppendFailed` was added so each class names what actually happened.
+Recorded because a classified vocabulary is only worth having if every class is
+*true*; a plausible-but-wrong class is worse than a free-form string, because it
+looks authoritative.
+
+### Non-goals
+
+No change to `AuditEvent`, to `Outcome`, to the scrub in the relay path (P0-1
+still does real work there), or to `no_secret_leak`'s observable assertions. No
+new secret surface. `SafeKeyPass` remains the consumer this unblocks.

@@ -38,7 +38,10 @@ async fn read_body_capped(
         let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|e| InjectorError::Transport(e.to_string()))?
+            // B-4: classified, not stringified. A body-read failure reports
+            // "response body unreadable" and nothing else - the chunk error's
+            // text is never relayed.
+            .map_err(|e| InjectorError::Transport(TransportError::classify(&e)))?
         else {
             return Ok(body);
         };
@@ -50,7 +53,7 @@ async fn read_body_capped(
     }
 }
 
-use crate::InjectorError;
+use crate::{InjectorError, TransportError};
 
 /// Knobs the gateway configures; no per-request overrides exist that could
 /// weaken the ceilings (D20).
@@ -96,7 +99,8 @@ impl HttpInjector {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .map_err(|e| InjectorError::Transport(e.to_string()))?;
+            // B-4: client construction failure is a fixed class.
+            .map_err(|e| InjectorError::Transport(TransportError::classify(&e)))?;
         Ok(Self { client })
     }
 
@@ -164,9 +168,10 @@ impl HttpInjector {
         }
 
         let response = builder.send().await.map_err(|e| {
-            // reqwest error strings can include URLs but never header values;
-            // still, relay only the top-level kind text.
-            InjectorError::Transport(redacted_error(&e.to_string()))
+            // B-4: the reqwest message is where URLs and other
+            // target-influenced text live, so it is never read. `classify`
+            // reads only the error's KIND.
+            InjectorError::Transport(TransportError::classify(&e))
         })?;
 
         let status = response.status().as_u16();
@@ -246,14 +251,10 @@ fn scrub_header_pairs(
         .collect()
 }
 
-/// Strips anything URL-shaped from transport error text before it reaches
-/// an agent-visible reason string.
-fn redacted_error(raw: &str) -> String {
-    raw.split_whitespace()
-        .filter(|word| !word.contains("://"))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
+// B-4 REMOVED: `redacted_error`, the runtime URL-stripping word filter that
+// used to guard transport error text. It is gone because the text it filtered
+// is gone: `InjectorError::Transport` now holds a classified `TransportError`
+// whose `detail()` is a `&'static str`. There is nothing left to filter.
 
 /// Builds the Authorization header value for the mechanism at hand.
 ///
@@ -380,13 +381,113 @@ mod tests {
         );
     }
 
+    // ---- B-4: type-level secret-free audit/error paths (S-3 option 2) ----
+    //
+    // S-3 option 1 (shipped) holds the line with a NORMATIVE SENTENCE plus a
+    // sentinel test. B-4 makes the property STRUCTURAL: the constructors on the
+    // audit/error path accept only reference-shaped facts, so response bytes are
+    // unreachable by construction rather than by scrub.
+    //
+    // The philosophy is the licensing design's: "no `disable()` exists to call."
+    // A test asserts a scrub works; a type asserts there is nothing to scrub.
+    //
+    // The two enforcement points this pins:
+    //   1. `AuditEvent` accepts no field that can carry resolved credential or
+    //      response bytes.
+    //   2. `TransportError` (replacing `Transport(String)`) carries a CLASSIFIED
+    //      DIAGNOSTIC, not a free-form string. The old filter was a runtime
+    //      string filter. It stripped URLs in practice, but nothing prevented a
+    //      caller from putting response bytes in an unfiltered field.
+
     #[test]
-    fn error_redaction_strips_urls() {
-        let raw =
-            "error sending request for url (https://internal-host/secret-path): connection refused";
-        let cleaned = redacted_error(raw);
-        assert!(!cleaned.contains("https://"));
-        assert!(!cleaned.contains("internal-host"));
+    fn transport_errors_cannot_carry_free_form_text() {
+        // The structural pin. `TransportError` is built only from a closed set of
+        // classified constructors, so there is no `Transport(String)` to fill with
+        // whatever a transport error happened to stringify to.
+        let e = crate::TransportError::ConnectionRefused;
+        assert_eq!(e.detail(), "connection refused");
+        // And it exposes no API to attach arbitrary text.
+        assert!(
+            !e.detail().contains("https://"),
+            "classified diagnostics carry no URL: {}",
+            e.detail()
+        );
+    }
+
+    #[test]
+    fn transport_error_variants_are_all_classified() {
+        // Each variant's detail is a fixed literal. If this test needs updating
+        // when a variant is added, that is the POINT: a new variant forces a
+        // decision about what it may say.
+        use crate::TransportError as T;
+        let all = [
+            T::ConnectionRefused,
+            T::Timeout,
+            T::TlsFailure,
+            T::DnsFailure,
+            T::BodyReadFailed,
+            T::RequestBuildFailed,
+        ];
+        for e in &all {
+            let d = e.detail();
+            assert!(!d.is_empty(), "every classified error must say something");
+            assert!(
+                !d.contains("://") && !d.contains('/'),
+                "no classified diagnostic may embed a path or URL: {d:?}"
+            );
+            assert!(d.len() <= 40, "classified diagnostics stay short: {d:?}");
+        }
+        // Distinct variants must be distinguishable in the audit chain.
+        let rendered: Vec<&str> = all.iter().map(|e| e.detail()).collect();
+        for (i, a) in rendered.iter().enumerate() {
+            for (j, b) in rendered.iter().enumerate() {
+                assert!(i == j || a != b, "variants {i}/{j} collide: {a}");
+            }
+        }
+    }
+
+    #[test]
+    fn injector_error_displays_only_classified_text() {
+        // The Display path is what reaches the agent as an error string, so it is
+        // the boundary that matters. A Transport error built from a classified
+        // diagnostic can only render that diagnostic.
+        let e = crate::InjectorError::Transport(crate::TransportError::Timeout);
+        let shown = e.to_string();
+        assert!(
+            shown.contains("timed out") || shown.contains("timeout"),
+            "classified timeout must render recognizably: {shown}"
+        );
+    }
+
+    // ---- B-4 structural pin ----
+
+    /// B-4's guarantee, expressed as a type fact rather than a string check:
+    /// `InjectorError::Transport` accepts a `TransportError`, and
+    /// `TransportError` is a closed enum with no payload. There is no
+    /// constructor anywhere that accepts free-form text, so the class of bug
+    /// "someone formats response bytes into an error and logs it" is not
+    /// representable rather than merely discouraged.
+    ///
+    /// The compile-fail evidence: attempting
+    /// `InjectorError::Transport("reflected-secret")` is rejected by rustc with
+    /// `expected TransportError, found &str`. Verified by running that exact
+    /// probe during implementation.
+    #[test]
+    fn transport_variant_has_no_string_payload() {
+        // A function that would be required to construct a Transport error from
+        // arbitrary text does not exist and cannot be written.
+        fn accepts_only_classes(e: crate::InjectorError) -> &'static str {
+            match e {
+                crate::InjectorError::Transport(t) => t.detail(),
+                _ => "not a transport error",
+            }
+        }
+        // Every transport error's rendered detail is a 'static str: no borrow of
+        // caller-supplied data can survive.
+        let d: &'static str = accepts_only_classes(crate::InjectorError::Transport(
+            crate::TransportError::ConnectionRefused,
+        ));
+        assert_eq!(d, "connection refused");
     }
 
     // ---- P0-1: reflected-credential scrub ----

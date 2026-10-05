@@ -711,18 +711,19 @@ Recorded so these do not get re-litigated in a review, and so no one
 - **B-3 — `serve --transcript`.** See P0-2 layer 3. Wanted for enterprise
   evaluation; not needed for the first credible demo.
 - **B-4 — Type-level secret-free audit/error paths (S-3 option 2, deferred by
-  Stephen 2026-09-28).** Make the S-3 property structural rather than
-  test-enforced: the audit/error constructors accept only a reference-shaped
-  facts type (e.g. an `AuditFacts` struct), so response bytes are unreachable
-  from the recording path — you cannot log what you cannot touch. Same
-  philosophy as the licensing design's structural non-enforcement ("no
-  `disable()` exists to call"). **Gating note: likely required BEFORE SafeKeyPass
-  (Chaperone Enterprise) ships** — the enterprise tier sells defensible
-  evidence to compliance buyers, and "the audit path is secret-free by
-  construction" is a materially stronger claim than "a test asserts it."
-  Moderate cost: an API refactor of the injector→audit boundary. Revisit at
-  SafeKeyPass spec time at the latest; until then S-3 option 1 (normative
-  sentence + reflecting-target sentinel coverage) holds the line.
+  Stephen 2026-09-28). SHIPPED (D47).** ~~Make the S-3 property structural
+  rather than test-enforced~~ — **DONE, 2026-10-03.** `InjectorError::Transport`
+  now holds a closed `TransportError` enum with no payload and a
+  `detail() -> &'static str`, replacing the `Transport(String)` that the runtime
+  word filter `redacted_error` used to guard; that filter is deleted as dead
+  code. `InjectorError::Transport("...")` no longer compiles, so the "someone
+  formats response bytes into an error" class of bug is unrepresentable rather
+  than discouraged. `AuditEvent` was examined and left unchanged: its fields are
+  already all reference-shaped, so it was never the gap. **Gating note
+  satisfied** — SafeKeyPass can now claim the audit/error path is secret-free
+  *by construction*, not merely by test. Recorded in **D47**; compile-fail
+  evidence in the PR and in
+  `error_classes_are_closed_and_render_static_text`.
 
 **Decide-during-spec (raised in review of this document, 2026-09-26; each is a
 design decision the fix-shape sections above deliberately leave open, recorded
@@ -796,8 +797,9 @@ three have since been ruled by Stephen, 2026-09-28):**
     platform instead of the unix-only `UnixStream::pair()` shortcut.
 - **S-3 — Audit-path assertion in the P0-1 scrub (P0-1/P0-2 boundary).
   RESOLVED (Stephen, 2026-09-28): option 1 now — normative sentence +
-  sentinel coverage; option 2 (type-level enforcement) deferred to backlog
-  B-4, likely required before SafeKeyPass ships.** Concretely:
+  sentinel coverage; option 2 (type-level enforcement) was deferred to backlog
+  B-4 and has since SHIPPED as D47 (2026-10-03) — the gating note is
+  satisfied.** Concretely:
   - The spec carries one normative sentence: *"No audit record, error string,
     log line, or event-feed payload may incorporate response bytes (headers or
     body) from which the resolved secret could be reconstructed; error and
@@ -810,8 +812,11 @@ three have since been ruled by Stephen, 2026-09-28):**
   - P0-2's sentinel test asserts the audit-record and error-response surfaces
     against the **reflecting target** (P0-1's hostile endpoint), so any future
     response-echoing error or record path fails the test immediately.
-  - Structural hardening (constructors that cannot receive response bytes) is
-    B-4, with the SafeKeyPass gating note recorded there.
+  - Structural hardening (constructors that cannot receive response bytes) was
+    B-4 and **SHIPPED as D47**: `InjectorError::Transport` now takes a
+    payload-free `TransportError` enum, and the old URL-stripping word filter is
+    deleted. The compile-time refusal is the enforcement; S-3 option 1's
+    sentinel remains as the observable end-to-end proof.
 
 ---
 
@@ -846,7 +851,8 @@ down, not when code lands. All three are decided (Stephen, 2026-09-28): S-1
 (no-relay-of-echo), S-2 (skip-with-record per-platform surfaces plus stub
 error-string assertions — since superseded in part by D44/P1-1 item 3: the
 skip list is now empty and the stub is gone), S-3 (normative sentence plus
-reflecting-target sentinel coverage; structural hardening deferred to B-4).
+reflecting-target sentinel coverage; structural hardening was B-4 and
+**shipped as D47** — `Transport(String)` no longer compiles).
 
 Treat P0 items as blocking any demo to anyone outside the current contributor
 set — not because the system is unsafe without them, but because P0-1 and P0-2
