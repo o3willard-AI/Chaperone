@@ -3,7 +3,6 @@
 //! experiment runs in milliseconds.
 
 use super::*;
-use chaperone_vault::SecretString;
 use rand_core::RngCore as _;
 
 use std::collections::HashMap;

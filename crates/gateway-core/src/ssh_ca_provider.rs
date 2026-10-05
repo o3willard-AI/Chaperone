@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use chaperone_vault::provider::{Provider, ResolveError, SecretFuture};
 
-use super::ssh_ca::{self, HOST_EXTENSION, MintError, MintRequest, MintedCert};
+use super::ssh_ca::{self, MintError, MintRequest, MintedCert};
 
 /// The vault entry holding the CA keypair (TD-1, ruled).
 pub const CA_ENTRY: &str = "chaperone/ca/ssh";
