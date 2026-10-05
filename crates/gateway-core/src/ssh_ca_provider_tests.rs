@@ -2,8 +2,8 @@
 //! Offline; the ctx stub is a HashMap-backed vault, so every revert
 //! experiment runs in milliseconds.
 
+use super::ssh_ca::HOST_EXTENSION;
 use super::*;
-use rand_core::RngCore as _;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -89,11 +89,13 @@ fn mint_for_produces_a_cert_bound_to_the_cred_ref_host() {
         .mint_for(
             "ca://app-01.internal",
             &id,
-            "agent:ci",
-            "m-1",
-            "deploy",
-            false,
-            300,
+            &MintIntent {
+                agent_id: "agent:ci",
+                msg_id: "m-1",
+                username: "deploy",
+                want_pty: false,
+                ttl_secs: 300,
+            },
         )
         .unwrap();
 
@@ -120,28 +122,21 @@ fn falsifiable_a_different_cred_ref_host_binds_a_different_host_extension() {
     let provider = SshCaProvider::new(Arc::clone(&ctx));
     let id = ctx.agent_identity("agent:ci").unwrap().unwrap();
 
-    let a = provider
-        .mint_for(
-            "ca://app-01.internal",
+    let mint = |host: &str| {
+        provider.mint_for(
+            host,
             &id,
-            "agent:ci",
-            "m-1",
-            "deploy",
-            false,
-            300,
+            &MintIntent {
+                agent_id: "agent:ci",
+                msg_id: "m-1",
+                username: "deploy",
+                want_pty: false,
+                ttl_secs: 300,
+            },
         )
-        .unwrap();
-    let b = provider
-        .mint_for(
-            "ca://app-02.internal",
-            &id,
-            "agent:ci",
-            "m-1",
-            "deploy",
-            false,
-            300,
-        )
-        .unwrap();
+    };
+    let a = mint("ca://app-01.internal").unwrap();
+    let b = mint("ca://app-02.internal").unwrap();
     assert_ne!(a.cert_openssh.expose(), b.cert_openssh.expose());
 }
 
@@ -154,7 +149,17 @@ fn non_initialized_ca_is_refused_with_not_initialized() {
     let id = ctx.agent_identity("agent:ci").unwrap().unwrap();
     assert_eq!(
         provider
-            .mint_for("ca://h", &id, "agent:ci", "m", "deploy", false, 300)
+            .mint_for(
+                "ca://h",
+                &id,
+                &MintIntent {
+                    agent_id: "agent:ci",
+                    msg_id: "m",
+                    username: "deploy",
+                    want_pty: false,
+                    ttl_secs: 300,
+                },
+            )
             .err(),
         Some(CaError::NotInitialized)
     );
@@ -222,11 +227,13 @@ fn mint_works_after_init_without_any_other_setup() {
         .mint_for(
             "ca://h.internal",
             &id,
-            "agent:ci",
-            "m-1",
-            "deploy",
-            false,
-            300,
+            &MintIntent {
+                agent_id: "agent:ci",
+                msg_id: "m-1",
+                username: "deploy",
+                want_pty: false,
+                ttl_secs: 300,
+            },
         )
         .unwrap();
     assert!(cert.cert_openssh.expose().starts_with("ssh-"));
@@ -240,7 +247,17 @@ fn bad_cred_refs_are_refused() {
     let provider = SshCaProvider::new(Arc::clone(&ctx));
     let id = ctx.agent_identity("agent:ci").unwrap().unwrap();
     for bad in ["", "ca://", "ca://host:22", "ca://a/b", "notca://host"] {
-        let result = provider.mint_for(bad, &id, "agent:ci", "m", "deploy", false, 300);
+        let result = provider.mint_for(
+            bad,
+            &id,
+            &MintIntent {
+                agent_id: "agent:ci",
+                msg_id: "m",
+                username: "deploy",
+                want_pty: false,
+                ttl_secs: 300,
+            },
+        );
         assert!(result.is_err(), "cred_ref {bad:?} must be refused");
     }
 }
@@ -290,7 +307,17 @@ fn falsifiable_mint_uses_the_vault_ca_not_a_fresh_one() {
     let provider = SshCaProvider::new(Arc::clone(&ctx));
     let id = ctx.agent_identity("agent:ci").unwrap().unwrap();
     let a = provider
-        .mint_for("ca://h", &id, "agent:ci", "m-1", "deploy", false, 300)
+        .mint_for(
+            "ca://h",
+            &id,
+            &MintIntent {
+                agent_id: "agent:ci",
+                msg_id: "m-1",
+                username: "deploy",
+                want_pty: false,
+                ttl_secs: 300,
+            },
+        )
         .unwrap();
 
     // Replace the CA entry with a different key.
@@ -299,7 +326,17 @@ fn falsifiable_mint_uses_the_vault_ca_not_a_fresh_one() {
     ctx.vault.lock().unwrap().insert(CA_ENTRY.to_owned(), text2);
 
     let b = provider
-        .mint_for("ca://h", &id, "agent:ci", "m-1", "deploy", false, 300)
+        .mint_for(
+            "ca://h",
+            &id,
+            &MintIntent {
+                agent_id: "agent:ci",
+                msg_id: "m-1",
+                username: "deploy",
+                want_pty: false,
+                ttl_secs: 300,
+            },
+        )
         .unwrap();
     assert_ne!(
         a.cert_openssh.expose(),

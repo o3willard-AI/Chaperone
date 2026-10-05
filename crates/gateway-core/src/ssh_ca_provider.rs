@@ -88,6 +88,21 @@ impl From<MintError> for CaError {
     }
 }
 
+/// The intent-side inputs to a mint, all reference-shaped (B-4 discipline).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MintIntent<'a> {
+    /// Enrolled agent identity.
+    pub agent_id: &'a str,
+    /// Correlation id from the intent envelope.
+    pub msg_id: &'a str,
+    /// The username/account parsed from the rule-bound target (TD-3).
+    pub username: &'a str,
+    /// Whether the intent requested a pty.
+    pub want_pty: bool,
+    /// Requested TTL seconds; above the ruled ceiling is an error.
+    pub ttl_secs: u64,
+}
+
 /// One resolved agent identity for minting: the enrolled key text plus the
 /// sponsor's stable id (RAE L0 evidence in the key id path).
 #[derive(Debug, Clone)]
@@ -136,11 +151,7 @@ impl<C: CaContext> SshCaProvider<C> {
         &self,
         cred_ref: &str,
         identity: &AgentIdentity,
-        agent_id: &str,
-        msg_id: &str,
-        username: &str,
-        want_pty: bool,
-        ttl_secs: u64,
+        intent: &MintIntent<'_>,
     ) -> Result<MintedCert, CaError> {
         let host = cred_ref.strip_prefix("ca://").ok_or(CaError::BadCredRef)?;
         let host = host.trim();
@@ -153,12 +164,12 @@ impl<C: CaContext> SshCaProvider<C> {
             .map_err(|_| CaError::CaKeyInvalid)?;
 
         let req = MintRequest {
-            agent_id,
-            msg_id,
-            username,
+            agent_id: intent.agent_id,
+            msg_id: intent.msg_id,
+            username: intent.username,
             host,
-            want_pty,
-            ttl_secs,
+            want_pty: intent.want_pty,
+            ttl_secs: intent.ttl_secs,
         };
         Ok(ssh_ca::sign_crt(
             &ca_key,
