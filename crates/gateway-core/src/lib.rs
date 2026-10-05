@@ -43,6 +43,7 @@ pub mod privilege;
 pub mod session;
 #[cfg(feature = "ssh")]
 pub mod ssh;
+pub mod ssh_ca;
 
 pub use console::ConsoleHub;
 #[cfg(feature = "postgres")]
