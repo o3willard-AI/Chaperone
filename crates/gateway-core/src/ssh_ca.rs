@@ -25,7 +25,11 @@ use rand_core::{OsRng, RngCore};
 /// The minted credential: cert text in OpenSSH format, zeroized on drop like
 /// any secret. Short-lived is not permission to leak it.
 pub struct MintedCert {
+    /// The cert in OpenSSH one-line format. Credential material: zeroized on
+    /// drop, never logged, never serialized by mistake.
     pub cert_openssh: SecretString,
+    /// The `chaperone:<agent_id>:<msg_id>` correlation id; the audit chain
+    /// can join a cert to its decision through this.
     pub key_id: String,
 }
 

@@ -1,8 +1,7 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use super::*;
 use chaperone_vault::SecretString;
-#[allow(unused_imports)]
-use rand_core::OsRng as _OsRng;
-use rand_core::RngCore as _;
 
 /// A random Ed25519 CA key built from the fork's own from_bytes constructors
 /// (no rand_core version clash: our OsRng is 0.6, the fork's CryptoRng is 0.10).
@@ -49,8 +48,7 @@ fn req() -> MintRequest<'static> {
 }
 
 fn parse(cert: &MintedCert) -> russh::keys::Certificate {
-    russh::keys::Certificate::from_openssh(cert.cert_openssh.expose())
-        .expect("minted cert must parse")
+    russh::keys::Certificate::from_openssh(cert.cert_openssh.expose()).unwrap()
 }
 
 // ---- Test 1 + field pins ----
