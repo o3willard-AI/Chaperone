@@ -107,6 +107,7 @@ pub struct MintIntent<'a> {
 /// sponsor's stable id (RAE L0 evidence in the key id path).
 #[derive(Debug, Clone)]
 pub struct AgentIdentity {
+    /// Enrolled agent identity (RAE L0).
     pub agent_id: String,
     /// The enrolled public key, base64url Ed25519 (32 bytes).
     pub public_key_b64url: String,
@@ -138,6 +139,7 @@ pub struct SshCaProvider<C: CaContext> {
 }
 
 impl<C: CaContext> SshCaProvider<C> {
+    /// Wraps a context.
     #[must_use]
     pub fn new(ctx: Arc<C>) -> Self {
         Self { ctx }

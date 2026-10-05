@@ -178,7 +178,7 @@ fn resolve_never_returns_ca_material() {
     let ctx = StubCtx::new();
     ctx.seed_ca();
     ctx.seed_agent("agent:ci");
-    let _provider = SshCaProvider::new(Arc::clone(&ctx));
+    let provider = SshCaProvider::new(Arc::clone(&ctx));
 
     for entry in ["chaperone/ca/ssh", "", "..", "anything-else"] {
         let fut = Provider::resolve(&provider, entry);
