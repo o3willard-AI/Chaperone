@@ -7,6 +7,9 @@
 //! Host/Origin guard (D40), and the per-instance access token gate (D41).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+// A failing assert IS the test result; `panic!` with the offending page
+// attached is the clearest way to report one here.
+#![allow(clippy::panic)]
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -1291,4 +1294,111 @@ async fn connect_flow_is_not_a_simulation() {
         !page.contains("ghp_TOPSECRET"),
         "the test command must never carry the secret value: {page}"
     );
+}
+
+// ---- P2-3: vault-passphrase irreversibility, surfaced at creation time ----
+//
+// The local vault has no recovery path. That is a defensible design choice and
+// D19 argues it adequately; the finding is about WHEN the operator learns it.
+// Today they learn it at rotation or recovery time - the worst moment, and the
+// one that converts a design choice into a betrayal. P2-3 moves it to the
+// moment it is actionable: before the passphrase field, not after.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn vault_creation_states_irreversibility_before_the_passphrase_field() {
+    // Acceptance: the irreversibility statement and the backup pointer appear
+    // on the vault-creation step, BEFORE the passphrase field. The ordering is
+    // the whole point: a warning after the field is a confirmation dialog, and
+    // a confirmation dialog gets dismissed.
+    let t = app().await;
+    let c = t.cookie();
+    let (_, page) = http(t.port, "GET", "/setup", &[], None, Some(&c)).await;
+
+    // Both must EXIST, and the warning must come first. Asserting the
+    // ordering alone (via is_some_and) would pass if the passphrase field
+    // disappeared entirely - which is exactly what happened during the
+    // falsifiability run: a bad slice deleted the field and the test went
+    // quiet instead of failing. Presence is asserted separately on purpose.
+    let warn_at = page
+        .find("no recovery")
+        .unwrap_or_else(|| panic!("no irreversibility statement at all: {page}"));
+    let field_at = page
+        .find("name=\"passphrase\"")
+        .unwrap_or_else(|| panic!("no passphrase field at all: {page}"));
+    assert!(
+        warn_at < field_at,
+        "the warning must come BEFORE the passphrase field \
+         (warning at {warn_at}, field at {field_at})"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn vault_creation_names_the_backup_procedure() {
+    // "Lost passphrase = lost secrets" is only half the information. The
+    // operator also needs to know what TO DO, which is why the guide pointer
+    // must be in the same breath rather than a link to be discovered later.
+    let t = app().await;
+    let c = t.cookie();
+    let (_, page) = http(t.port, "GET", "/setup", &[], None, Some(&c)).await;
+    // Anchored on "Full procedure:" - a bare "LOCAL-VAULT-GUIDE" also occurs in
+    // the heading's dead `href="#" title=...`, so an unanchored assertion
+    // passes even when the backup pointer is gone. Verified: deleting the
+    // backup sentence left this test green until it was anchored.
+    assert!(
+        page.contains("Full procedure: LOCAL-VAULT-GUIDE"),
+        "the backup pointer must be named in the warning itself: {page}"
+    );
+    // And it must say what to DO, not merely point at a file.
+    assert!(
+        page.contains("Backing up") && page.contains("copying the sealed file"),
+        "the warning must state the backup procedure, not just cite a document: {page}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn vault_warning_disappears_once_the_vault_exists() {
+    // The warning is about a decision the operator is making NOW. Once the
+    // vault exists the decision is behind them, and leaving it up would train
+    // operators to read past exactly the sentence meant to stop them.
+    let t = app().await;
+    let c = t.cookie();
+    http(
+        t.port,
+        "POST",
+        "/setup/vault",
+        &[],
+        Some(&form(&[
+            ("passphrase", "hunter22"),
+            ("confirm", "hunter22"),
+        ])),
+        Some(&c),
+    )
+    .await;
+
+    let (_, page) = http(t.port, "GET", "/setup", &[], None, Some(&c)).await;
+    assert!(
+        !page.contains("no recovery"),
+        "the creation-time warning must not linger after the vault exists: {page}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn vault_warning_is_not_a_modal_or_a_block() {
+    // The gap review is explicit: "not a modal, not a scare screen - a
+    // sentence." A blocking dialog or a required acknowledgement checkbox is
+    // the failure mode this item exists to avoid, so both are pinned here.
+    let t = app().await;
+    let c = t.cookie();
+    let (_, page) = http(t.port, "GET", "/setup", &[], None, Some(&c)).await;
+    for forbidden in [
+        "<dialog",
+        "confirm(",
+        "required>Irreversible",
+        "type=\"checkbox\"",
+    ] {
+        assert!(
+            !page.contains(forbidden),
+            "the warning must be a sentence, not an interstitial ({forbidden}): {page}"
+        );
+    }
 }

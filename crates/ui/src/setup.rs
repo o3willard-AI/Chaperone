@@ -73,6 +73,32 @@ pub async fn page(
         esc(&state.vault_path.display().to_string())
     ));
     if !prov.vault {
+        // P2-3: the vault has no recovery path, and the operator must learn
+        // that at the moment they choose the passphrase - not at rotation or
+        // recovery time, which is the worst possible moment and the one that
+        // turns a defensible design choice (D19) into a betrayal.
+        //
+        // One sentence, before the field, naming what to do about it. Per the
+        // gap review: NOT a modal, NOT a scare screen, and no acknowledgement
+        // checkbox - a blocking interstitial is exactly the thing operators
+        // learn to dismiss. Pinned by
+        // `vault_warning_is_not_a_modal_or_a_block`.
+        // The backup procedure is INLINED rather than linked: the UI serves no
+        // docs route, so a link here would be a dead end at the exact moment
+        // the operator most needs the answer. The existing "guide" link on the
+        // heading is `href="#"` for the same reason. Naming the file and the
+        // section keeps it findable in the repo while the procedure itself is
+        // readable in place.
+        body.push_str(
+            "<div class=\"err\"><strong>There is no recovery path for this \
+             vault.</strong> If you lose this passphrase the secrets inside are \
+             gone \u{2014} no reset, no backdoor, no support escalation; that \
+             absence is the security model working, not an oversight. \
+             <strong>Backing up</strong> means copying the sealed file itself \
+             somewhere safe (it stays encrypted, and a copy still needs this \
+             passphrase to open). Full procedure: LOCAL-VAULT-GUIDE.md \
+             \u{a7}6.</div>",
+        );
         body.push_str(
             "<form method=\"post\" action=\"/setup/vault\">\
              <p><label>Passphrase<br><input type=\"password\" name=\"passphrase\" autocomplete=\"new-password\" required></label></p>\
