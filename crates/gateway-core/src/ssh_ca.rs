@@ -86,6 +86,20 @@ impl std::fmt::Display for MintError {
 
 impl std::error::Error for MintError {}
 
+impl MintError {
+    /// The fixed detail text (the Display mapping, exposed as a const-shaped
+    /// accessor for callers that compose classified messages).
+    #[must_use]
+    pub const fn detail(&self) -> &'static str {
+        match self {
+            MintError::TtlAboveCeiling => "requested TTL exceeds the ruled ceiling",
+            MintError::BadAgentKey => "agent key is not a parseable Ed25519 public key",
+            MintError::EmptyField => "agent id, username, and host are all required",
+            MintError::BadCaKey => "CA key material did not parse",
+        }
+    }
+}
+
 /// Mints a user certificate binding the agent's enrolled public key to the
 /// request's identity fields, signed by the CA key.
 ///
