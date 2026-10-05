@@ -17,8 +17,15 @@ use chaperone_vault::VaultRouter;
 /// per-host path uses (fresh per mint, D5), identity lookups through the
 /// enrollment store (RAE L0).
 pub struct GatewayCaContext {
+    /// Unused today: the CA entry is read through `local_entry_secret`
+    /// directly (the local vault is the CA's home per TD-1). Kept as the
+    /// router hook for a future Vault-PKI backend behind the same trait
+    /// (D29's post-v1 plan).
+    #[allow(dead_code)]
     pub vault: Arc<VaultRouter>,
+    /// The opened local vault — the CA entry's home and sealing domain.
     pub local_entry_secret: Arc<std::sync::RwLock<Option<chaperone_vault::SharedVault>>>,
+    /// The enrollment store: the agent's key to certify (RAE L0).
     pub enrollment: Arc<EnrollmentStore>,
 }
 

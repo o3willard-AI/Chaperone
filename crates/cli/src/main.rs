@@ -1157,14 +1157,14 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
     {
         let ca_ctx = Arc::new(chaperone_gateway_core::ssh_ca_gateway::GatewayCaContext {
             vault: Arc::new(chaperone_vault::VaultRouter::new()),
-            local_entry_secret: std::sync::Arc::new(std::sync::RwLock::new(
-                Some(shared_vault.clone()),
-            )),
+            local_entry_secret: std::sync::Arc::new(std::sync::RwLock::new(Some(
+                shared_vault.clone(),
+            ))),
             enrollment: enrollment_for_ca,
         });
-        let ca = Arc::new(
-            chaperone_gateway_core::ssh_ca_provider::SshCaProvider::new(ca_ctx),
-        );
+        let ca = Arc::new(chaperone_gateway_core::ssh_ca_provider::SshCaProvider::new(
+            ca_ctx,
+        ));
         if ca.initialized().map_err(|e| e.to_string())? {
             gateway_core = gateway_core.with_ssh_ca(ca);
         }
