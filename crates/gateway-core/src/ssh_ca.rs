@@ -100,6 +100,38 @@ impl MintError {
     }
 }
 
+/// Generates a fresh CA keypair, returned as OpenSSH text (the vault entry
+/// format) plus the public key line (for sshd `TrustedUserCAKeys`).
+///
+/// Used by `chaperone ca-init` only — never called on the mint path.
+pub fn generate_ca() -> Result<(String, String), MintError> {
+    let mut seed = [0u8; 32];
+    rand_core::OsRng.fill_bytes(&mut seed);
+    let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let kp = russh::keys::ssh_key::private::Ed25519Keypair {
+        public: russh::keys::ssh_key::public::Ed25519PublicKey(signing.verifying_key().to_bytes()),
+        private: russh::keys::ssh_key::private::Ed25519PrivateKey::from_bytes(&seed),
+    };
+    let key = russh::keys::PrivateKey::from(kp);
+    let private_text = key
+        .to_openssh(russh::keys::ssh_key::LineEnding::LF)
+        .map_err(|_| MintError::BadCaKey)?
+        .to_string();
+    let public_line = key
+        .public_key()
+        .to_openssh()
+        .map_err(|_| MintError::BadCaKey)?;
+    Ok((private_text, public_line))
+}
+
+/// The public key line for a stored CA private key (for sshd
+/// `TrustedUserCAKeys`). Refuses non-parsing material.
+#[must_use]
+pub fn ca_public_line(private_text: &str) -> Option<String> {
+    let key = russh::keys::PrivateKey::from_openssh(private_text.as_bytes()).ok()?;
+    key.public_key().to_openssh().ok()
+}
+
 /// Mints a user certificate binding the agent's enrolled public key to the
 /// request's identity fields, signed by the CA key.
 ///

@@ -180,6 +180,11 @@ impl<C: CaContext> SshCaProvider<C> {
         )?)
     }
 
+    /// Looks up the agent's enrolled identity through the context (RAE L0).
+    pub fn agent_identity(&self, agent_id: &str) -> Result<Option<AgentIdentity>, CaError> {
+        self.ctx.agent_identity(agent_id)
+    }
+
     /// Whether the CA exists. The UI/CLI `ca-init` gate consults this.
     pub fn initialized(&self) -> Result<bool, CaError> {
         Ok(self.ctx.read_ca_entry()?.is_some())

@@ -52,6 +52,11 @@ LOCAL VAULT (operator CRUD):
     chaperone vault-list  --store <FILE> [--passphrase-stdin]
     chaperone vault-del   --store <FILE> --path <P> [--passphrase-stdin]
 
+SSH CERTIFICATE AUTHORITY (B-1; certs for ca:// cred_refs):
+    chaperone ca-init      --store <FILE> [--passphrase-stdin]
+    chaperone ca-export    --store <FILE> [--passphrase-stdin]
+                           (prints the CA PUBLIC key for sshd TrustedUserCAKeys)
+
 UI ACCESS TOKEN (required before the config UI serves; D41):
     chaperone ui-token show   --token <PATH>
     chaperone ui-token rotate --token <PATH>
@@ -617,6 +622,66 @@ fn cmd_vault_init(flags: &Flags) -> Result<(), String> {
     Ok(())
 }
 
+/// B-1: creates the SSH CA keypair in the vault (ruled: EXPLICIT bootstrap,
+/// never lazy; the caller owns the irreversibility warning, P2-3 discipline).
+/// Idempotent — an existing CA is never clobbered.
+fn cmd_ca_init(flags: &Flags) -> Result<(), String> {
+    let mut vault = open_vault(flags)?;
+    let list = vault.list().map_err(|e| e.to_string())?;
+    if list
+        .iter()
+        .any(|p| p == chaperone_gateway_core::ssh_ca_provider::CA_ENTRY)
+    {
+        println!(
+            "CA already exists at local://{} — not replaced. Rotation is an \
+             explicit operator procedure (dual-trust recipe: \
+             docs/specs/b1-ssh-ca-spec.md).",
+            chaperone_gateway_core::ssh_ca_provider::CA_ENTRY
+        );
+        return Ok(());
+    }
+    let (private_text, public_line) =
+        chaperone_gateway_core::ssh_ca::generate_ca().map_err(|e| e.to_string())?;
+    vault
+        .set(
+            chaperone_gateway_core::ssh_ca_provider::CA_ENTRY,
+            chaperone_vault::SecretString::new(private_text),
+        )
+        .map_err(|e| e.to_string())?;
+    println!(
+        "created SSH CA at local://{} (sealed with the vault).",
+        chaperone_gateway_core::ssh_ca_provider::CA_ENTRY
+    );
+    println!(
+        "THERE IS NO RECOVERY PATH: this key signs every ca:// certificate. \
+         Lose the vault passphrase and your fleet's CA is gone — no reset, no \
+         backdoor.\nBack up the sealed vault file now (LOCAL-VAULT-GUIDE.md \
+         §6), then run `chaperone ca-export` to get the public key for sshd \
+         TrustedUserCAKeys."
+    );
+    Ok(())
+}
+
+/// B-1: prints the CA PUBLIC key line for the host's sshd_config
+/// (TrustedUserCAKeys). The private key never leaves the vault.
+fn cmd_ca_export(flags: &Flags) -> Result<(), String> {
+    let vault = open_vault(flags)?;
+    let value = vault
+        .get(chaperone_gateway_core::ssh_ca_provider::CA_ENTRY)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "no SSH CA in this vault; run `chaperone ca-init` first".to_owned())?;
+    let key = russh_ca_public_of(value.expose())
+        .ok_or_else(|| "the stored CA key is not a parseable SSH private key".to_owned())?;
+    println!("{key}");
+    Ok(())
+}
+
+/// The CA public key line, extracted without exposing the private key text
+/// beyond this call. Lives in gateway-core so the CLI stays crypto-thin.
+fn russh_ca_public_of(private_text: &str) -> Option<String> {
+    chaperone_gateway_core::ssh_ca::ca_public_line(private_text)
+}
+
 fn cmd_vault_set(flags: &Flags) -> Result<(), String> {
     let entry = flags.require("path")?;
     let mut vault = open_vault(flags)?;
@@ -1085,6 +1150,26 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
 
+    let enrollment_for_ca = Arc::clone(&enrollment);
+    // B-1: when the vault holds an SSH CA, wire the minter so `ca://`
+    // cred_refs mint short-lived certs (TD-5 additive: no CA entry = no
+    // change in behaviour). Serving auto-creates nothing (explicit init).
+    {
+        let ca_ctx = Arc::new(chaperone_gateway_core::ssh_ca_gateway::GatewayCaContext {
+            vault: Arc::new(chaperone_vault::VaultRouter::new()),
+            local_entry_secret: std::sync::Arc::new(std::sync::RwLock::new(
+                Some(shared_vault.clone()),
+            )),
+            enrollment: enrollment_for_ca,
+        });
+        let ca = Arc::new(
+            chaperone_gateway_core::ssh_ca_provider::SshCaProvider::new(ca_ctx),
+        );
+        if ca.initialized().map_err(|e| e.to_string())? {
+            gateway_core = gateway_core.with_ssh_ca(ca);
+        }
+    }
+
     // SSH host-key policy: pin store (preferred), explicit trust-all, or
     // strict refusal.
     let host_key_policy = if let Some(kh_path) = flags.values.get("ssh-known-hosts").cloned() {
@@ -1347,6 +1432,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "audit-export" => cmd_audit_export(&flags),
         "doctor" => cmd_doctor(&flags),
         "vault-init" => cmd_vault_init(&flags),
+        "ca-init" => cmd_ca_init(&flags),
+        "ca-export" => cmd_ca_export(&flags),
         "vault-set" => cmd_vault_set(&flags),
         "vault-get" => cmd_vault_get(&flags),
         "vault-list" => cmd_vault_list(&flags),
