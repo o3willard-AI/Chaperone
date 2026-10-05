@@ -269,7 +269,7 @@ fn unenrolled_agent_is_refused() {
     // RAE L0: no enrolled key, nothing to certify. Refused upstream of mint.
     let ctx = StubCtx::new();
     ctx.seed_ca();
-    let provider = SshCaProvider::new(Arc::clone(&ctx));
+    let _provider = SshCaProvider::new(Arc::clone(&ctx));
     assert!(
         ctx.agent_identity("agent:ghost").unwrap().is_none(),
         "the stub must not invent identities"
