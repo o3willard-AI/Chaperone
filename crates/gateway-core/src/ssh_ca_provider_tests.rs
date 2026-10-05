@@ -2,9 +2,9 @@
 //! Offline; the ctx stub is a HashMap-backed vault, so every revert
 //! experiment runs in milliseconds.
 
-use super::ssh_ca::HOST_EXTENSION;
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use super::ssh_ca::HOST_EXTENSION;
 use super::*;
 
 use std::collections::HashMap;
