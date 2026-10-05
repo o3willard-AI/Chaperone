@@ -2,7 +2,8 @@
 
 Author: ox-chap (Hermes, host 192.168.101.11)
 Date: 2026-10-04
-Status: **DRAFT — for review by Heph, then ruling by Stephen**
+Status: **Heph-reviewed (2026-10-05) — TD-3 redesigned, awaiting Stephen's ruling.**
+Review: `b1-ssh-ca-heph-review.md` (same directory, verbatim).
 Branch: `docs/b1-ca-spec` (this document)
 
 Source items: MVP-GAP-REVIEW **B-1** (deferred with reason), D29 (Vault PKI
@@ -52,6 +53,17 @@ to use B-1 at all. **Plan: Chaperone-owned CA now, Vault PKI as a provider
 behind the same `mint()` signature later.** The trait change is identical; only
 the backend differs.
 
+**Two adds from Heph's review (2026-10-05):**
+
+1. **The CA key is non-exportable.** No resolve path returns it; mint-only.
+   Acceptance test 5 asserts the invariant directly (a resolve of the CA entry
+   is refused) rather than inferring it.
+2. **Bootstrap is explicit** — `chaperone ca-init`, not first-use auto-create.
+   An auto-created, un-backed-up CA is the one unrecoverable state, and P2-3's
+   whole theme says the operator must choose to create it and be warned in the
+   same breath. The init command carries the same irreversibility statement the
+   vault-creation step does.
+
 *Rejected:* OS trust stores / sshd `TrustedUserCAKeys` pointing at a
  remotely-provisioned CA — out of scope, and airgapped-first customers (the
  licensing stance) cannot fetch one.
@@ -92,31 +104,69 @@ before drafting further):** everything this design needs exists.
   not a protocol implementation. Note the agent's private key is still required
   per auth: the cert extends the key, it does not replace it — which is what
   makes "stolen cert alone is worthless" true by construction.
-- `Certificate::validate(&ca_fingerprints)` — exists for the receiving side
-  (tests, and any future host-side tooling).
+- `Certificate::validate(&ca_fingerprints)` — exists for the receiving side,
+  but is documented **"some assembly required"**: it checks signature +
+  CA-fingerprint + validity window, and does **NOT** check principals or
+  critical options. Any validator (including acceptance tests 2/3) must call
+  `validate_at(fixed_t, ca_fps)` and then check `valid_principals()` and
+  `critical_options()` itself. Wall-clock is not used in tests —
+  `validate_at` with a fixed timestamp makes expiry deterministic.
+- **`Builder::sign()` refuses zero principals** (`valid_principals: None` →
+  `Err(Field::ValidPrincipals)`) — a free fail-safe for the one-principal
+  rule. The escape hatch `all_principals_valid()` is the golden-ticket path;
+  a CI grep-assert must keep it uncalled.
+- `Builder::cert_type` defaults to `CertType::User`; set it explicitly for
+  clarity. `authenticate_openssh_cert` takes a parsed `Certificate`, so the
+  injector re-parses the `to_openssh()` string via `from_openssh` — one line
+  of plumbing.
 
 Falsifiability note: acceptance test 1's revert experiment is real because
 signing is a pure function over `(ca_key, agent_pubkey, fields)` — no network
 required, so a test can break the signer and observe a parse failure.
 
-### TD-3 — How does sshd authorize the cert? Principals = host.
+### TD-3 — How does sshd authorize the cert? **REDESIGNED per Heph's review.**
 
-**Recommendation: the certificate's principal list contains exactly one
-principal, equal to the canonical host form the rule binds.** `sshd`
-configures `TrustedUserCAKeys` plus `AuthorizedPrincipalsFile` (or
-`AuthorizedPrincipalsCommand`) so a cert is only valid for the principal it
-names.
+**Heph's correction (2026-10-05), which the original draft got wrong:** for a
+**user** certificate — which this is — `valid_principal` is the **login
+username**, not a host. A user cert has **no destination-host field**; sshd
+matches its principals against the requested username. A cert minted "for host
+A" is structurally usable on host B whenever B trusts the same CA and the
+username exists on B. `AuthorizedPrincipalsFile` maps principal→account; it
+does not bind a cert to a host. The original draft's "principal = host"
+therefore gave *neither* a valid account mapping *nor* the host binding it
+claimed.
 
-- P1-2's rule *already* binds cred_ref→target_uri. The cert's principal is that
-  binding, now enforced by sshd rather than only by Chaperone. **Two
-  independent enforcement points for the same grant.**
-- This is what makes the CA model *narrower* than the per-host key model: a
-  stolen per-host key opens that host from anywhere; a stolen minted cert
-  opens nothing (it needs the agent's private key too, and it expires).
+**Redesigned rule, per Heph:**
 
-*Alternative:* principal = agent_id, with sshd matching the agent's login user
-to it. Simpler config, but it decouples the cert from the rule's target
-binding, which throws away P1-2's guarantee. Rejected.
+| Cert field | Value |
+|---|---|
+| `valid_principal` | the **username/account** parsed from the rule's `target_uri` |
+| custom extension `host@chaperone` | the canonical host form the rule binds |
+| host-side enforcement | `AuthorizedPrincipalsCommand` (shipped in the TD-4 recipe) reads the `host@chaperone` extension and rejects mismatches |
+
+With that command installed, sshd becomes a second independent enforcement
+point for the host binding. **Without it, the claim must be dropped
+honestly** — Chaperone is the sole minter, and the binding is Chaperone-only.
+The two are inseparable; this spec ships the command as part of the recipe so
+the stronger claim stands.
+
+*Alternative considered:* drop the host-side command and rely on
+Chaperone-as-sole-minter. Rejected: the two-point claim is worth the config
+line, and shipping the command costs one script in the recipe.
+
+### TD-4 — What does the host trust? `TrustedUserCAKeys` + `AuthorizedPrincipalsCommand`, documented.
+
+**Recommendation: B-1 ships the gateway side and the documented host-side
+recipe, NOT an agent that reconfigures sshd.**
+
+With TD-3 corrected, the recipe is heavier than the original draft: it is
+`TrustedUserCAKeys` **plus** an `AuthorizedPrincipalsCommand` that validates
+the `host@chaperone` extension. Still customer-applied, still consistent with
+"broker not fleet manager" — just scoped honestly.
+
+*Alternative:* a `chaperone host-enroll` that edits sshd_config. Deferred —
+recorded here so it is a decision, not an accident. If fleets demand it, it
+lands as its own slice with its own threat-model entry.
 
 ### TD-4 — What does the host trust? `TrustedUserCAKeys`, documented.
 
@@ -195,32 +245,62 @@ well).
 | Agent compromise | the agent's per-host key leaks, no expiry | the agent's *enrolled* key leaks; certs minted with it expire ≤ 1 h; revoke the agent in the enrollment store and no new certs mint |
 | Compromised sshd | agent key usable forever | cert invalid after expiry; CA unaffected |
 | Stolen cert in transit | n/a | worthless without the agent's private key; expires ≤ 1 h |
-| Compromised CA key | n/a | **worst case**: attacker can mint valid certs for any principal until the CA rotates. Mitigation: vault sealing + P2-3's backup warning + the operator keeps the CA offline when possible (TD-1 alt) |
+| Compromised CA key | n/a | **worst case**: attacker can mint valid certs for any principal until the CA rotates. Mitigations: vault sealing, TTL ceiling, audit correlation, and — the only structural one — a two-tier CA (see below) |
 
-**The worst case is worse than today** — that is the honest statement, and the
-reason for the operator-configurable-down-only TTL ceiling and the audit
-correlation. Record it in the threat model as a delta, not a footnote.
+**The worst case is worse than today — but the *expected* case is better, and
+the trade is in our favor.** Heph's framing (2026-10-05), which this section
+now leads with: one secret to protect/backup/rotate instead of 300, and
+recovery (rotate CA + hosts re-trust) is bounded and fast versus 300 individual
+key rotations. Stating only the worst case would misprice the design; stating
+only the expected case would hide the tail.
+
+**No mitigation removes the worst case** — that is definitionally what a CA
+is. The original draft listed "operator keeps the CA offline" as a mitigation;
+**that was a contradiction and is deleted**: TD-1 mints online from the vault
+on every action, and an offline CA cannot mint 300-second certs per action.
+
+The one *structural* mitigation is a **two-tier CA** — an offline root (key
+never in the vault) signing a short-lived intermediate that lives in the vault
+and does the online minting. Intermediate compromise then costs "revoke and
+re-issue from root, hosts re-trust nothing new" instead of "rotate the CA on
+every host." **Not built in v1**: it reintroduces exactly the operational
+complexity B-1 exists to remove. Recorded as future hardening, revisitable at
+SafeKeyPass.
+
+**CA rotation is a slice item, not a footnote.** The concrete story: generate
+new CA → export new pubkey → **dual-trust** both pubkeys on hosts during the
+transition window → drop the old. Dual-trust is what makes rotation non-breaking;
+without it, rotation is an outage.
 
 ## 4. Acceptance criteria (falsifiable)
 
 1. `mint()` on the CA provider produces a parseable SSH user certificate whose
    key ID embeds the agent_id and msg_id; **reverting the signer makes this
    test fail** with a parse error.
-2. A cert minted for host A is refused by a validator implementing TD-3's
-   principal rule for host B; **reverting the principal-binding makes the test
-   fail** by accepting the wrong host.
-3. A cert is refused after its expiry; **the TTL ceiling cannot be configured
-   above 3600 s** (a test proves the ceiling, not just the default).
+2. A cert whose `host@chaperone` extension names host A is refused by the
+   TD-3 validator (the recipe's `AuthorizedPrincipalsCommand` logic) when it
+   is evaluated for host B; **removing the extension check makes the test
+   fail** by accepting the wrong host - which is precisely Heph's correction:
+   without that check, a user cert is structurally portable across hosts.
+3. A cert is refused after its expiry, tested via
+   `validate_at(fixed_timestamp, ...)` — deterministic, no wall-clock, no
+   sleeping; **the TTL ceiling cannot be configured above 3600 s** (a test
+   proves the ceiling, not just the default).
 4. `permit-agent-forwarding` etc. never appear in a minted cert; **reverting
    the extension list makes the test fail**.
 5. `no_secret_leak` still passes with the mint path exercised: the cert text
    never reaches agent-visible frames beyond the SSH auth itself, and the CA
-   key material never leaves the mint call.
+   key material never leaves the mint call. **The CA entry is non-exportable:
+   a resolve of `local://chaperone/ca/ssh` is refused** — asserted directly,
+   not inferred.
 6. A cert minted for a revoked agent is refused; **revocation, not TTL, is
    what stops an actively-compromised agent** — both are tested.
 7. The D31 pin store still rejects a changed host key under the CA model.
 8. B-4's classified-error rule applies to the mint path: mint failures surface
    as `TransportError`-style classified causes, never free-form text.
+9. `all_principals_valid()` — the golden-ticket escape hatch — is never called
+   anywhere in the workspace (CI grep-assert), and a minted cert always
+   carries exactly one principal.
 
 ## 5. Sizing and sequencing
 
@@ -231,7 +311,7 @@ correlation. Record it in the threat model as a delta, not a footnote.
 | Injector switches to cert auth | 1 d |
 | Tests 1–8 above (falsifiable, incl. the ceiling and revocation) | 1.5–2 d |
 | Docs: sshd recipe + threat-model delta + migration note | 0.5–1 d |
-| **Total** | **~5.5–7.5 d** |
+| **Total** | **~6–8.5 d** (TD-3 rework adds the host-binding extension + `AuthorizedPrincipalsCommand` validator) |
 
 Sequenced after Heph's review and Stephen's ruling on TD-1…TD-5. B-2 (bulk
 import) is *not* blocked by this and can proceed in parallel if wanted; B-3 is
@@ -245,14 +325,17 @@ independent.
    PKI later behind the same `mint()`.*
 2. **TD-2** — Sign the agent's enrolled public key; 300 s default / 3600 s
    hard ceiling; forwarding extensions never? *Recommend yes on all three.*
-3. **TD-3** — Principal = the rule-bound host, enforced by sshd as well as
-   Chaperone? *Recommend yes.*
+3. **TD-3** — **REDESIGNED per Heph:** principal = the username from the
+   rule's `target_uri`; host binding = the `host@chaperone` extension,
+   enforced host-side by the recipe's `AuthorizedPrincipalsCommand`. The
+   original "principal = host" was structurally wrong for a user cert.
+   *Recommend accepting the redesign.*
 4. **TD-4** — Ship the gateway + documented sshd recipe, NOT host
    auto-configuration? *Recommend yes; host-enroll is a separate product
    decision.*
 5. **TD-5** — Per-host keys remain valid config; B-1 is additive; migration
    later? *Recommend yes.*
-6. **CA-key storage** — `local://chaperone/ca/ssh` as a normal vault entry
+6. **CA-key storage + non-exportability + explicit `ca-init` bootstrap** — `local://chaperone/ca/ssh` as a normal vault entry
    (same sealing, same P2-3 warning, operator-managed backup)? *Recommend
    yes.* The alternative — a separate, differently-sealed file — adds a second
    passphrase surface for no gain.
