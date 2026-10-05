@@ -640,7 +640,7 @@ fn cmd_ca_init(flags: &Flags) -> Result<(), String> {
         );
         return Ok(());
     }
-    let (private_text, public_line) =
+    let (private_text, _public_line) =
         chaperone_gateway_core::ssh_ca::generate_ca().map_err(|e| e.to_string())?;
     vault
         .set(
