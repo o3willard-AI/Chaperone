@@ -103,10 +103,51 @@ fn build(doc: &str) -> Spine {
     }
 }
 
-fn spawn_watch(spine: &Spine, hub: Option<Arc<EventHub>>) {
+fn spawn_watch(spine: &Spine, hub: Option<Arc<EventHub>>) -> Started {
     let watch = PolicyWatch::new(spine.policy_path.clone(), hash_doc_bytes(DOC.as_bytes()))
         .with_interval(WATCH_TICK);
-    tokio::spawn(watch.run(Arc::clone(&spine.gateway), Arc::clone(&spine.audit), hub));
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let gateway = Arc::clone(&spine.gateway);
+    let audit = Arc::clone(&spine.audit);
+    tokio::spawn(async move {
+        // Signal before the first tick await: the task is now RUNNING, so the
+        // caller can mutate the file knowing a real poll is imminent.
+        let _ = tx.send(());
+        watch.run(gateway, audit, hub).await;
+    });
+    Started(rx)
+}
+
+/// Resolves once the watcher task has actually been scheduled by the runtime.
+///
+/// The guard tests used a bare `thread::sleep` to guess when the watcher was
+/// live. `PolicyWatch::run` awaits a `WATCH_TICK` interval *before* its first
+/// observation, so on a loaded runner (CI, notably `windows-latest`) the task
+/// can still be unscheduled when the test mutates the file. `wait_until` then
+/// polls a condition that has not had a chance to become true, and the test
+/// fails for a reason that has nothing to do with the guard. Observed as a real
+/// Windows CI failure of `deleted_policy_file_halts` on a PR that changed no
+/// gateway code.
+///
+/// This removes the scheduling race instead of padding the sleep. No production
+/// behaviour changes.
+#[must_use]
+struct Started(tokio::sync::oneshot::Receiver<()>);
+
+impl Started {
+    fn wait(mut self, deadline_ms: u128) -> bool {
+        let start = std::time::Instant::now();
+        while start.elapsed().as_millis() < deadline_ms {
+            match self.0.try_recv() {
+                Ok(()) => return true,
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => return true,
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            }
+        }
+        false
+    }
 }
 
 /// Waits until `pred` holds or the deadline passes (timing-safe asserts).
@@ -158,11 +199,17 @@ async fn content_drift_halts_records_and_broadcasts() {
         chaperone_transport::operator_pipe::OperatorStream::connect(events_path.to_str().unwrap())
             .unwrap();
 
-    spawn_watch(&spine, Some(Arc::clone(&hub)));
+    let started = spawn_watch(&spine, Some(Arc::clone(&hub)));
+    assert!(started.wait(5_000), "watcher never started");
 
     // Give the watch a few healthy ticks first...
-    std::thread::sleep(Duration::from_millis(80));
-    assert!(!spine.gateway.is_halted(), "guard tripped on no change");
+    assert!(
+        wait_until(5_000, || {
+            std::thread::sleep(WATCH_TICK);
+            !spine.gateway.is_halted()
+        }),
+        "guard tripped on no change"
+    );
 
     // ...then tamper.
     std::fs::write(
@@ -220,9 +267,8 @@ async fn content_drift_halts_records_and_broadcasts() {
 #[tokio::test(flavor = "multi_thread")]
 async fn deleted_policy_file_halts() {
     let spine = build(DOC);
-    spawn_watch(&spine, None);
-
-    std::thread::sleep(Duration::from_millis(60));
+    let started = spawn_watch(&spine, None);
+    assert!(started.wait(5_000), "watcher never started");
     std::fs::remove_file(&spine.policy_path).unwrap();
 
     assert!(
@@ -241,8 +287,10 @@ async fn deleted_policy_file_halts() {
 #[tokio::test(flavor = "multi_thread")]
 async fn untouched_file_never_trips_the_guard() {
     let spine = build(DOC);
-    spawn_watch(&spine, None);
+    let started = spawn_watch(&spine, None);
+    assert!(started.wait(5_000), "watcher never started");
 
+    // No mutation at all: many ticks must leave the gateway alone.
     std::thread::sleep(Duration::from_millis(250));
     assert!(
         !spine.gateway.is_halted(),
