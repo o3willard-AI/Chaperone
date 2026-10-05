@@ -2,7 +2,7 @@
 
 Author: ox-chap (Hermes, host 192.168.101.11)
 Date: 2026-10-04
-Status: **Heph-reviewed (2026-10-05) — TD-3 redesigned, awaiting Stephen's ruling.**
+Status: **Ruled by Stephen 2026-10-05 — TD-1..TD-5, storage, TTL all approved; TD-3 redesign accepted; TD-4 = Option A (documented recipe).**
 Review: `b1-ssh-ca-heph-review.md` (same directory, verbatim).
 Branch: `docs/b1-ca-spec` (this document)
 
@@ -154,7 +154,7 @@ the stronger claim stands.
 Chaperone-as-sole-minter. Rejected: the two-point claim is worth the config
 line, and shipping the command costs one script in the recipe.
 
-### TD-4 — What does the host trust? `TrustedUserCAKeys` + `AuthorizedPrincipalsCommand`, documented.
+### TD-4 — What does the host trust? `TrustedUserCAKeys` + `AuthorizedPrincipalsCommand`, documented. **(RULED — Option A: documented recipe, not host auto-config.)**
 
 **Recommendation: B-1 ships the gateway side and the documented host-side
 recipe, NOT an agent that reconfigures sshd.**
@@ -163,21 +163,6 @@ With TD-3 corrected, the recipe is heavier than the original draft: it is
 `TrustedUserCAKeys` **plus** an `AuthorizedPrincipalsCommand` that validates
 the `host@chaperone` extension. Still customer-applied, still consistent with
 "broker not fleet manager" — just scoped honestly.
-
-*Alternative:* a `chaperone host-enroll` that edits sshd_config. Deferred —
-recorded here so it is a decision, not an accident. If fleets demand it, it
-lands as its own slice with its own threat-model entry.
-
-### TD-4 — What does the host trust? `TrustedUserCAKeys`, documented.
-
-**Recommendation: B-1 ships the gateway side and the **documented** host-side
-recipe (an sshd_config snippet + the CA public key export command), NOT an
-agent that reconfigures sshd.**
-
-- We are a credential broker, not a fleet-management product. Touching sshd on
-  customer machines is a different product with a different threat model.
-- The airgapped-first buyer can apply the snippet from a runbook; that is how
-  they apply any sshd change today.
 
 *Alternative:* a `chaperone host-enroll` that edits sshd_config. Deferred —
 recorded here so it is a decision, not an accident. If fleets demand it, it
@@ -245,7 +230,7 @@ well).
 | Agent compromise | the agent's per-host key leaks, no expiry | the agent's *enrolled* key leaks; certs minted with it expire ≤ 1 h; revoke the agent in the enrollment store and no new certs mint |
 | Compromised sshd | agent key usable forever | cert invalid after expiry; CA unaffected |
 | Stolen cert in transit | n/a | worthless without the agent's private key; expires ≤ 1 h |
-| Compromised CA key | n/a | **worst case**: attacker can mint valid certs for any principal until the CA rotates. Mitigations: vault sealing, TTL ceiling, audit correlation, and — the only structural one — a two-tier CA (see below) |
+| Compromised CA key | n/a | **worst case**: attacker can mint valid certs for any principal until the CA rotates. Mitigations: vault sealing, TTL ceiling, audit correlation |
 
 **The worst case is worse than today — but the *expected* case is better, and
 the trade is in our favor.** Heph's framing (2026-10-05), which this section
@@ -259,15 +244,11 @@ is. The original draft listed "operator keeps the CA offline" as a mitigation;
 **that was a contradiction and is deleted**: TD-1 mints online from the vault
 on every action, and an offline CA cannot mint 300-second certs per action.
 
-The one *structural* mitigation is a **two-tier CA** — an offline root (key
-never in the vault) signing a short-lived intermediate that lives in the vault
-and does the online minting. Intermediate compromise then costs "revoke and
-re-issue from root, hosts re-trust nothing new" instead of "rotate the CA on
-every host." **Not built in v1**: it reintroduces exactly the operational
-complexity B-1 exists to remove. Recorded as future hardening, revisitable at
-SafeKeyPass.
+A **two-tier CA** (offline root + vault intermediate) was considered and
+**ruled OUT by Stephen (2026-10-05)** — it reintroduces exactly the operational
+complexity B-1 exists to remove. Omitted; not revisited.
 
-**CA rotation is a slice item, not a footnote.** The concrete story: generate
+**CA rotation is a slice item, not a footnote (RULED — rotation story added).** The concrete story: generate
 new CA → export new pubkey → **dual-trust** both pubkeys on hosts during the
 transition window → drop the old. Dual-trust is what makes rotation non-breaking;
 without it, rotation is an outage.
@@ -319,26 +300,20 @@ independent.
 
 ---
 
-## 6. Open questions for the ruling (numbered for item-by-item)
+## 6. Rulings — Stephen, 2026-10-05
 
-1. **TD-1** — Chaperone-owned CA keypair in the vault? *Recommend yes; Vault
-   PKI later behind the same `mint()`.*
-2. **TD-2** — Sign the agent's enrolled public key; 300 s default / 3600 s
-   hard ceiling; forwarding extensions never? *Recommend yes on all three.*
-3. **TD-3** — **REDESIGNED per Heph:** principal = the username from the
-   rule's `target_uri`; host binding = the `host@chaperone` extension,
-   enforced host-side by the recipe's `AuthorizedPrincipalsCommand`. The
-   original "principal = host" was structurally wrong for a user cert.
-   *Recommend accepting the redesign.*
-4. **TD-4** — Ship the gateway + documented sshd recipe, NOT host
-   auto-configuration? *Recommend yes; host-enroll is a separate product
-   decision.*
-5. **TD-5** — Per-host keys remain valid config; B-1 is additive; migration
-   later? *Recommend yes.*
-6. **CA-key storage + non-exportability + explicit `ca-init` bootstrap** — `local://chaperone/ca/ssh` as a normal vault entry
-   (same sealing, same P2-3 warning, operator-managed backup)? *Recommend
-   yes.* The alternative — a separate, differently-sealed file — adds a second
-   passphrase surface for no gain.
-7. **TTL default** — 300 s (five minutes) covers an interactive session; the
-   ceiling is what actually protects. *Recommend 300 s default / 3600 s
-   ceiling, both operator-visible in the UI.*
+1. **TD-1 — Chaperone-owned CA keypair in the vault.** *Agreed* (plus the two
+   adds: CA key non-exportable; explicit `ca-init` bootstrap).
+2. **TD-2 — Sign the enrolled agent key; 300s default / 3600s ceiling; never
+   forward.** *Agreed on all three.*
+3. **TD-3 — Principal = username (redesign); host binding = `host@chaperone`
+   extension + host-side `AuthorizedPrincipalsCommand`.** *Agreed (redesign
+   accepted).*
+4. **TD-4 — Documented sshd recipe, not host auto-configuration.** *Agreed —
+   Option A.* (`host-enroll` recorded as a future product decision, not built.)
+5. **TD-5 — Per-host keys remain; B-1 additive; migration later.** *Agreed.*
+6. **CA-key storage + non-exportability + explicit `ca-init`.** *Agreed.*
+7. **TTL default — 300s / 3600s ceiling (down-only).** *Agreed.*
+
+Structural notes ruled: **two-tier CA omitted** (not revisited); **rotation
+story added** (dual-trust slice item).
