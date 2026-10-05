@@ -48,36 +48,44 @@ AuthorizedPrincipalsCommand /usr/local/bin/chaperone-cert-authorize %k %u
 
 ## 4. The `AuthorizedPrincipalsCommand` script
 
-`/usr/local/bin/chaperone-cert-authorize` (mode 0755, owner root). stdin
-receives the certificate; arguments are `%k` (the base64 certificate) and `%u`
-(the requested username). Exit 0 = accept, non-zero = refuse.
+Install the shipped, tested script:
 
 ```sh
-#!/bin/sh
-# Chaperone B-1 certificate authorization (TD-3).
-# stdin: the OpenSSH certificate line; $1: cert (b64), $2: username.
-# Accepts only if the cert's host@chaperone extension names THIS host.
-set -eu
+cp docs/specs/scripts/chaperone-cert-authorize.sh /usr/local/bin/chaperone-cert-authorize
+chmod 0755 /usr/local/bin/chaperone-cert-authorize
+```
 
-# The canonical host this sshd serves. Edit per host, or derive from
-# `hostname -f` if your DNS is the source of truth.
-CHAPERONE_HOST="$(cat /etc/chaperone/host 2>/dev/null || hostname -f)"
+(The original recipe inlined a hand-rolled awk parse that was **non-
+functional** — wrong ssh-keygen input format and a self-zeroing guard; caught
+in review and replaced by the shipped script, which has a harness.)
 
-CERT_B64="$1"
-REQUESTED_USER="$2"
+What it does, per invocation (sshd passes `%k %u`):
 
-EXT_LINE=$(/usr/bin/ssh-keygen -L -f /dev/stdin <<< "ssh-cert $CERT_B64" \
-    | awk '/Critical|Extensions:/{f=1;next} /^/{f=0} f && /host@chaperone:/')
+- Writes the cert blob (base64) to a temp file prefixed with its wire type —
+  `ssh-keygen -L` cannot parse a bare blob.
+- Extracts the extension list with an awk that anchors on the `Extensions:`
+  header and stops at the next capitalized field — no self-zeroing.
+- Reads the `host@chaperone` value. Note: OpenSSH's `ssh-keygen -L` renders
+  unknown extensions as `UNKNOWN OPTION: <hex>`; the script hex-decodes that
+  (stripping the 4-byte length prefix) and compares the plain hostname.
+- Accepts (exit 0) only when the value equals this host — exact match.
 
-# host@chaperone present?
-[ -n "$EXT_LINE" ] || exit 1
+Fails closed on every error: missing blob, unparseable cert, missing or
+mismatched host binding, unset hostname.
 
-# …and equal to THIS host? (exact match, no prefix games)
-HOST_VALUE=$(printf '%s\n' "$EXT_LINE" | sed 's/.*host@chaperone: *//')
-[ "$HOST_VALUE" = "$CHAPERONE_HOST" ] || exit 1
+**Tested.** `tests/b1_cert_authorize_harness.sh` runs the script against a
+live certificate: matching host → ACCEPT, wrong host → REFUSE, empty blob →
+REFUSE. Run it after any change to the script or the certificate shape:
 
-# The principal is the username (sshd already matched it to $2); accept.
-exit 0
+```sh
+sh tests/b1_cert_authorize_harness.sh
+```
+
+Configure the host name per machine (one of):
+
+```sh
+echo 'app-01.internal' > /etc/chaperone/host   # explicit, preferred
+# or rely on the hostname -f fallback if your DNS is the source of truth
 ```
 
 ## 5. Verify the chain
