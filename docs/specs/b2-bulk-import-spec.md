@@ -2,7 +2,7 @@
 
 **Author:** ox-chap (Hermes, host 192.168.101.11)
 **Date:** 2026-10-06
-**Status:** DRAFT — for review by Heph, then ruling by Stephen
+**Status:** RULED by Stephen 2026-10-06
 **Work order:** `~/workspace/tasks/wi-B-2.md` (pending; backlog item B-2,
 MVP-GAP-REVIEW.md line 709 → P1-2 item 2, line 480)
 **Registry note (Heph F3):** D46/D47/D45 and CA-1 live in
@@ -126,6 +126,11 @@ atomicity.
   run's stdout, the policy diff, and the audit chain must not contain the
   imported secret text (same discipline as the mint-path test added for
   B-1).
+- **Post-import (Heph F5):** the CSV source file still holds its secrets
+  in plaintext on disk after the run. Print a warning ("this CSV still
+  contains plaintext secrets; delete or secure it after a successful
+  import"), or offer `--shred-source` (shred + unlink after a fully
+  successful run, never on failure).
 
 ## 6. Audit (TD-5)
 
@@ -217,4 +222,7 @@ validation (0.5d), acceptance tests incl. leak sentinel + crash recovery
   main) was stale by the time the review landed — B-1 and CA-1 merged
   earlier the same day (`a3f399c`, `940b101`); the resolved-path check
   stands.
-- Stephen's rulings: pending.
+- Stephen's rulings (2026-10-06): **1** ordering — yes; **2** no-rule-creation +
+  axis-compat — yes; **3** pattern refinement — yes; **4** placeholder
+  sentinel — yes (sentinel-refusal). All four confirm the review as already
+  folded; the only additions are F5 above and this ruling record.
