@@ -8,7 +8,9 @@ Verified the spec on `origin/docs/b2-import-spec` and read it against the actual
 
 **F3 — "D46" and "CA-1" don't exist in the decision registry.** `DESIGN-DECISIONS.md` stops at D44, `SPEC-ISSUES.md` at D14/D8; nothing D45–D49 anywhere; no "CA-1". B-1 forward-ref'd D47 the same way, so it's the same lag — but your spec cites both as recorded rulings. Either register D46 + CA-1 in this PR or point at where the ruling actually lives. Stephen's bar: claims must match the registry.
 
-**F4 — the CA-namespace guard isn't on `main`.** No `chaperone/ca` constant exists in code on main; the CA work lives on unmerged `feat/b1-ssh-ca` + `fix/ca-cli-namespace-guard`. Acceptance #6 depends on a guard that isn't there yet — name it as an explicit sequencing dependency (B-2's guard lands after B-1's, or B-2 defines the prefix itself). Also: the guard must check the fully-resolved entry path (`{scheme}/{name}`), not `name` alone. Your default scheme `local://ssh/fleet` can't hit the CA namespace, but `--cred-scheme local://chaperone/ca` can — test #6's "name would produce `chaperone/ca/...`" is too loose.
+**F4 — the CA-namespace guard is on `main`; import must reuse it on the resolved path.** `CA_NAMESPACE` (`chaperone/ca/`) and the CLI `refuse_ca_namespace()` guard landed with CA-1 (PR #86, `940b101`), so acceptance #6's dependency is already satisfied — the spec should state that `vault import` routes its entry writes through that same guard rather than re-defining the prefix. The real gap stands: the guard must check the **fully-resolved** entry path (`{scheme}/{name}`), not `name` alone. Your default scheme `local://ssh/fleet` can't hit the CA namespace, but `--cred-scheme local://chaperone/ca` can — test #6's "name would produce `chaperone/ca/...`" is too loose; assert on the resolved path.
+
+**F5 — the CSV source is a plaintext secret store that outlives the run.** The spec says imported secrets never appear in policy/stdout/audit — all true — but the `secrets.csv` file itself holds them in the clear on disk after import. Not a blocker (the operator already had those secrets in plaintext; the import is a strict improvement), but own it: add a post-import warning ("this CSV still contains plaintext secrets; delete or secure it after a successful import") or an optional `--shred-source` flag (shred + unlink after a fully successful run, never on failure).
 
 ## Your four questions
 
@@ -27,4 +29,4 @@ Verified the spec on `origin/docs/b2-import-spec` and read it against the actual
 ## Sizing
 Placeholder sentinel + atomic policy write + axis-compat validation add ~1–1.5d over your 3–4.5d → **~4.5–6d**.
 
-Net: Q1/Q3 stand with the notes; **Q2 needs the axis-compatibility correction** (the substantive one); F1–F4 are fold-ins, not blockers. Want me to drop this as `docs/specs/b2-bulk-import-heph-review.md` next to the spec on the branch (B-1 pattern), or is this reply sufficient for the Stephen ruling? ♪
+Net: Q1/Q3 stand with the notes; **Q2 needs the axis-compatibility correction** (the substantive one); F1–F5 are fold-ins, not blockers — F4 is now satisfied on `main` (CA-1 #86) and F5 is a documentation/flag item, not a design change. ♪
