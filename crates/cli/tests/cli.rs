@@ -323,3 +323,175 @@ fn ca_namespace_is_refused_by_operator_cli() {
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(out.contains(value), "normal get: {out}");
 }
+// B-2 acceptance (ruled spec, tests 1/2/4/5/7 end-to-end): real binary,
+// real vault + policy files. P1-2's acceptance now machine-generated.
+#[test]
+fn vault_import_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("v.bin");
+    let pf = dir.path().join("pf");
+    std::fs::write(&pf, "service-passphrase\n").unwrap();
+    let policy = dir.path().join("policy.toml");
+    std::fs::write(
+        &policy,
+        r#"
+[[rule]]
+name = "fleet"
+effect = "allow"
+agent_id = "agent:deployer"
+cred_ref = "local://ssh/fleet/*"
+target_uri = "ssh://*.internal:*"
+mechanism = "ssh"
+"#,
+    )
+    .unwrap();
+    let csv = dir.path().join("fleet.csv");
+    std::fs::write(
+        &csv,
+        "name,host,port,user,secret\napp-01,app-01.internal,22,deploy,real-secret-1\napp-02,app-02.internal,2202,deploy,\n",
+    )
+    .unwrap();
+
+    let source_arg = format!("csv:{}", csv.to_str().unwrap());
+    let run_raw = |args: &[&str], stdin_data: &str| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_chaperone"));
+        cmd.args(args);
+        if !stdin_data.is_empty() {
+            cmd.stdin(std::process::Stdio::piped());
+        }
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        let mut child = cmd.spawn().unwrap();
+        if !stdin_data.is_empty() {
+            use std::io::Write as _;
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(stdin_data.as_bytes())
+                .unwrap();
+        }
+        child.wait_with_output().unwrap()
+    };
+
+    // init
+    let o = run_raw(
+        &[
+            "vault-init",
+            "--store",
+            store.to_str().unwrap(),
+            "--passphrase-file",
+            pf.to_str().unwrap(),
+        ],
+        "",
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    // import
+    let o = run_raw(
+        &[
+            "vault-import",
+            "--store",
+            store.to_str().unwrap(),
+            "--policy",
+            policy.to_str().unwrap(),
+            "--rule-name",
+            "fleet",
+            "--source",
+            source_arg.as_str(),
+            "--passphrase-file",
+            pf.to_str().unwrap(),
+        ],
+        "",
+    );
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(out.contains("imported ssh/fleet/app-01"), "{out}");
+    assert!(out.contains("1 placeholder"), "{out}");
+    // F5 warning present
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("plaintext secrets"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    // no-leak (test 7): the secret never reaches stdout
+    assert!(!out.contains("real-secret-1"), "secret leaked: {out}");
+
+    // policy file gained BOTH pair rows (canonical writer)
+    let doc = std::fs::read_to_string(&policy).unwrap();
+    assert!(
+        doc.contains("cred_ref = \"local://ssh/fleet/app-01\""),
+        "{doc}"
+    );
+    assert!(
+        doc.contains("cred_ref = \"local://ssh/fleet/app-02\""),
+        "{doc}"
+    );
+
+    // value preservation + placeholder honesty (F1/TD-5)
+    let o = run_raw(
+        &[
+            "vault-get",
+            "--store",
+            store.to_str().unwrap(),
+            "--path",
+            "ssh/fleet/app-01",
+            "--show",
+            "--passphrase-file",
+            pf.to_str().unwrap(),
+        ],
+        "",
+    );
+    assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), "real-secret-1");
+
+    // idempotent re-run (test 2): skipped, no duplicate rows
+    let before = std::fs::read_to_string(&policy).unwrap();
+    let o = run_raw(
+        &[
+            "vault-import",
+            "--store",
+            store.to_str().unwrap(),
+            "--policy",
+            policy.to_str().unwrap(),
+            "--rule-name",
+            "fleet",
+            "--source",
+            source_arg.as_str(),
+            "--passphrase-file",
+            pf.to_str().unwrap(),
+        ],
+        "",
+    );
+    assert!(o.status.success());
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("skipped ssh/fleet/app-01"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(&policy).unwrap(),
+        before,
+        "re-run must not change the policy"
+    );
+
+    // fail-closed rule name (test 5)
+    let o = run_raw(
+        &[
+            "vault-import",
+            "--store",
+            store.to_str().unwrap(),
+            "--policy",
+            policy.to_str().unwrap(),
+            "--rule-name",
+            "nope",
+            "--source",
+            source_arg.as_str(),
+            "--passphrase-file",
+            pf.to_str().unwrap(),
+        ],
+        "",
+    );
+    assert_eq!(o.status.code(), Some(2));
+    assert_eq!(
+        std::fs::read_to_string(&policy).unwrap(),
+        before,
+        "failed import must not touch the policy"
+    );
+}

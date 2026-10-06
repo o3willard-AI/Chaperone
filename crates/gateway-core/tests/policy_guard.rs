@@ -224,13 +224,25 @@ async fn content_drift_halts_records_and_broadcasts() {
     );
 
     // The drift record landed on the shared chain, after the genesis +
-    // policy_load anchors.
-    let journal = std::fs::read_to_string(&spine.audit_path).unwrap();
-    let drift_line = journal
-        .lines()
-        .find(|l| l.contains("\"policy_drift\""))
-        .expect("no policy_drift record appended");
-    let record: Value = serde_json::from_str(drift_line).unwrap();
+    // policy_load anchors. (Windows CI flake 2026-10-06, same family as the
+    // #81 fix: halt flips before the journal append is visible to a read —
+    // poll instead of a bare find.)
+    let drift_line = {
+        let found = std::cell::RefCell::new(None);
+        wait_until(5_000, || {
+            let journal = std::fs::read_to_string(&spine.audit_path).unwrap();
+            *found.borrow_mut() = journal
+                .lines()
+                .find(|l| l.contains("\"policy_drift\""))
+                .map(String::from);
+            found.borrow().is_some()
+        });
+        found
+            .borrow()
+            .clone()
+            .expect("no policy_drift record appended")
+    };
+    let record: Value = serde_json::from_str(&drift_line).unwrap();
     assert_eq!(record["outcome"]["status"], "policy_drift");
     assert_eq!(record["outcome"]["detail"], "content changed");
     assert_eq!(record["ruleset_hash"], hash_doc_bytes(DOC.as_bytes()));

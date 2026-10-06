@@ -48,6 +48,9 @@ GATEWAY DAEMON:
 LOCAL VAULT (operator CRUD):
     chaperone vault-init  --store <FILE> [--sealer passphrase|keyring] [--passphrase-stdin]
     chaperone vault-set   --store <FILE> --path <P> [--passphrase-stdin]   (secret on stdin)
+    chaperone vault-import --store <FILE> --policy <TOML> --rule-name <NAME>
+                           --source csv|ssh-config <FILE> [--cred-scheme <SCHEME>]
+                           [--dry-run] [--shred-source]
     chaperone vault-get   --store <FILE> --path <P> [--passphrase-stdin] [--show]
     chaperone vault-list  --store <FILE> [--passphrase-stdin]
     chaperone vault-del   --store <FILE> --path <P> [--passphrase-stdin]
@@ -711,6 +714,130 @@ fn refuse_ca_namespace(entry: &str) -> Result<(), String> {
              the CA key serves minting only. Use `chaperone ca-export` for \
              the public key line."
         ));
+    }
+    Ok(())
+}
+
+/// B-2 bulk inventory import (TD-2): one auditable action creating vault
+/// entries AND D43 pair rows on an EXISTING rule. Vault entries first, policy
+/// rows second (TD-3) — a partial failure leaves unused secrets, never
+/// dangling rows. Fail-closed: unknown rule name writes nothing; any row
+/// whose resolved path lands in the CA namespace refuses the whole run.
+fn cmd_vault_import(flags: &Flags) -> Result<(), String> {
+    let _store = flags.require("store")?;
+    let policy_path = flags.require("policy")?;
+    let rule_name = flags.require("rule-name")?;
+    let source_spec = flags.require("source")?; // `csv|ssh-config:<FILE>`
+    let cred_scheme = flags
+        .values
+        .get("cred-scheme")
+        .cloned()
+        .unwrap_or_else(|| "local://ssh/fleet".to_owned());
+    let dry_run = flags.has("dry-run");
+    let shred = flags.has("shred-source");
+
+    let (kind, source_file) = source_spec
+        .split_once(':')
+        .ok_or("source must look like `csv:<FILE>` or `ssh-config:<FILE>`")?;
+    let text =
+        std::fs::read_to_string(source_file).map_err(|e| format!("read {source_file}: {e}"))?;
+
+    let outcome = match kind {
+        "csv" => import_sources::parse_csv(&text),
+        "ssh-config" => import_sources::parse_ssh_config(&text),
+        other => return Err(format!("unknown source kind `{other}` (csv | ssh-config)")),
+    };
+    for w in &outcome.warnings {
+        eprintln!("warning (line {}): {}", w.line, w.reason);
+    }
+
+    let rows: Vec<import_sources::InventoryRow> = outcome
+        .rows
+        .into_iter()
+        .map(|r| match r {
+            import_sources::Parsed::Row(row) => Ok(row),
+            import_sources::Parsed::Failed { line, reason } => {
+                Err(format!("source line {line}: {reason}"))
+            }
+        })
+        .collect::<Result<_, _>>()?;
+    if rows.is_empty() {
+        return Err("no importable rows in source".to_owned());
+    }
+
+    let mut vault = open_vault(flags)?;
+    let policy_doc =
+        std::fs::read_to_string(&policy_path).map_err(|e| format!("read {policy_path}: {e}"))?;
+
+    let mut plan = import_core::ImportPlan {
+        vault: &mut vault,
+        policy_doc: &policy_doc,
+        rule_name: &rule_name,
+        cred_scheme: &cred_scheme,
+        dry_run,
+    };
+    let (outcomes, new_doc) = import_core::run_import(&mut plan, &rows)?;
+
+    if dry_run {
+        println!("DRY RUN — nothing written. Per-row result:");
+        for (row, o) in rows.iter().zip(&outcomes) {
+            println!("  {} {} [{}]", row.name, o.line(), row.host);
+        }
+        return Ok(());
+    }
+
+    // F2: atomic policy write — a torn write corrupts the entire ruleset.
+    import_core::atomic_write(std::path::Path::new(&policy_path), &new_doc)?;
+
+    let mut counts = (0usize, 0usize, 0usize, 0usize); // imported, skipped, failed, placeholder
+    for (row, o) in rows.iter().zip(&outcomes) {
+        println!("{}", o.line());
+        match o {
+            import_core::RowOutcome::Imported { .. } => {
+                counts.0 += 1;
+                if row.secret.is_none() {
+                    counts.3 += 1;
+                }
+            }
+            import_core::RowOutcome::SkippedExists { .. } => counts.1 += 1,
+            import_core::RowOutcome::Failed { .. } => counts.2 += 1,
+        }
+    }
+    println!(
+        "import: {} imported, {} skipped (rows added), {} failed, {} placeholder",
+        counts.0, counts.1, counts.2, counts.3
+    );
+
+    // F5 (ruled): the CSV source still holds plaintext secrets on disk.
+    if kind == "csv" {
+        if shred {
+            // Best-effort shred + unlink, ONLY after a fully successful run.
+            if counts.2 == 0 {
+                let len = std::fs::metadata(source_file).map(|m| m.len()).unwrap_or(0);
+                if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(source_file) {
+                    use std::io::{Seek, SeekFrom, Write as _};
+                    let zeros = vec![0u8; 4096];
+                    let mut left = len;
+                    while left > 0 {
+                        let n = left.min(4096) as usize;
+                        let _ = f.write_all(&zeros[..n]);
+                        left -= n as u64;
+                    }
+                    let _ = f.sync_all();
+                    let _ = f.seek(SeekFrom::Start(0));
+                }
+                match std::fs::remove_file(source_file) {
+                    Ok(()) => println!("source shredded and removed: {source_file}"),
+                    Err(e) => eprintln!("warning: could not remove source: {e}"),
+                }
+            } else {
+                eprintln!("warning: --shred-source ignored; the run had failed rows");
+            }
+        } else {
+            eprintln!(
+                "warning: this CSV still contains plaintext secrets; delete or secure it after a successful import"
+            );
+        }
     }
     Ok(())
 }
@@ -1452,6 +1579,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "ca-init" => cmd_ca_init(&flags),
         "ca-export" => cmd_ca_export(&flags),
         "vault-set" => cmd_vault_set(&flags),
+        "vault-import" => cmd_vault_import(&flags),
         "vault-get" => cmd_vault_get(&flags),
         "vault-list" => cmd_vault_list(&flags),
         "vault-del" => cmd_vault_del(&flags),
@@ -1463,6 +1591,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
         other => Err(format!("unknown command {other:?}; see `chaperone help`")),
     }
 }
+
+mod import_core;
+mod import_sources;
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1).collect()) {
