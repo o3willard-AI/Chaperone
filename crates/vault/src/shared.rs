@@ -44,6 +44,23 @@ impl SharedVault {
 
 impl Provider for SharedVault {
     fn resolve<'a>(&'a self, entry: &'a str) -> SecretFuture<'a> {
+        // B-1 / TD-1 NON-EXPORTABILITY: the SSH CA private key lives in this
+        // vault, and a resolve through `local://` would hand it to any intent
+        // that names it — the exact leak the ca:// provider's own refusal
+        // cannot catch, because intents bypass that provider via the `local`
+        // scheme. Refused at THIS boundary (Heph, review 2026-10-05: the
+        // refusal belongs where the CA can actually be reached). Minting is
+        // unaffected: GatewayCaContext reads through the direct SharedVault
+        // handle (get/set), never through this Provider impl.
+        if entry.starts_with("chaperone/ca/") {
+            return Box::pin(async move {
+                Err(ResolveError::Backend(
+                    "the SSH CA key is non-exportable; minting is the only \
+                     operation it serves"
+                        .to_owned(),
+                ))
+            });
+        }
         Box::pin(async move {
             let vault = self.lock();
             vault
@@ -102,5 +119,46 @@ mod tests {
             .set("a/c", SecretString::new("x".to_owned()))
             .unwrap();
         assert_eq!(shared.resolve("a/c").await.unwrap().expose(), "x");
+    }
+
+    #[tokio::test]
+    async fn ca_namespace_is_never_resolvable_through_local() {
+        // B-1 / TD-1 regression (Heph review 2026-10-05, merge blocker):
+        // an intent naming `local://chaperone/ca/ssh` must NOT hand the CA
+        // private key to the caller. The guard lives in SharedVault's
+        // Provider impl — the boundary an intent actually reaches — and is
+        // asserted here through a REAL VaultRouter with a seeded CA, exactly
+        // as the gateway's router is wired.
+        let dir = tempfile::tempdir().unwrap();
+        let mut vault = LocalVault::create(
+            &dir.path().join("v.bin"),
+            "passphrase",
+            Zeroizing::new("pass".to_owned()),
+        )
+        .unwrap();
+        vault
+            .set(
+                "chaperone/ca/ssh",
+                SecretString::new("FAKE-CA-PRIVATE-KEY".to_owned()),
+            )
+            .unwrap();
+        vault
+            .set("normal/entry", SecretString::new("ok".to_owned()))
+            .unwrap();
+
+        let mut router = crate::VaultRouter::new();
+        router.register("local", std::sync::Arc::new(SharedVault::new(vault)));
+
+        for ref_name in ["local://chaperone/ca/ssh", "local://chaperone/ca/other"] {
+            let err = router.resolve(ref_name).await.unwrap_err().to_string();
+            assert!(
+                err.contains("non-exportable"),
+                "resolve of {ref_name} must be refused as non-exportable, got: {err}"
+            );
+        }
+
+        // The guard is namespace-scoped, not vault-wide: a non-CA entry in
+        // the same vault still resolves.
+        assert!(router.resolve("local://normal/entry").await.is_ok());
     }
 }

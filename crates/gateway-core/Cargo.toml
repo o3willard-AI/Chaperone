@@ -21,6 +21,7 @@ chaperone-policy = { path = "../policy" }
 chaperone-protocol = { path = "../protocol" }
 chaperone-transport = { path = "../transport" }
 chaperone-vault = { path = "../vault" }
+ed25519-dalek.workspace = true
 rand_core.workspace = true
 async-trait.workspace = true
 russh = { workspace = true, optional = true }

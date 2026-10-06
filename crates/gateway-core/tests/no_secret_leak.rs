@@ -521,3 +521,155 @@ fn error_classes_are_closed_and_render_static_text() {
         );
     }
 }
+
+/// B-1 mint-path surface (Heph review 2026-10-05, folded in): a `ca://`
+/// intent runs the full open_session path — mint happens, the SSH backend
+/// then fails against an unreachable host — and the resulting error response,
+/// the audit journal, and the response frame carry neither the minted cert
+/// text nor the CA key material.
+#[tokio::test]
+async fn mint_path_never_leaks_cert_or_ca_text() {
+    // Build the standard spine, then add a CA to the vault and wire the minter.
+    let sentinel_cert_marker = "chaperone-mint-marker";
+    let dir = tempfile::tempdir().unwrap();
+    let now = chaperone_gateway_core::chaperone_time_now();
+    let rfc = || {
+        now.format(&time::format_description::well_known::Rfc3339)
+            .unwrap()
+    };
+    let signer = SigningKey::from_bytes(&[82u8; 32]);
+    let enrollment = Arc::new(EnrollmentStore::load(&dir.path().join("e.json")).unwrap());
+    enrollment
+        .enroll(
+            AGENT,
+            &chaperone_protocol::encode_signature(&signer.verifying_key().to_bytes()),
+            SPONSOR_ID,
+            SPONSOR_NAME,
+            &rfc(),
+            false,
+        )
+        .unwrap();
+    let attestor = Attestor::new(
+        enrollment.clone(),
+        Arc::new(ReplayCache::open(&dir.path().join("r.jsonl"), now.unix_timestamp()).unwrap()),
+        IdentityConfig { max_skew_secs: 30 },
+    );
+
+    let mut store = LocalVault::create(
+        &dir.path().join("v.bin"),
+        "passphrase",
+        Zeroizing::new("probe-pass".into()),
+    )
+    .unwrap();
+    // The CA entry: a REAL parseable key (so mint succeeds), plus the
+    // sentinel the leak assertions scan for.
+    let (ca_key, ca_text) = mint_test_ca();
+    store
+        .set(
+            "chaperone/ca/ssh",
+            SecretString::new(format!("{ca_text}\n{sentinel_cert_marker}")),
+        )
+        .unwrap();
+    let mut router = VaultRouter::new();
+    router.register("local", Arc::new(store));
+
+    let audit_path = dir.path().join("audit.jsonl");
+    let audit = Arc::new(AuditWriter::open(&audit_path, AuditKey::generate()).unwrap());
+    let policy_path = dir.path().join("policy.toml");
+    std::fs::write(&policy_path, CA_POLICY).unwrap();
+
+    let mut gateway = Gateway::new(
+        attestor,
+        Policy::from_toml(CA_POLICY).unwrap(),
+        router,
+        audit,
+        Arc::new(AlwaysTimeoutGate),
+        GatewayConfig::default(),
+    )
+    .unwrap();
+    gateway = gateway.with_ssh_ca(Arc::new(
+        chaperone_gateway_core::ssh_ca_provider::SshCaProvider::new(Arc::new(
+            chaperone_gateway_core::ssh_ca_gateway::GatewayCaContext {
+                vault: Arc::new(VaultRouter::new()),
+                local_entry_secret: Arc::new(std::sync::RwLock::new(Some(
+                    chaperone_vault::SharedVault::new(ca_reopen(&dir)),
+                ))),
+                enrollment,
+            },
+        )),
+    ));
+
+    // An ssh-session intent naming ca://app-01.internal. The mint succeeds;
+    // the SSH backend then fails to connect (nothing listens on :1) — which
+    // is exactly the path whose error text must stay clean.
+    let now2 = chaperone_gateway_core::chaperone_time_now();
+    let mut env = json!({
+        "chaperone": "0.1", "msg_id": "leak-ca-1", "type": "intent",
+        "agent_id": AGENT,
+        "issued_at": now2.format(&time::format_description::well_known::Rfc3339).unwrap(),
+        "nonce": "ca-1",
+        "target": {"uri": "ssh://app-01.internal:22", "label": "fleet host"},
+        "mechanism": "ssh",
+        "cred_ref": "ca://app-01.internal",
+        "operation": {"host": "127.0.0.1", "port": 1, "user": "deploy", "pty": false},
+    });
+    sign_envelope(&signer, &mut env);
+
+    let resp = gateway.handle_message(&env).await;
+    let resp_text = resp.to_string();
+    let journal = std::fs::read_to_string(&audit_path).unwrap();
+
+    // The cert (minted or not) and the CA entry text must not appear in:
+    // the response frame, or the audit journal.
+    for surface in [resp_text.as_str(), journal.as_str()] {
+        assert!(
+            !surface.contains(sentinel_cert_marker),
+            "CA vault text must never reach a surface: {surface}"
+        );
+        assert!(
+            !surface.contains("ssh-ed25519-cert-v01@openssh.com"),
+            "cert text must never reach a surface: {surface}"
+        );
+    }
+    // The failure is honest and classified (B-4 discipline), not a leak.
+    assert!(
+        resp["type"] == "error",
+        "an unreachable host must yield an error frame: {resp}"
+    );
+    let _ = ca_key;
+}
+
+fn mint_test_ca() -> (russh::keys::PrivateKey, String) {
+    use rand_core::RngCore as _;
+    let mut seed = [0u8; 32];
+    rand_core::OsRng.fill_bytes(&mut seed);
+    let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let kp = russh::keys::ssh_key::private::Ed25519Keypair {
+        public: russh::keys::ssh_key::public::Ed25519PublicKey(signing.verifying_key().to_bytes()),
+        private: russh::keys::ssh_key::private::Ed25519PrivateKey::from_bytes(&seed),
+    };
+    let key = russh::keys::PrivateKey::from(kp);
+    let text = key
+        .to_openssh(russh::keys::ssh_key::LineEnding::LF)
+        .unwrap()
+        .to_string();
+    (key, text)
+}
+
+fn ca_reopen(dir: &tempfile::TempDir) -> chaperone_vault::LocalVault {
+    chaperone_vault::LocalVault::open(
+        &dir.path().join("v.bin"),
+        Zeroizing::new("probe-pass".into()),
+    )
+    .unwrap()
+}
+
+const CA_POLICY: &str = r#"
+    [[rule]]
+    name = "leak probe may ssh via ca"
+    effect = "allow"
+    agent_id = "agent:leak-probe"
+    cred_ref = "ca://app-01.internal"
+    target_uri = "ssh://app-01.internal:*"
+    mechanism = "ssh"
+"#;

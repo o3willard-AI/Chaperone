@@ -43,6 +43,9 @@ pub mod privilege;
 pub mod session;
 #[cfg(feature = "ssh")]
 pub mod ssh;
+pub mod ssh_ca;
+pub mod ssh_ca_gateway;
+pub mod ssh_ca_provider;
 
 pub use console::ConsoleHub;
 #[cfg(feature = "postgres")]
@@ -253,6 +256,23 @@ pub struct Gateway {
     /// D39: set once by the policy-integrity guard; brokering stops.
     halted: AtomicBool,
     halt_reason: Mutex<Option<String>>,
+    /// B-1: the SSH CA minter, present only when a CA context was wired.
+    /// `None` keeps the per-host-key path as the whole story (TD-5: B-1 is
+    /// additive). `Some` routes `ca://` cred_refs to cert minting.
+    ssh_ca:
+        Option<Arc<crate::ssh_ca_provider::SshCaProvider<crate::ssh_ca_gateway::GatewayCaContext>>>,
+}
+
+impl Gateway {
+    /// Wires the SSH CA minter (B-1). Called by `serve` after `ca-init`; a
+    /// gateway without this stays exactly as it was (TD-5).
+    pub fn with_ssh_ca(
+        mut self,
+        ca: Arc<crate::ssh_ca_provider::SshCaProvider<crate::ssh_ca_gateway::GatewayCaContext>>,
+    ) -> Self {
+        self.ssh_ca = Some(ca);
+        self
+    }
 }
 
 impl Gateway {
@@ -281,6 +301,7 @@ impl Gateway {
             event_hub: None,
             halted: AtomicBool::new(false),
             halt_reason: Mutex::new(None),
+            ssh_ca: None,
             ruleset_hash,
         };
 
@@ -444,17 +465,95 @@ impl Gateway {
             );
         };
 
-        let secret = match self.router.resolve(&envelope.cred_ref).await {
-            Ok(s) => s,
-            Err(e) => {
+        // B-1: a `ca://` cred_ref routes to cert minting instead of vault
+        // resolve. The minted cert becomes the session secret (the credential
+        // the SSH backend authenticates with). Everything upstream - policy,
+        // confirmation, audit - is unchanged; only the credential SOURCE
+        // differs, and only for the ruled scheme.
+        let secret = if envelope.cred_ref.starts_with("ca://") {
+            let Some(ca) = &self.ssh_ca else {
                 self.audit_decision(
                     envelope,
                     decision.effect.as_str(),
                     decision.notify_on_use,
-                    Outcome::CredentialUnresolved,
+                    Outcome::MechanismError,
                 )
                 .await;
-                return Self::error(message, "E_CRED_UNRESOLVED", &e.to_string());
+                return Self::error(
+                    message,
+                    "E_MECHANISM",
+                    crate::ssh_ca_provider::CaError::NotInitialized.detail_text(),
+                );
+            };
+            // TD-3: the username comes from the intent's target (the rule
+            // bound it); the host comes from the cred_ref. Both are needed to
+            // mint, and the mint validates the shape of both.
+            let username = envelope
+                .operation
+                .get("user")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let want_pty = envelope
+                .operation
+                .get("pty")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let ttl = decision
+                .limits
+                .session_ttl_s
+                .unwrap_or(self.config.default_session_ttl_secs)
+                .min(crate::ssh_ca::TTL_CEILING_SECS);
+            let identity = match ca.agent_identity(&envelope.agent_id) {
+                Ok(Some(id)) => id,
+                Ok(None) | Err(_) => {
+                    self.audit_decision(
+                        envelope,
+                        decision.effect.as_str(),
+                        decision.notify_on_use,
+                        Outcome::MechanismError,
+                    )
+                    .await;
+                    return Self::error(
+                        message,
+                        "E_MECHANISM",
+                        crate::ssh_ca_provider::CaError::AgentNotEnrolled.detail_text(),
+                    );
+                }
+            };
+            let intent = crate::ssh_ca_provider::MintIntent {
+                agent_id: &envelope.agent_id,
+                msg_id: &envelope.msg_id,
+                username: &username,
+                want_pty,
+                ttl_secs: ttl,
+            };
+            match ca.mint_for(&envelope.cred_ref, &identity, &intent) {
+                Ok(cert) => cert.cert_openssh,
+                Err(e) => {
+                    self.audit_decision(
+                        envelope,
+                        decision.effect.as_str(),
+                        decision.notify_on_use,
+                        Outcome::MechanismError,
+                    )
+                    .await;
+                    return Self::error(message, "E_MECHANISM", e.detail_text());
+                }
+            }
+        } else {
+            match self.router.resolve(&envelope.cred_ref).await {
+                Ok(s) => s,
+                Err(e) => {
+                    self.audit_decision(
+                        envelope,
+                        decision.effect.as_str(),
+                        decision.notify_on_use,
+                        Outcome::CredentialUnresolved,
+                    )
+                    .await;
+                    return Self::error(message, "E_CRED_UNRESOLVED", &e.to_string());
+                }
             }
         };
         let operation = envelope.operation.clone();
