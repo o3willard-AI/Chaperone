@@ -169,10 +169,16 @@ pub fn run_import(
             });
         }
 
-        // Pair row (Q1: also for skipped-exists). Dedup against existing rows.
+        // Pair row (Q1: also for skipped-exists). Dedup against the rule's
+        // original pairs AND rows added earlier in this same run (B2-FIX
+        // Fix 2: two identical rows in one CSV must yield one pair row).
         let dup = existing_pairs
             .iter()
-            .any(|(c, t)| c.contains(&cred_ref) && t.contains(&target_uri));
+            .any(|(c, t)| c.contains(&cred_ref) && t.contains(&target_uri))
+            || new_pairs.iter().any(|p| {
+                format!("{:?}", p.cred_ref).contains(&cred_ref)
+                    && format!("{:?}", p.target_uri).contains(&target_uri)
+            });
         if !dup {
             let cred_matcher =
                 Matcher::parse(&cred_ref).map_err(|e| format!("cred_ref `{cred_ref}`: {e}"))?;
@@ -456,5 +462,44 @@ mod tests {
         let (outcomes2, doc2) = run_import(&mut plan2, &rows).unwrap();
         assert!(matches!(&outcomes2[0], RowOutcome::SkippedExists { .. }));
         assert_eq!(doc1, doc2, "re-run must not duplicate rows");
+    }
+    /// B2-FIX Fix 2: two identical rows in ONE CSV yield ONE pair row (the
+    /// within-run dedup consults new_pairs, not just the rule's originals).
+    #[test]
+    fn duplicate_rows_in_one_run_yield_one_pair() {
+        let mut v = vault_with(&[]);
+        let mut plan = ImportPlan {
+            vault: &mut v,
+            policy_doc: TARGET_RULE,
+            rule_name: "fleet",
+            cred_scheme: "local://ssh/fleet",
+            dry_run: false,
+        };
+        let row = || InventoryRow {
+            name: "app-01".into(),
+            host: "app-01.internal".into(),
+            port: 22,
+            user: None,
+            secret: Some("x".into()),
+        };
+        let rows = vec![row(), row()];
+        let (outcomes, doc) = run_import(&mut plan, &rows).unwrap();
+        assert_eq!(outcomes.len(), 2);
+        assert!(
+            matches!(&outcomes[0], RowOutcome::Imported { .. }),
+            "first row imports"
+        );
+        assert!(
+            matches!(&outcomes[1], RowOutcome::SkippedExists { .. }),
+            "second row skips (entry exists): {:?}",
+            outcomes[1]
+        );
+        let p = Policy::from_toml(&doc).unwrap();
+        let rule = p
+            .rules()
+            .iter()
+            .find(|r| r.name.as_deref() == Some("fleet"))
+            .unwrap();
+        assert_eq!(rule.pairs.len(), 1, "one pair row, not two");
     }
 }

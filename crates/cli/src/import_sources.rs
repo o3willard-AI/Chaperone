@@ -87,7 +87,14 @@ pub fn parse_csv(text: &str) -> ParseOutcome {
         if line.trim().is_empty() {
             continue;
         }
-        let cols: Vec<&str> = line.trim_end().split(',').collect();
+        let mut cols: Vec<&str> = line.trim_end().split(',').collect();
+        // A trailing comma yielding one extra EMPTY final column is a common
+        // CSV-export artifact (`app-02,host,22,user,` → empty secret plus a
+        // phantom 6th element). Drop exactly one such trailing empty; an
+        // extra column from a comma INSIDE a field is not empty and stays.
+        if cols.len() == 6 && cols[5].trim().is_empty() {
+            cols.pop();
+        }
         if cols.len() < 2 {
             rows.push(Parsed::Failed {
                 line: ln,
@@ -102,8 +109,25 @@ pub fn parse_csv(text: &str) -> ParseOutcome {
             rows.push(bad("name and host are required".into()));
             continue;
         }
-        if name.contains(',') || name.contains('"') || name.contains('/') && name.starts_with('/') {
-            rows.push(bad(format!("name `{name}` contains a forbidden character")));
+        // B2-FIX Fix 1: a plain-comma split means a comma (or quote) in ANY
+        // field silently shifts/truncates every field after it. Reject them
+        // everywhere, not just in `name`, so a malformed row fails loudly
+        // instead of truncating a secret to half its value.
+        let check = |field: &str, label: &str| -> Option<String> {
+            if field.contains(',') || field.contains('"') {
+                Some(format!(
+                    "{label} `{field}` contains a forbidden character (, or \")"
+                ))
+            } else {
+                None
+            }
+        };
+        if let Some(reason) = check(name, "name") {
+            rows.push(bad(reason));
+            continue;
+        }
+        if let Some(reason) = check(host, "host") {
+            rows.push(bad(reason));
             continue;
         }
         let port: u16 = match cols.get(2).map(|c| c.trim()).filter(|c| !c.is_empty()) {
@@ -126,6 +150,28 @@ pub fn parse_csv(text: &str) -> ParseOutcome {
             .map(|c| c.trim())
             .filter(|c| !c.is_empty())
             .map(String::from);
+        // B2-FIX Fix 1 (cont.): the split is plain-comma, so a comma inside
+        // ANY field shifts every later field — a row with more than 5
+        // columns is BY CONSTRUCTION a mis-split row. (The per-field
+        // quote/comma checks above catch the visible cases; this catches the
+        // structural one, including a secret like `my,secret` that would
+        // otherwise be silently truncated to `my`.)
+        if cols.len() > 5 {
+            rows.push(bad(format!(
+                "row has {} columns; commas inside fields are not supported — \
+                 quote the field or drop the comma",
+                cols.len()
+            )));
+            continue;
+        }
+        if let Some(reason) = user.as_ref().and_then(|u| check(u, "user")) {
+            rows.push(bad(reason));
+            continue;
+        }
+        if let Some(reason) = secret.as_ref().and_then(|s| check(s, "secret")) {
+            rows.push(bad(reason));
+            continue;
+        }
         rows.push(Parsed::Row(InventoryRow {
             name: name.to_owned(),
             host: host.to_owned(),
@@ -279,5 +325,19 @@ mod tests {
     #[test]
     fn placeholder_is_the_refused_sentinel() {
         assert_eq!(PLACEHOLDER, "<chaperone:unset>");
+    }
+    /// B2-FIX Fix 1: a comma in the SECRET must fail the row, not truncate
+    /// the secret to the pre-comma fragment. Falsifiable: the OLD parser
+    /// returned Row(secret="my") for this input.
+    #[test]
+    fn csv_comma_in_secret_fails_not_truncates() {
+        let out =
+            parse_csv("name,host,port,user,secret\napp-01,app-01.internal,22,deploy,my,secret\n");
+        assert_eq!(out.rows.len(), 1);
+        assert!(
+            matches!(&out.rows[0], Parsed::Failed { line: 2, reason } if reason.contains("columns")),
+            "expected a Failed row, got {:?}",
+            out.rows[0]
+        );
     }
 }
