@@ -31,5 +31,5 @@ pub use provider::{Provider, ResolveError, VaultRouter};
 pub use sealer::KeyringSealer;
 pub use sealer::{KdfParams, PassphraseSealer, Sealer, SealerError};
 pub use secret::SecretString;
-pub use shared::SharedVault;
 pub use shared::CA_NAMESPACE;
+pub use shared::SharedVault;
