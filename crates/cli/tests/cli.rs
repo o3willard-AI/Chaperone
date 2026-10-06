@@ -173,3 +173,153 @@ fn enroll_requires_a_named_sponsor() {
     let listed = run(&["list-agents", "--store", store.to_str().unwrap()]);
     assert!(listed.contains("sponsor@example.org"), "{listed}");
 }
+
+/// GO CA-1 (Stephen, 2026-10-06): the operator CLI must refuse get/set/del on
+/// the CA namespace — the direct-handle path that bypasses the SharedVault
+/// Provider::resolve guard. Falsifiable: the same commands on a normal entry
+/// must SUCCEED, so the guard is provably namespace-scoped, not vault-wide.
+#[test]
+fn ca_namespace_is_refused_by_operator_cli() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("v.bin");
+    let pf = dir.path().join("p");
+    std::fs::write(&pf, "service-passphrase\n").unwrap();
+
+    let run = |args: &[&str], input: &str| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_chaperone"));
+        c.args(args);
+        if !input.is_empty() {
+            c.stdin(std::process::Stdio::piped());
+        }
+        c.stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped());
+        let mut ch = c.spawn().unwrap();
+        if !input.is_empty() {
+            use std::io::Write as _;
+            ch.stdin
+                .as_mut()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+        }
+        let o = ch.wait_with_output().unwrap();
+        eprintln!(
+            "DBGC args={:?} code={:?} out={:?} err={:?}",
+            args.first(),
+            o.status.code(),
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        o
+    };
+
+    let passphrase = std::fs::read_to_string(&pf).unwrap();
+    let trimmed = passphrase.trim_end();
+
+    let o = run(
+        &[
+            "vault-init",
+            "--store",
+            store.to_str().unwrap(),
+            "--passphrase-file",
+            pf.to_str().unwrap(),
+        ],
+        "",
+    );
+    assert!(o.status.success(), "init failed");
+
+    // GET refused
+    let o = run(
+        &[
+            "vault-get",
+            "--store",
+            store.to_str().unwrap(),
+            "--path",
+            "chaperone/ca/ssh",
+            "--passphrase-file",
+            pf.to_str().unwrap(),
+        ],
+        "",
+    );
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(2), "GET: {stderr}");
+    assert!(
+        stderr.contains("non-exportable SSH CA namespace"),
+        "GET: {stderr}"
+    );
+
+    // SET refused
+    let o = run(
+        &[
+            "vault-set",
+            "--store",
+            store.to_str().unwrap(),
+            "--path",
+            "chaperone/ca/ssh",
+            "--passphrase-file",
+            pf.to_str().unwrap(),
+        ],
+        &format!("{trimmed}\nFAKE-CA-KEY\n"),
+    );
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(2), "SET: {stderr}");
+    assert!(
+        stderr.contains("non-exportable SSH CA namespace"),
+        "SET: {stderr}"
+    );
+
+    // DEL refused
+    let o = run(
+        &[
+            "vault-del",
+            "--store",
+            store.to_str().unwrap(),
+            "--path",
+            "chaperone/ca/ssh",
+            "--passphrase-file",
+            pf.to_str().unwrap(),
+        ],
+        "",
+    );
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(2), "DEL: {stderr}");
+    assert!(
+        stderr.contains("non-exportable SSH CA namespace"),
+        "DEL: {stderr}"
+    );
+
+    // Positive control: a normal entry round-trips through the same vault.
+    let value = "guard-does-not-eat-normal-entries";
+    let o = run(
+        &[
+            "vault-set",
+            "--store",
+            store.to_str().unwrap(),
+            "--path",
+            "normal/entry",
+            "--passphrase-file",
+            pf.to_str().unwrap(),
+        ],
+        &format!("{trimmed}\n{value}\n"),
+    );
+    assert!(
+        o.status.success(),
+        "normal set failed: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let o = run(
+        &[
+            "vault-get",
+            "--store",
+            store.to_str().unwrap(),
+            "--path",
+            "normal/entry",
+            "--show",
+            "--passphrase-file",
+            pf.to_str().unwrap(),
+        ],
+        "",
+    );
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains(value), "normal get: {out}");
+}
