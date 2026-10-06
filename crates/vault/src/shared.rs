@@ -47,6 +47,12 @@ impl SharedVault {
 /// on it. Defined here — exactly one place.
 pub const CA_NAMESPACE: &str = "chaperone/ca/";
 
+/// The B-2 unset-placeholder sentinel (TD-5, Heph Q4.3). Import writes this
+/// for rows with no secret; resolve refuses it so the value is never
+/// brokered. Single definition lives here; the CLI import parsers re-use it
+/// via `chaperone_vault::PLACEHOLDER_ENTRY_VALUE`.
+pub const PLACEHOLDER_ENTRY_VALUE: &str = "<chaperone:unset>";
+
 impl Provider for SharedVault {
     fn resolve<'a>(&'a self, entry: &'a str) -> SecretFuture<'a> {
         // B-1 / TD-1 NON-EXPORTABILITY: the SSH CA private key lives in this
@@ -68,10 +74,21 @@ impl Provider for SharedVault {
         }
         Box::pin(async move {
             let vault = self.lock();
-            vault
+            let secret = vault
                 .get(entry)
                 .map_err(|e| ResolveError::Backend(e.to_string()))?
-                .ok_or_else(|| ResolveError::EntryNotFound(entry.to_owned()))
+                .ok_or_else(|| ResolveError::EntryNotFound(entry.to_owned()))?;
+            // B-2 / TD-5 (Heph Q4.3): the `<chaperone:unset>` placeholder
+            // must never RESOLVE — a non-empty string would otherwise be
+            // brokered as a live secret (http-bearer would send it as a
+            // real token). Refused so the denial is honest
+            // `cred_unresolved`, not a live credential.
+            if secret.expose() == PLACEHOLDER_ENTRY_VALUE {
+                return Err(ResolveError::UnsetPlaceholder {
+                    path: entry.to_owned(),
+                });
+            }
+            Ok(secret)
         })
     }
 }
@@ -165,5 +182,40 @@ mod tests {
         // The guard is namespace-scoped, not vault-wide: a non-CA entry in
         // the same vault still resolves.
         assert!(router.resolve("local://normal/entry").await.is_ok());
+    }
+
+    /// B-2 / TD-5 (Heph Q4.3): the `<chaperone:unset>` placeholder must
+    /// never RESOLVE — a non-empty string would otherwise be brokered as a
+    /// live secret. Falsifiable: the same vault resolves a real entry fine.
+    #[tokio::test]
+    async fn unset_placeholder_is_refused_at_resolve() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut vault = crate::LocalVault::create(
+            &dir.path().join("v.bin"),
+            "passphrase",
+            zeroize::Zeroizing::new("pass".to_owned()),
+        )
+        .unwrap();
+        vault
+            .set(
+                "fleet/app-01",
+                SecretString::new(PLACEHOLDER_ENTRY_VALUE.to_owned()),
+            )
+            .unwrap();
+        vault
+            .set("fleet/app-02", SecretString::new("real".to_owned()))
+            .unwrap();
+
+        let mut router = crate::VaultRouter::new();
+        router.register("local", std::sync::Arc::new(SharedVault::new(vault)));
+
+        let err = router.resolve("local://fleet/app-01").await.unwrap_err();
+        assert!(
+            matches!(err, crate::ResolveError::UnsetPlaceholder { .. }),
+            "placeholder must be refused as UnsetPlaceholder, got: {err:?}"
+        );
+        // Positive control: a real value still resolves.
+        let ok = router.resolve("local://fleet/app-02").await.unwrap();
+        assert_eq!(ok.expose(), "real");
     }
 }

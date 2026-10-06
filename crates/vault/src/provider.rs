@@ -29,6 +29,15 @@ pub enum ResolveError {
     },
     /// The provider knows the scheme but not this entry.
     EntryNotFound(String),
+    /// The entry holds the `<chaperone:unset>` placeholder (B-2, Heph
+    /// Q4.3): the value would otherwise RESOLVE and be brokered — for
+    /// http-bearer it would be sent as a real token. Refused so the
+    /// placeholder fails honestly as `cred_unresolved`, never as a live
+    /// secret.
+    UnsetPlaceholder {
+        /// The refused entry path (never the value).
+        path: String,
+    },
     /// Backend failure.
     Backend(String),
 }
@@ -48,6 +57,10 @@ impl std::fmt::Display for ResolveError {
                 supported.join(", ")
             ),
             ResolveError::EntryNotFound(path) => write!(f, "credential {path:?} does not exist"),
+            ResolveError::UnsetPlaceholder { path } => write!(
+                f,
+                "credential {path:?} is unset (placeholder); set a real value before use"
+            ),
             ResolveError::Backend(e) => write!(f, "vault backend: {e}"),
         }
     }

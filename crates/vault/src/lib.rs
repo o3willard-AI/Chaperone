@@ -32,4 +32,5 @@ pub use sealer::KeyringSealer;
 pub use sealer::{KdfParams, PassphraseSealer, Sealer, SealerError};
 pub use secret::SecretString;
 pub use shared::CA_NAMESPACE;
+pub use shared::PLACEHOLDER_ENTRY_VALUE;
 pub use shared::SharedVault;
