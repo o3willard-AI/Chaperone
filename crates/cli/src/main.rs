@@ -684,6 +684,7 @@ fn russh_ca_public_of(private_text: &str) -> Option<String> {
 
 fn cmd_vault_set(flags: &Flags) -> Result<(), String> {
     let entry = flags.require("path")?;
+    refuse_ca_namespace(&entry)?;
     let mut vault = open_vault(flags)?;
     let mut value = String::new();
     use std::io::Read as _;
@@ -700,8 +701,23 @@ fn cmd_vault_set(flags: &Flags) -> Result<(), String> {
     Ok(())
 }
 
+/// B-1 / TD-1: the CA namespace is mint-only. The operator CLI refuses
+/// get/set/del on it — same ruling as the SharedVault resolve guard, applied
+/// to the direct-handle operator path. `ca-export` is the only way out.
+fn refuse_ca_namespace(entry: &str) -> Result<(), String> {
+    if entry.starts_with(chaperone_vault::CA_NAMESPACE) {
+        return Err(format!(
+            "{entry} is inside the non-exportable SSH CA namespace; \
+             the CA key serves minting only. Use `chaperone ca-export` for \
+             the public key line."
+        ));
+    }
+    Ok(())
+}
+
 fn cmd_vault_get(flags: &Flags) -> Result<(), String> {
     let entry = flags.require("path")?;
+    refuse_ca_namespace(&entry)?;
     let vault = open_vault(flags)?;
     match vault.get(&entry).map_err(|e| e.to_string())? {
         Some(secret) => {
@@ -726,6 +742,7 @@ fn cmd_vault_list(flags: &Flags) -> Result<(), String> {
 
 fn cmd_vault_del(flags: &Flags) -> Result<(), String> {
     let entry = flags.require("path")?;
+    refuse_ca_namespace(&entry)?;
     let mut vault = open_vault(flags)?;
     match vault.delete(&entry).map_err(|e| e.to_string())? {
         true => println!("removed {entry}"),

@@ -42,6 +42,11 @@ impl SharedVault {
     }
 }
 
+/// The reserved entry namespace holding the B-1 SSH CA keypair. NON-EXPORTABLE
+/// (TD-1): resolves are refused here, and the operator CLI refuses get/set/del
+/// on it. Defined here — exactly one place.
+pub const CA_NAMESPACE: &str = "chaperone/ca/";
+
 impl Provider for SharedVault {
     fn resolve<'a>(&'a self, entry: &'a str) -> SecretFuture<'a> {
         // B-1 / TD-1 NON-EXPORTABILITY: the SSH CA private key lives in this
@@ -52,7 +57,7 @@ impl Provider for SharedVault {
         // refusal belongs where the CA can actually be reached). Minting is
         // unaffected: GatewayCaContext reads through the direct SharedVault
         // handle (get/set), never through this Provider impl.
-        if entry.starts_with("chaperone/ca/") {
+        if entry.starts_with(CA_NAMESPACE) {
             return Box::pin(async move {
                 Err(ResolveError::Backend(
                     "the SSH CA key is non-exportable; minting is the only \
