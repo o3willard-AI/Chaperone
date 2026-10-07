@@ -165,6 +165,31 @@ The payoff table. Each architectural boundary from the Architecture Specificatio
 | Hash-chained audit (§2.8) | T1, T5 detection | Every action attributed and tamper-evident; misuse cannot hide. |
 | Single confirmation gate (§2.6) | T5, T6 | One deliberate human decision at injection for high-risk actions. |
 
+## Transcript (B-3) — what the recording proves
+
+`serve --transcript <path>` records exactly what the agent saw (the framed
+channel messages) as a hash-chained, Ed25519-signed artifact bound to the
+audit journal of the same run. Its honesty limits, stated on the artifact
+itself (`evidence_class: "self-produced"`):
+
+**Proves:** the gateway returned these exact bytes to the agent channel, in
+this order, under this policy load; the frames are consistent with the audit
+chain of the same run; the no-secret property held on this run's channel
+(asserted by the `no_secret_leak` suite per-run).
+
+**Does NOT prove:** what the *target* did (the transcript is a recording of
+what the agent saw, not of the target's own processing); what the agent sent
+off-channel; that the governing policy was correct; and absence of secrets by
+itself (a per-run asserted property, not a structural guarantee — the
+structural claims live in the audit/error-path design, D47).
+
+**Never contains:** vault secrets, minted certificates or CA material, the
+audit or transcript signing keys, or any payload the gateway did not actually
+place on the agent channel.
+
+**Not** third-party notarized: signed by the operator's audit key; trust
+rests on operator key custody — the same basis as the audit chain itself.
+
 ---
 
 *Related artifacts: [Protocol Specification](01-protocol-spec.md) · [Architecture Specification](02-architecture-spec.md) · [Agent Skill](04-agent-skill.md).*

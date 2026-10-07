@@ -238,7 +238,11 @@ async fn accept_unix(
     loop {
         match listener.accept().await {
             Ok((stream, _addr)) => {
-                tokio::spawn(drive_connection(stream, Arc::clone(&handler), observer.clone()));
+                tokio::spawn(drive_connection(
+                    stream,
+                    Arc::clone(&handler),
+                    observer.clone(),
+                ));
             }
             Err(e) => {
                 // Transient accept errors (e.g. EINTR) should not kill the
@@ -256,7 +260,11 @@ async fn accept_windows_pipe(
     observer: Option<FrameObserver>,
 ) {
     while let Some(stream) = listener.next_client().await {
-        tokio::spawn(drive_connection(stream, Arc::clone(&handler), observer.clone()));
+        tokio::spawn(drive_connection(
+            stream,
+            Arc::clone(&handler),
+            observer.clone(),
+        ));
     }
 }
 
@@ -268,7 +276,11 @@ async fn accept_tcp(
     loop {
         match listener.accept().await {
             Ok((stream, _addr)) => {
-                tokio::spawn(drive_connection(stream, Arc::clone(&handler), observer.clone()));
+                tokio::spawn(drive_connection(
+                    stream,
+                    Arc::clone(&handler),
+                    observer.clone(),
+                ));
             }
             Err(e) => {
                 eprintln!("chaperone-transport: accept failed: {e}");
@@ -283,11 +295,8 @@ async fn accept_tcp(
 /// - valid message → handler → response frame (loop continues)
 /// - clean close → done
 /// - anything malformed → one transport error frame, then disconnect
-pub async fn drive_connection<S>(
-    mut stream: S,
-    handler: Handler,
-    observer: Option<FrameObserver>,
-) where
+pub async fn drive_connection<S>(mut stream: S, handler: Handler, observer: Option<FrameObserver>)
+where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     loop {

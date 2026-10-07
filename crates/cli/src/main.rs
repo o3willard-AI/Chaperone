@@ -67,6 +67,7 @@ UI ACCESS TOKEN (required before the config UI serves; D41):
 AUDIT CHAIN:
     chaperone audit-keygen --out <SEEDFILE>
     chaperone audit-verify --journal <FILE> --public-key <B64URL>
+                           [--companion-audit <AUDIT-JOURNAL>]  (transcript mode: cross-checks the genesis binding)
     chaperone audit-export --journal <FILE>
     chaperone policy-check --policy <TOML> --agent-id <ID> --cred-ref <REF>
                            --target-uri <URI> --mechanism <M>
@@ -476,12 +477,65 @@ fn cmd_audit_verify(flags: &Flags) -> Result<(), String> {
     let pubkey = flags.require("public-key")?;
     let vk = chaperone_audit::verifying_key_from_b64url(&pubkey)?;
 
+    let companion_audit = flags.values.get("companion-audit").clone();
+
     match chaperone_audit::verify_file(std::path::Path::new(&journal), &vk) {
         Ok(report) => match (&report.tail, &report.error) {
-            (Some(tail), None) => println!(
-                "OK: {} records verified; head seq={} hash={}",
-                report.records_ok, tail.seq, tail.hash_hex
-            ),
+            (Some(tail), None) => {
+                println!(
+                    "OK: {} records verified; head seq={} hash={}",
+                    report.records_ok, tail.seq, tail.hash_hex
+                );
+                // B-3 TD-2: transcript mode — cross-check the genesis
+                // binding against the companion audit journal.
+                if let (Some(audit_path), is_transcript) =
+                    (companion_audit, journal.ends_with("transcript.jsonl"))
+                {
+                    if is_transcript {
+                        let text = std::fs::read_to_string(&journal)
+                            .map_err(|e| format!("read {journal}: {e}"))?;
+                        let first = text.lines().next().ok_or("transcript is empty")?;
+                        let genesis: serde_json::Value = serde_json::from_str(first)
+                            .map_err(|e| format!("genesis is not JSON: {e}"))?;
+                        if genesis["kind"].as_str() != Some("transcript_genesis") {
+                            return Err(format!(
+                                "{} is not a transcript journal (first record kind: {:?})",
+                                journal,
+                                genesis["kind"].as_str()
+                            ));
+                        }
+                        let head = genesis["audit_head_hash"]
+                            .as_str()
+                            .ok_or("genesis missing audit_head_hash (not a B-3 transcript)")?;
+                        let audit_text = std::fs::read_to_string(audit_path)
+                            .map_err(|e| format!("read companion audit: {e}"))?;
+                        if audit_text.contains(head) {
+                            println!(
+                                "BOUND: transcript genesis audit_head_hash {} found in {}",
+                                head, audit_path
+                            );
+                        } else {
+                            return Err(format!(
+                                "genesis audit_head_hash {head} NOT found in {audit_path}: \
+                                 the transcript does not belong to this audit journal"
+                            ));
+                        }
+                        // Unterminated = warning, not failure (Heph ruling 2).
+                        let has_end = text.lines().any(|l| {
+                            serde_json::from_str::<serde_json::Value>(l)
+                                .ok()
+                                .and_then(|v| v["kind"].as_str().map(|k| k == "transcript_end"))
+                                .unwrap_or(false)
+                        });
+                        if !has_end {
+                            eprintln!(
+                                "WARNING: transcript is unterminated (no transcript_end record) — \
+                                 a crashed run; the chain itself is intact up to the last record"
+                            );
+                        }
+                    }
+                }
+            }
             (_, Some(brk)) => println!(
                 "TAMPERED: {} records ok before failure - line {}: {}",
                 report.records_ok,

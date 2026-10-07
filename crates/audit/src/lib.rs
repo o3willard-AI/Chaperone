@@ -26,8 +26,8 @@ pub use event::{AuditEvent, Outcome, RecordKind};
 pub use keys::{AuditKey, verifying_key_from_b64url};
 pub use verify::{Break, Report, Tail, verify_file};
 pub use writer::{
-    AuditError, AuditWriter, CHAIN_VERSION, Head, compute_hash, hex, seal_record_pub, unhex,
-    zero_hash_hex, chain_version,
+    AuditError, AuditWriter, CHAIN_VERSION, Head, chain_version, compute_hash, hex,
+    seal_record_pub, unhex, zero_hash_hex,
 };
 pub mod transcript;
 pub use transcript::{EVIDENCE_CLASS, EVIDENCE_CLAUSE, TranscriptWriter};

@@ -18,7 +18,7 @@
 
 use crate::keys::AuditKey;
 use crate::{AuditError, Head};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -26,8 +26,7 @@ use std::sync::Mutex;
 /// itself, that it is operator-signed and not third-party notarized.
 pub const EVIDENCE_CLASS: &str = "self-produced";
 /// The custody clause carried in the genesis body beside the marker.
-pub const EVIDENCE_CLAUSE: &str =
-    "signed by the operator's audit key; not third-party notarized; trust rests on operator key custody";
+pub const EVIDENCE_CLAUSE: &str = "signed by the operator's audit key; not third-party notarized; trust rests on operator key custody";
 
 struct TxState {
     seq: u64,
@@ -71,9 +70,12 @@ impl TranscriptWriter {
             std::fs::create_dir_all(parent).map_err(AuditError::Io)?;
         }
         let file = std::fs::File::create(path).map_err(AuditError::Io)?;
-        let mut writer = Self {
+        let writer = Self {
             file: Mutex::new(file),
-            state: Mutex::new(TxState { seq: 0, prev_hash: [0u8; 32] }),
+            state: Mutex::new(TxState {
+                seq: 0,
+                prev_hash: [0u8; 32],
+            }),
             path: path.to_path_buf(),
             key,
         };
@@ -146,7 +148,10 @@ impl TranscriptWriter {
     /// cross-artifact reporting).
     pub fn head(&self) -> Result<Head, AuditError> {
         let st = self.state.lock().map_err(poison)?;
-        Ok(Head { seq: st.seq, hash_hex: crate::writer::hex(&st.prev_hash) })
+        Ok(Head {
+            seq: st.seq,
+            hash_hex: crate::writer::hex(&st.prev_hash),
+        })
     }
 
     /// Shared tail: hash, sign, stamp, write. Identical mechanics to the
@@ -161,8 +166,7 @@ impl TranscriptWriter {
             .and_then(|s| s.as_u64())
             .ok_or_else(|| AuditError::Serialize("body missing seq".into()))?;
         let mut st = self.state.lock().map_err(poison)?;
-        let (this_hash, line) =
-            crate::writer::seal_record_pub(&body, &st.prev_hash, &self.key)?;
+        let (this_hash, line) = crate::writer::seal_record_pub(&body, &st.prev_hash, &self.key)?;
         st.seq = seq;
         st.prev_hash = this_hash;
         {
@@ -172,7 +176,10 @@ impl TranscriptWriter {
             f.write_all(b"\n").map_err(AuditError::Io)?;
             f.flush().map_err(AuditError::Io)?;
         }
-        Ok(Head { seq, hash_hex: crate::writer::hex(&this_hash) })
+        Ok(Head {
+            seq,
+            hash_hex: crate::writer::hex(&this_hash),
+        })
     }
 }
 
@@ -180,10 +187,9 @@ impl TranscriptWriter {
 /// error rather than panicking (the transcript must fail closed, not take
 /// the gateway down).
 fn poison<T>(p: std::sync::PoisonError<T>) -> AuditError {
-    AuditError::Io(std::io::Error::new(
-        std::io::ErrorKind::Other,
-        format!("transcript lock poisoned: {p}"),
-    ))
+    AuditError::Io(std::io::Error::other(format!(
+        "transcript lock poisoned: {p}"
+    )))
 }
 
 fn now_rfc3339() -> Result<String, AuditError> {
@@ -217,7 +223,12 @@ mod tests {
         assert_eq!(genesis["evidence_class"], "self-produced");
         assert_eq!(genesis["audit_head_hash"], "audit-head-abc");
         assert_eq!(genesis["audit_pubkey"], "pub-key-x");
-        assert!(genesis["evidence_clause"].as_str().unwrap().contains("operator key custody"));
+        assert!(
+            genesis["evidence_clause"]
+                .as_str()
+                .unwrap()
+                .contains("operator key custody")
+        );
         // The chain verifies under the audit key (no new crypto).
         let report = verify_file(&path, &key);
         assert!(report.error.is_none(), "{:?}", report.error);
@@ -236,11 +247,21 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         let kinds: Vec<String> = text
             .lines()
-            .map(|l| serde_json::from_str::<Value>(l).unwrap()["kind"].as_str().unwrap().to_owned())
+            .map(|l| {
+                serde_json::from_str::<Value>(l).unwrap()["kind"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
             .collect();
         assert_eq!(
             kinds,
-            ["transcript_genesis", "transcript_frame", "transcript_frame", "transcript_end"]
+            [
+                "transcript_genesis",
+                "transcript_frame",
+                "transcript_frame",
+                "transcript_end"
+            ]
         );
         let report = verify_file(&path, &key);
         assert!(report.error.is_none(), "{:?}", report.error);
@@ -273,6 +294,9 @@ mod tests {
         let tampered = text.replace("eyJhIjoxfQ==", "eyJ6Ijo5fQ==");
         std::fs::write(&path, tampered).unwrap();
         let report = verify_file(&path, &key);
-        assert!(report.error.is_some(), "a tampered frame must break the chain");
+        assert!(
+            report.error.is_some(),
+            "a tampered frame must break the chain"
+        );
     }
 }
