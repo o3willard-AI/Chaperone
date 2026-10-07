@@ -277,6 +277,26 @@ impl AuditWriter {
 }
 
 /// Canonical body -> raw hash -> signature -> final JSON line.
+/// Chain primitive shared by the transcript sidecar (B-3): hash, sign,
+/// stamp. Same mechanics as `append` — deliberately the ONLY crypto path.
+pub fn seal_record_pub(
+    body: &Value,
+    prev_hash: &[u8; 32],
+    key: &AuditKey,
+) -> Result<([u8; 32], String), AuditError> {
+    seal_record(body, prev_hash, key)
+}
+
+/// The zero hash hex (genesis prev_hash) — shared with the transcript.
+pub fn zero_hash_hex() -> String {
+    hex(&[0u8; 32])
+}
+
+/// The chain format version.
+pub fn chain_version() -> u64 {
+    CHAIN_VERSION
+}
+
 fn seal_record(
     body: &Value,
     prev_hash: &[u8; 32],

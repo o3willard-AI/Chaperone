@@ -540,6 +540,7 @@ dependencies = [
 name = "chaperone-cli"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "chaperone-audit",
  "chaperone-gateway-core",
  "chaperone-identity",

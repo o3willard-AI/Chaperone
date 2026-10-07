@@ -41,7 +41,7 @@ async fn round_trips_framed_message_over_unix_socket() {
     let spec = ListenSpec::UnixSocket {
         path: temp_socket_path(dir.path()),
     };
-    let server = serve(&spec, echo_handler()).unwrap();
+    let server = serve(&spec, echo_handler(), None).unwrap();
 
     let mut conn = Connection::connect(&spec).await.unwrap();
     let response = conn
@@ -68,6 +68,7 @@ async fn socket_and_directory_are_owner_only() {
     let server = serve(
         &ListenSpec::UnixSocket { path: path.clone() },
         echo_handler(),
+        None,
     )
     .unwrap();
 
@@ -94,9 +95,9 @@ async fn second_bind_on_live_endpoint_reports_already_running() {
     let spec = ListenSpec::UnixSocket {
         path: temp_socket_path(dir.path()),
     };
-    let _server = serve(&spec, echo_handler()).unwrap();
+    let _server = serve(&spec, echo_handler(), None).unwrap();
 
-    match serve(&spec, echo_handler()) {
+    match serve(&spec, echo_handler(), None) {
         Err(e @ BindError::AlreadyRunning { .. }) => {
             assert!(e.to_string().contains("already owns"));
         }
@@ -115,7 +116,7 @@ async fn stale_socket_file_is_rebound() {
     // A plain file where a socket should be: unreachable, i.e. stale.
     std::fs::write(&path, b"crashed daemon leftovers").unwrap();
 
-    let server = serve(&ListenSpec::UnixSocket { path }, echo_handler()).unwrap();
+    let server = serve(&ListenSpec::UnixSocket { path }, echo_handler(), None).unwrap();
     let mut conn = Connection::connect(&ListenSpec::UnixSocket {
         path: temp_socket_path(dir.path()),
     })
@@ -129,7 +130,7 @@ async fn stale_socket_file_is_rebound() {
 async fn oversized_frame_rejected_cleanly_and_server_survives() {
     // Loopback TCP keeps this platform-neutral; the codec guard is identical.
     let spec = ListenSpec::TcpV4 { port: 0 };
-    let server = serve(&spec, echo_handler()).unwrap();
+    let server = serve(&spec, echo_handler(), None).unwrap();
     let addr = server.tcp_local_addr().unwrap();
     let live_spec = ListenSpec::TcpV4 { port: addr.port() };
 
@@ -159,7 +160,7 @@ async fn oversized_frame_rejected_cleanly_and_server_survives() {
 #[tokio::test]
 async fn malformed_json_gets_error_frame_then_disconnect() {
     let spec = ListenSpec::TcpV4 { port: 0 };
-    let server = serve(&spec, echo_handler()).unwrap();
+    let server = serve(&spec, echo_handler(), None).unwrap();
     let addr = server.tcp_local_addr().unwrap();
 
     let mut raw = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -184,7 +185,7 @@ async fn malformed_json_gets_error_frame_then_disconnect() {
 #[tokio::test]
 async fn concurrent_clients_are_isolated() {
     let spec = ListenSpec::TcpV4 { port: 0 };
-    let server = serve(&spec, echo_handler()).unwrap();
+    let server = serve(&spec, echo_handler(), None).unwrap();
     let addr = server.tcp_local_addr().unwrap();
     let live_spec = ListenSpec::TcpV4 { port: addr.port() };
 
@@ -205,7 +206,7 @@ async fn round_trips_over_named_pipe() {
     let spec = ListenSpec::NamedPipe {
         name: format!(r"\\.\pipe\chaperone-test-{}", std::process::id()),
     };
-    let server = serve(&spec, echo_handler()).unwrap();
+    let server = serve(&spec, echo_handler(), None).unwrap();
     let mut conn = Connection::connect(&spec).await.unwrap();
     let response = conn
         .request(&json!({"msg_id":"w1","ping":true}))

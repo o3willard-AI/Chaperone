@@ -72,6 +72,14 @@ The agent never touches a secret.
 > substitute for it; bulk inventory import from `~/.ssh/config`/`known_hosts`
 > (B-2) generates the pair rows mechanically. A reader with fleet-operations
 > experience should read this as a roadmap, not an oversight.
+>
+> **Evaluation artifact.** `serve --transcript <path>` (B-3) records exactly
+> what the agent saw — the framed channel messages — as a hash-chained,
+> Ed25519-signed `transcript.jsonl` bound to the audit journal of the same
+> run (`evidence_class: "self-produced"` in its genesis). Verify offline with
+> `chaperone audit-verify --journal transcript.jsonl --public-key <PUBKEY>
+> --companion-audit audit.jsonl`. It proves what the gateway returned to the
+> agent; it does NOT prove what the target did (see the B-3 threat model).
 
 ### Credential backends (where secrets LIVE — the `cred_ref` targets)
 
