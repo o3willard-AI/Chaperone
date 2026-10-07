@@ -3,6 +3,8 @@
 //! decoded frame), byte-stability of the frame sequence for a deterministic
 //! workload, and the fail-closed path-collision gate.
 //!
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! ANTI-GAMING: acceptance 2 goes RED if the P0-1 scrub is reverted (a
 //! secret reaches a response frame and appears in a decoded transcript
 //! frame). Acceptance 4 goes RED if the fail-closed create is removed (the
@@ -32,8 +34,11 @@ mod live {
     pub const SENTINEL: &str = "b3-vault-token-sentinel";
 
     pub struct Spine {
+        #[allow(dead_code)]
         pub gateway: Gateway,
+        #[allow(dead_code)]
         pub signer: SigningKey,
+        #[allow(dead_code)]
         pub enrollment: Arc<EnrollmentStore>,
         pub audit_key: AuditKey,
         pub audit_path: std::path::PathBuf,
@@ -240,7 +245,6 @@ fn transcript_carries_no_secret_text() {
 
     // Decode EVERY frame payload and scan again — base64 is not a hiding place.
     let mut decoded_all = String::new();
-    let mut saw_msg_id = false;
     for line in raw.lines() {
         let record: Value = serde_json::from_str(line).unwrap();
         if record["kind"] == "transcript_frame" {
@@ -256,7 +260,6 @@ fn transcript_carries_no_secret_text() {
         decoded_all.contains("b3-frame-1"),
         "positive control: the frames must carry the agent-visible request"
     );
-    let _ = saw_msg_id;
 }
 
 /// Acceptance 3 (c): byte-stability — the frame payload SEQUENCE (direction,

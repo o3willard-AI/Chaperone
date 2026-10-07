@@ -95,6 +95,7 @@ impl std::error::Error for BindError {}
 /// provide one; `None` (the default) is zero-behavior-change.
 pub type FrameObserver = Arc<dyn Fn(&str, &[u8]) + Send + Sync>;
 
+/// The gateway's message handler: one framed request in, one response out.
 pub type Handler =
     Arc<dyn Fn(Request) -> Pin<Box<dyn Future<Output = Value> + Send>> + Send + Sync>;
 
