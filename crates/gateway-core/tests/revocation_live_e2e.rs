@@ -238,12 +238,16 @@ async fn revoked_before_first_use_is_refused() {
     assert_eq!(resp["code"], "E_UNKNOWN_AGENT", "{resp}");
 }
 
-/// B2 stretch (work order optional case): the CA minting path consults the
-/// SAME enrollment store (`GatewayCaContext::agent_identity` ->
-/// `EnrollmentStore::lookup`), so a revoked agent's `ca://` mint must ALSO
-/// be refused. ANTI-GAMING: same deletion as the primary test — deleting
-/// the `revoked_at` filter in `lookup` makes this mint succeed and this
-/// test goes red.
+/// B2-FIX correction (Heph, PR #90 review): NO CA mint path exists in the
+/// repo yet — there is no `ca://` provider wired to the gateway intent
+/// path, so this test does NOT and CANNOT prove revocation-on-mint. With
+/// the revocation filter deleted, this request fails at credential
+/// resolution (E_CRED_UNRESOLVED, "no provider for scheme ca"), not at a
+/// mint. What it IS: a third step-1 refusal using a `ca://` cred_ref,
+/// confirming the revoked-agent refusal is scheme-independent (the filter
+/// runs before any scheme routing). Real revocation-on-mint coverage must
+/// wait until a mint path exists. ANTI-GAMING: same deletion as the
+/// primary test — the filter removed, this request resolves and proceeds.
 #[tokio::test]
 async fn revoked_agent_ca_mint_is_refused() {
     let dir = tempfile::tempdir().unwrap();
@@ -312,8 +316,8 @@ async fn revoked_agent_ca_mint_is_refused() {
     enrollment.revoke(AGENT, &rfc()).unwrap();
 
     // A ca:// intent from the revoked agent: step 1 (identity verify) fails
-    // first — the revoked agent presents no verifying key at all — so the
-    // request never reaches the mint. E_UNKNOWN_AGENT is the honest signal.
+    // first — the revoked agent presents no verifying key at all. (No mint
+    // path exists yet; see the header comment.)
     let url = spawn_listener().await;
     let now2 = chaperone_gateway_core::chaperone_time_now();
     let mut env = json!({
