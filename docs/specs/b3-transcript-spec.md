@@ -2,7 +2,7 @@
 
 **Author:** ox-chap (Hermes, host 192.168.101.11)
 **Date:** 2026-10-07
-**Status:** DRAFT — for review by Heph, then ruling by Stephen
+**Status:** RULED by Stephen 2026-10-07 — fold rulings into the implementation
 **Work order:** `~/workspace/tasks/wi-B-3.md`; backlog item B-3
 (MVP-GAP-REVIEW.md §711) ← P0-2 layer 3 (§233)
 **Registry note:** D45–D47 and CA-1 live in MVP-GAP-REVIEW.md, not
@@ -95,8 +95,10 @@ verified by the **same offline tool path** the audit chain already has.
   *payload*, the chain covers them exactly like any record body.
 - **Genesis binding:** the transcript's genesis record carries, in its body:
   the audit journal's **current head hash** at serve start, the audit
-  public key, the gateway's protocol version, and the transcript start
-  timestamp. This is the cross-artifact link: a prospect can confirm the
+  public key, the gateway's protocol version, the transcript start timestamp, and an
+  `evidence_class` field set to `"self-produced"` with a one-line honesty
+  clause ("signed by the operator's audit key; not third-party notarized;
+  trust rests on operator key custody"). This is the cross-artifact link: a prospect can confirm the
   transcript they are holding was recorded by the same run that produced
   the audit chain they are also holding.
 - **Offline re-verification:** the existing `chaperone audit-verify` (or its
@@ -295,28 +297,20 @@ without pretending to be independent attestation.
 
 **Total: ~3–5 days.**
 
-**Sequencing vs the revocation live-E2E fast-follow:** **independent.** B-3
-touches serve/transport/audit-verify; revocation E2E exercises the existing
-`revoke` path through a live gateway. Neither depends on the other's
-artifacts. They can proceed in either order; the only shared resource is
-review attention. (If sequenced together, do revocation E2E first — it is
-smaller and closes an agreed honesty gap rather than opening a new feature.)
+**Sequencing (RULED 2026-10-07): revocation live-E2E fast-follow FIRST, then B-3.**
+Independent artifacts, but the revocation E2E is smaller and closes an agreed
+honesty gap rather than opening a new feature.
 
 ---
 
-## Open questions for Heph
+## Rulings — Stephen 2026-10-07
 
-1. **TD-2 key choice** — audit key vs a dedicated transcript key. My case is
-   key-ceremony economy + "the transcript is an artifact of the audited
-   run"; argue if you read a separation-of-duties benefit in a second key.
-2. **TD-4 unterminated-transcript semantics** — warning-not-failure for a
-   crashed run's missing end record. Argue if you want it to be a failure
-   (I read the end record as convenience, the chain as the anchor).
-3. **TD-5 adversarial framing** — I have written the transcript's honesty
-   claim as resting on operator key custody, same as the audit chain. If
-   you think the enterprise-evaluation framing needs an explicit
-   "this is self-produced evidence" caveat in the artifact itself (a body
-   field), say so and I will add it to TD-2's genesis body.
-4. **Byte-stability scope** — I have scoped acceptance 3 to frame payloads
-   (not chain hashes). Argue if the whole journal should be
-   deterministic under a fixed clock.
+1. **TD-2 key choice:** audit key (as written).
+2. **TD-4 unterminated semantics:** warning, not failure (as written).
+3. **TD-5 self-produced-evidence caveat:** ADD the genesis body field —
+   `evidence_class: "self-produced"` with a one-line clause ("signed by the
+   operator's audit key; not third-party notarized; trust rests on operator
+   key custody").
+4. **Byte-stability scope:** frame payloads only (as written).
+
+**Sequencing:** revocation live-E2E fast-follow FIRST, then B-3.
