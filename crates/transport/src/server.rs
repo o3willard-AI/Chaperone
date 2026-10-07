@@ -89,6 +89,12 @@ impl std::error::Error for BindError {}
 ///
 /// Responses are stamped with the request's `msg_id` by the transport before
 /// they are written; see [`Request::reply`].
+/// B-3 transcript capture (optional, serve-layer): called with the verbatim
+/// framed bytes of each request/response AFTER they cross the channel. The
+/// transport makes no trust decisions from it and no caller is required to
+/// provide one; `None` (the default) is zero-behavior-change.
+pub type FrameObserver = Arc<dyn Fn(&str, &[u8]) + Send + Sync>;
+
 pub type Handler =
     Arc<dyn Fn(Request) -> Pin<Box<dyn Future<Output = Value> + Send>> + Send + Sync>;
 
@@ -128,13 +134,17 @@ impl ServerHandle {
 /// Each accepted connection runs its own unary loop ([`drive_connection`]);
 /// a protocol-violating peer is answered with a transport error frame
 /// (DESIGN-DECISIONS D12) and disconnected without affecting other peers.
-pub fn serve(spec: &ListenSpec, handler: Handler) -> Result<ServerHandle, BindError> {
+pub fn serve(
+    spec: &ListenSpec,
+    handler: Handler,
+    observer: Option<FrameObserver>,
+) -> Result<ServerHandle, BindError> {
     match spec {
         #[cfg(unix)]
         ListenSpec::UnixSocket { path } => {
             let listener = crate::uds::bind(path)?;
             Ok(ServerHandle {
-                task: tokio::spawn(accept_unix(listener, handler)),
+                task: tokio::spawn(accept_unix(listener, handler, observer)),
                 socket_path: Some(path.clone()),
                 tcp_addr: None,
             })
@@ -147,7 +157,7 @@ pub fn serve(spec: &ListenSpec, handler: Handler) -> Result<ServerHandle, BindEr
         ListenSpec::NamedPipe { name } => {
             let creator = crate::named_pipe::PipeListener::bind(name)?;
             Ok(ServerHandle {
-                task: tokio::spawn(accept_windows_pipe(creator, handler)),
+                task: tokio::spawn(accept_windows_pipe(creator, handler, observer)),
                 socket_path: None,
                 tcp_addr: None,
             })
@@ -164,7 +174,7 @@ pub fn serve(spec: &ListenSpec, handler: Handler) -> Result<ServerHandle, BindEr
             let actual = listener.local_addr().map_err(BindError::Io)?;
             let listener = tokio::net::TcpListener::from_std(listener).map_err(BindError::Io)?;
             Ok(ServerHandle {
-                task: tokio::spawn(accept_tcp(listener, handler)),
+                task: tokio::spawn(accept_tcp(listener, handler, observer)),
                 socket_path: None,
                 tcp_addr: Some(if bound.port() == 0 { actual } else { bound }),
             })
@@ -177,7 +187,7 @@ pub fn serve(spec: &ListenSpec, handler: Handler) -> Result<ServerHandle, BindEr
             let actual = listener.local_addr().map_err(BindError::Io)?;
             let listener = tokio::net::TcpListener::from_std(listener).map_err(BindError::Io)?;
             Ok(ServerHandle {
-                task: tokio::spawn(accept_tcp(listener, handler)),
+                task: tokio::spawn(accept_tcp(listener, handler, observer)),
                 socket_path: None,
                 tcp_addr: Some(if bound.port() == 0 { actual } else { bound }),
             })
@@ -220,11 +230,15 @@ pub fn default_socket_path() -> std::path::PathBuf {
 }
 
 #[cfg(unix)]
-async fn accept_unix(listener: tokio::net::UnixListener, handler: Handler) {
+async fn accept_unix(
+    listener: tokio::net::UnixListener,
+    handler: Handler,
+    observer: Option<FrameObserver>,
+) {
     loop {
         match listener.accept().await {
             Ok((stream, _addr)) => {
-                tokio::spawn(drive_connection(stream, Arc::clone(&handler)));
+                tokio::spawn(drive_connection(stream, Arc::clone(&handler), observer.clone()));
             }
             Err(e) => {
                 // Transient accept errors (e.g. EINTR) should not kill the
@@ -236,17 +250,25 @@ async fn accept_unix(listener: tokio::net::UnixListener, handler: Handler) {
 }
 
 #[cfg(windows)]
-async fn accept_windows_pipe(mut listener: crate::named_pipe::PipeListener, handler: Handler) {
+async fn accept_windows_pipe(
+    mut listener: crate::named_pipe::PipeListener,
+    handler: Handler,
+    observer: Option<FrameObserver>,
+) {
     while let Some(stream) = listener.next_client().await {
-        tokio::spawn(drive_connection(stream, Arc::clone(&handler)));
+        tokio::spawn(drive_connection(stream, Arc::clone(&handler), observer.clone()));
     }
 }
 
-async fn accept_tcp(listener: tokio::net::TcpListener, handler: Handler) {
+async fn accept_tcp(
+    listener: tokio::net::TcpListener,
+    handler: Handler,
+    observer: Option<FrameObserver>,
+) {
     loop {
         match listener.accept().await {
             Ok((stream, _addr)) => {
-                tokio::spawn(drive_connection(stream, Arc::clone(&handler)));
+                tokio::spawn(drive_connection(stream, Arc::clone(&handler), observer.clone()));
             }
             Err(e) => {
                 eprintln!("chaperone-transport: accept failed: {e}");
@@ -261,8 +283,11 @@ async fn accept_tcp(listener: tokio::net::TcpListener, handler: Handler) {
 /// - valid message → handler → response frame (loop continues)
 /// - clean close → done
 /// - anything malformed → one transport error frame, then disconnect
-pub async fn drive_connection<S>(mut stream: S, handler: Handler)
-where
+pub async fn drive_connection<S>(
+    mut stream: S,
+    handler: Handler,
+    observer: Option<FrameObserver>,
+) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     loop {
@@ -275,6 +300,9 @@ where
             }
         };
 
+        if let Some(obs) = &observer {
+            obs("request", text.as_bytes());
+        }
         match Request::parse(&text) {
             Ok(request) => {
                 let response = (handler)(request).await;
@@ -288,6 +316,9 @@ where
                         return;
                     }
                 };
+                if let Some(obs) = &observer {
+                    obs("response", &payload);
+                }
                 if codec::write_frame(&mut stream, &payload).await.is_err() {
                     return;
                 }

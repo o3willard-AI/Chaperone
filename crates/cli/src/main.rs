@@ -1189,6 +1189,10 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
     let seed_text =
         std::fs::read_to_string(&key_path).map_err(|e| format!("cannot read {key_path}: {e}"))?;
     let audit_key = load_audit_seed_text(&seed_text)?;
+    let audit_pubkey_b64url = audit_key.public_key_b64url();
+    // B-3: the transcript writer (created later, on --transcript) signs with
+    // the SAME audit key — cloned before the move into the audit writer.
+    let transcript_key = audit_key.clone();
     let audit = Arc::new(
         chaperone_audit::AuditWriter::open(std::path::Path::new(&journal_path), audit_key)
             .map_err(|e| e.to_string())?,
@@ -1398,6 +1402,53 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
         chaperone_transport::default_listen_spec()
     };
 
+    // B-3: --transcript <path> — the enterprise evaluation artifact (RULED
+    // spec TD-4). Fail-closed on path collision; None = zero behavior change.
+    let (transcript_writer, transcript_path_flag) = match flags.values.get("transcript") {
+        Some(path) => {
+            let audit_head = {
+                let head = audit.head().map_err(|e| format!("audit head: {e}"))?;
+                head.hash_hex
+            };
+            let writer = chaperone_audit::TranscriptWriter::create(
+                std::path::Path::new(path),
+                transcript_key,
+                &audit_head,
+                &audit_pubkey_b64url,
+                chaperone_protocol::PROTOCOL_VERSION,
+            )
+            .map_err(|e| {
+                format!(
+                    "cannot open transcript at {path}: {e} (the artifact is per-run; move the old file first)"
+                )
+            })?;
+            (Some(writer), Some(path.clone()))
+        }
+        None => (None, None),
+    };
+
+    let frame_counter = transcript_writer
+        .as_ref()
+        .map(|_| Arc::new(std::sync::atomic::AtomicU64::new(0)));
+    // Shared handles: the observer streams frames into the journal; the
+    // shutdown block finalizes it. Same underlying writer.
+    let writer_arc = transcript_writer.map(Arc::new);
+    let shutdown_writer = writer_arc.clone();
+    let shutdown_counter = frame_counter.clone();
+
+    let observer: Option<chaperone_transport::FrameObserver> = {
+        let writer = writer_arc;
+        let counter = frame_counter;
+        writer.zip(counter).map(|(writer, counter)| {
+            Arc::new(move |direction: &str, frame: &[u8]| {
+                use base64::Engine as _;
+                let b64 = base64::engine::general_purpose::STANDARD.encode(frame);
+                let _ = writer.append_frame(direction, &b64, frame.len());
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }) as chaperone_transport::FrameObserver
+        })
+    };
+
     let handler: chaperone_transport::Handler = {
         let gw = Arc::clone(&gateway);
         Arc::new(move |request| {
@@ -1462,9 +1513,20 @@ fn cmd_serve(flags: &Flags) -> Result<(), String> {
             });
         }
 
-        let server = chaperone_transport::serve(&spec, handler).map_err(|e| e.to_string())?;
+        let server =
+            chaperone_transport::serve(&spec, handler, observer).map_err(|e| e.to_string())?;
         println!("press Ctrl-C to stop");
         server.joined().await;
+        // B-3 TD-4: graceful shutdown finalizes the transcript (the
+        // `transcript_end` marker; a crashed run leaves it unterminated,
+        // which the verifier reports as a warning — the chain is the
+        // anchor). server.joined() returning IS the graceful path.
+        if let (Some(writer), counter) = (shutdown_writer, shutdown_counter) {
+            let count = counter
+                .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+                .unwrap_or(0);
+            let _ = writer.end(count);
+        }
         Ok::<(), String>(())
     })?;
     Ok(())
